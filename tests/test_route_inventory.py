@@ -54,9 +54,22 @@ def _auth_dependency(endpoint) -> str | None:
     return None
 
 
+# Static-serving routes, excluded from the snapshot. They serve the built
+# bundle rather than data, and -- the reason this matters -- they are
+# registered ONLY when frontend/dist exists, so including them would make the
+# snapshot depend on whether the frontend happens to be built. That is not a
+# hypothetical: this test caught it on its own first merge, comparing a
+# worktree without a build against a checkout with one, and it would have
+# failed in CI too, where the frontend is a separate job.
+_STATIC_PATHS = {"/", "/{full_path:path}"}
+
+
 def _inventory():
+    """The API surface: every data route with its path, method and guard."""
     rows = []
     for r in srv.app.routes:
+        if getattr(r, "path", None) in _STATIC_PATHS:
+            continue
         if isinstance(r, APIRoute):
             for method in sorted(r.methods - {"HEAD", "OPTIONS"}):
                 rows.append((method, r.path, _auth_dependency(r.endpoint)))
@@ -74,8 +87,6 @@ def test_every_route_is_authenticated_or_explicitly_public():
             continue
         if (method, path) in PUBLIC_ROUTES:
             continue
-        if path in ("/", "/{full_path:path}"):
-            continue  # the SPA catch-all serves the bundle, not data
         unguarded.append(f"{method} {path}")
     assert not unguarded, (
         "these routes declare no auth dependency and are not listed as public:\n  "
