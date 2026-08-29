@@ -610,7 +610,9 @@ layer of defense.
 
 ## Contributing & security
 
+- [CHANGELOG.md](CHANGELOG.md) — what shipped in each release, and the known limits.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — setup, house style, and what makes a useful PR.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1.
 - [SECURITY.md](SECURITY.md) — private vulnerability reporting, the threat model (what the agent
   is *supposed* to be able to do vs. what counts as a real vulnerability), and how to deploy
   safely.
