@@ -162,6 +162,15 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
             setMobilePane("list");
           }
         }}
+        onPlanningDeleted={(sessionId) => {
+          setPlanningSessions((list) => list.filter((s) => s.session_id !== sessionId));
+          if (selectedPlanningSession?.session_id === sessionId) {
+            // The open conversation just went away; drop the selection rather
+            // than leaving the pane bound to a session the server no longer has.
+            setSelectedPlanningSession(null);
+            setMobilePane("list");
+          }
+        }}
         onLogout={onLogout}
       />
       <div className="main-pane">

@@ -422,6 +422,17 @@ export async function deleteTask(taskId: string, repo: string): Promise<void> {
   }
 }
 
+export async function deletePlanningSession(sessionId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/planning/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `deletePlanningSession failed: ${res.status}`);
+  }
+}
+
+
 export function taskStreamUrl(taskId: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}${API_BASE}/tasks/${taskId}/stream`;

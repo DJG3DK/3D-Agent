@@ -1572,6 +1572,41 @@ async def archive_planning_session(session_id: str, user: User = Depends(require
     return {"ok": True}
 
 
+@app.delete("/api/planning/sessions/{session_id}")
+async def delete_planning_session(session_id: str, user: User = Depends(require_full_auth)):
+    """Remove a planning conversation entirely -- history, plan and all.
+
+    Archiving keeps a session reachable, which is right for one you might
+    revisit. This is for the ones you would not: a conversation abandoned
+    part-way, or work that was done another way, where there is nothing worth
+    keeping and leaving it listed is clutter. Mirrors DELETE /api/tasks/{id},
+    including refusing while a turn is in flight -- stop it first, same as
+    every other state-changing action here.
+    """
+    repo, meta = await _find_planning_meta(session_id)
+    if not meta:
+        raise HTTPException(404, "planning session not found")
+    check_repo_access(user, repo)
+
+    with _claim_run_slot(_running_planning_turns, session_id,
+                         "planning session is processing a message"):
+        await app.state.store.adelete(("planning", repo), session_id)
+        # The conversation itself lives in the shared checkpointer under a
+        # namespaced thread id (planning_thread_config), not under the bare
+        # session id -- deleting only the Store record would leave every
+        # message orphaned in the checkpoints table.
+        await app.state.checkpointer.adelete_thread(f"planning:{session_id}")
+        # In-process mirrors, or a later session reusing the id would inherit
+        # this one's log.
+        _live_planning_log.pop(session_id, None)
+        for _q, ws in _planning_subscribers.pop(session_id, []):
+            try:
+                await ws.close(code=4000, reason="planning session deleted")
+            except Exception:  # noqa: BLE001 -- a dead socket must not fail the delete
+                pass
+    return {"ok": True}
+
+
 async def _bank_planning_turn(session_id: str, repo: str, plan_markdown: str | None, spent: float | None, text: str | None = None) -> None:
     """Persist whatever a turn earned before it ended -- used by the two
     abnormal exits (operator Stop, and an exception), which both used to

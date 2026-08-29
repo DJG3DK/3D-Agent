@@ -124,6 +124,7 @@ def test_the_route_surface_has_not_silently_changed():
 # Generated with:
 #   python -c "import tests.test_route_inventory as t; print(t._inventory())"
 EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{user_id}', 'require_full_auth'),
+    ('DELETE', '/api/planning/sessions/{session_id}', 'require_full_auth'),
     ('DELETE', '/api/projects/{name}/deploy-key', 'require_full_auth'),
     ('DELETE', '/api/tasks/{task_id}', 'require_full_auth'),
     ('GET', '/api/analytics', 'require_full_auth'),
