@@ -90,7 +90,10 @@ worktree's `.git` is a file rather than a directory.
 - One concern per PR. A refactor bundled with a fix is hard to review and hard
   to revert.
 - Say what breaks if you're wrong. Reviewers calibrate on that.
-- Run the suites above before opening. CI is not going to catch it for you yet.
+- Run the suites above before opening. CI runs the same four (Python tests,
+  frontend typecheck/lint/build, Node service checks, shell + an installer
+  dry-run) on every pull request, all offline — no secrets, no database, no
+  model calls.
 - Small PRs get read the same week. Large ones may sit — open an issue first
   if you're planning something big, so you don't build the wrong thing.
 
