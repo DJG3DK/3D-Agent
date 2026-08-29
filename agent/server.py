@@ -8,6 +8,7 @@ opening a fresh connection per request would be wasteful and race-prone).
 import asyncio
 import json
 import logging
+import os
 import time
 import traceback
 import uuid
@@ -315,6 +316,36 @@ async def _body_size_limit(request, call_next):
                 )
         except ValueError:
             return _JSONResponse({"detail": "invalid Content-Length"}, status_code=400)
+    elif "chunked" in request.headers.get("transfer-encoding", "").lower():
+        # A chunked request carries no Content-Length, so the check above sees
+        # nothing and the body streams in unbounded -- one request can push this
+        # single-process app into swap or OOM.
+        #
+        # Buffer it ourselves up to the same ceiling and replay it downstream.
+        # An earlier attempt raised from inside a wrapped receive() instead;
+        # that breaks the ASGI contract -- the exception surfaces from anyio as
+        # "object _BodyTooLarge can't be used in 'await' expression" and takes
+        # 30 unrelated tests with it. Buffering keeps the contract intact, and
+        # the memory it costs is bounded by the cap, which is the whole point.
+        body = b""
+        while True:
+            message = await request.receive()
+            if message.get("type") == "http.disconnect":
+                return _JSONResponse({"detail": "client disconnected"}, status_code=400)
+            body += message.get("body", b"")
+            if len(body) > REQUEST_BODY_MAX_BYTES:
+                return _JSONResponse(
+                    {"detail": f"request body exceeds {REQUEST_BODY_MAX_BYTES // (1024*1024)}MB"},
+                    status_code=413,
+                )
+            if not message.get("more_body", False):
+                break
+
+        async def _replay() -> dict:
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        request._receive = _replay
+
     return await call_next(request)
 
 
@@ -547,10 +578,28 @@ async def confirm_2fa(req: Confirm2FARequest, user: User = Depends(auth.get_curr
     return {"recovery_codes": codes}
 
 
+class Disable2FARequest(BaseModel):
+    password: str = ""
+
+
 @app.post("/api/auth/2fa/disable")
-async def disable_2fa_endpoint(user: User = Depends(auth.get_current_user)):
+async def disable_2fa_endpoint(req: Disable2FARequest,
+                               user: User = Depends(require_full_auth)):
+    """Removing a second factor is exactly the action a stolen session would
+    want, so it is not something a session alone should authorise.
+
+    Two changes over the original: require_full_auth rather than
+    get_current_user (a half-authenticated session must not reach this at
+    all), and the current password, matching what /2fa/setup already demands
+    to RE-initialise. Enabling 2FA needs no password because the session
+    already proves identity and there is nothing yet to protect; disabling it
+    destroys a protection, which is the asymmetry.
+    """
     if user.role == "admin":
         raise HTTPException(403, "2FA cannot be disabled on the admin account")
+    row = await auth.get_user_by_id(app.state.auth_pool, user.id)
+    if not req.password or not auth.verify_password(req.password, row["password_hash"]):
+        raise HTTPException(403, "current password required to disable 2FA")
     await auth.disable_totp(app.state.auth_pool, user.id)
     return {"ok": True}
 
@@ -843,6 +892,12 @@ class CreateTaskRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     text: str
+
+
+# Ceiling on a single resume top-up. Not a policy about total spend --
+# just a bound on one request, so a typo or a hostile value cannot remove
+# the budget ceiling in one call.
+_MAX_BUDGET_TOPUP_USD = 100.0
 
 
 class ResumeTaskRequest(BaseModel):
@@ -2688,6 +2743,14 @@ async def resume_task(task_id: str, req: ResumeTaskRequest, user: User = Depends
         # investigation and likely land on the same premature conclusion.
         raise HTTPException(400, "resuming a done task requires a message telling it what to do next")
 
+    # A bare float let a negative value shrink the ceiling below what has
+    # already been spent (making the guard fire immediately and look like a
+    # crash) and let an enormous one defeat the budget entirely. Bound it to a
+    # sane top-up range; the field is a *delta*, not a new total.
+    if not (0 < req.additional_budget_usd <= _MAX_BUDGET_TOPUP_USD):
+        raise HTTPException(
+            400, f"additional_budget_usd must be greater than 0 and at most "
+                 f"${_MAX_BUDGET_TOPUP_USD:.2f}")
     new_budget = values["budget_usd"] + req.additional_budget_usd
     # max_iterations is set once at task creation (40) and, unlike
     # budget_usd, was never bumped on resume -- every work<->verify_and_ship
@@ -3381,6 +3444,27 @@ async def restart_services(req: SaveEnvKeysRequest, user: User = Depends(require
     return {"restarted": out}
 
 
+def _tail_lines(path: Path, count: int, block: int = 64 * 1024) -> str:
+    """Last `count` lines without reading the whole file.
+
+    The consolidation log is appended to on every cron run and never rotated,
+    so a full read grows without bound -- and it happened on the event loop.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            end = fh.tell()
+            data = b""
+            while end > 0 and data.count(b"\n") <= count:
+                step = min(block, end)
+                end -= step
+                fh.seek(end)
+                data = fh.read(step) + data
+        return "\n".join(data.decode(errors="replace").splitlines()[-count:])
+    except OSError as e:
+        return f"(could not read {path}: {e})"
+
+
 @app.get("/api/consolidation/status")
 async def consolidation_status(user: User = Depends(require_full_auth)):
     """Last nightly memory-consolidation run: when, and whether it succeeded.
@@ -3401,7 +3485,7 @@ async def consolidation_status(user: User = Depends(require_full_auth)):
     # parse are reported as `stale_error` rather than swallowed into a verdict.
     payload: dict = {"ran_at": None, "ok": None, "exit_code": None, "stale": False, "tail": ""}
     try:
-        payload.update(json.loads(marker.read_text()))
+        payload.update(json.loads(await asyncio.to_thread(marker.read_text)))
     except FileNotFoundError:
         pass
     except Exception as e:  # noqa: BLE001
@@ -3419,7 +3503,11 @@ async def consolidation_status(user: User = Depends(require_full_auth)):
             payload["stale_error"] = f"could not parse ran_at: {e}"[:200]
 
     try:
-        payload["tail"] = "\n".join(log.read_text(errors="replace").splitlines()[-40:])
+        # to_thread, and only the tail: this log is never rotated, so
+        # read_text() pulled the WHOLE file into memory on the event loop --
+        # every other request stalled behind it, and the cost grew with the
+        # file. _tail_lines seeks from the end instead.
+        payload["tail"] = await asyncio.to_thread(_tail_lines, log, 40)
     except Exception:
         pass
     return payload
