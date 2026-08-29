@@ -21,7 +21,13 @@
     radial-gradient(38% 30% at 88% 10%, rgba(61, 219, 217, 0.10), transparent 70%),
     radial-gradient(50% 32% at 70% 96%, rgba(240, 180, 41, 0.06), transparent 72%);
   background-attachment: fixed;
+  /* `hidden` on one axis computes the other to `auto`, which makes this element
+     a scroll container -- and a scroll container ancestor silently disables
+     position: sticky on the nav inside it. `clip` does the same job without
+     creating one. The `hidden` line is the fallback for engines without clip;
+     there the nav just scrolls away rather than the page breaking. */
   overflow-x: hidden;
+  overflow-x: clip;
 }
 
 .landing :is(h1, h2, h3) {
@@ -47,7 +53,7 @@
      the fallback background is opaque enough to work without it. */
   background: rgba(13, 17, 36, 0.82);
   backdrop-filter: blur(14px) saturate(140%);
-  border-bottom: 1px solid transparent;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 @supports not (backdrop-filter: blur(1px)) {
