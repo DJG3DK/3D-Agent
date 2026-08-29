@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { deleteTask } from "../api";
+import { deletePlanningSession, deleteTask } from "../api";
 import type { CurrentUser, PlanningSessionMeta, TaskMeta } from "../types";
 import { CATEGORY_LABELS, CATEGORY_ORDER } from "../categories";
 import { BalanceStrip } from "./BalanceStrip";
@@ -44,6 +44,7 @@ interface Props {
   onSelectPlanning: (session: PlanningSessionMeta) => void;
   onNewPlanning: () => void;
   onDeleted: (taskId: string) => void;
+  onPlanningDeleted: (sessionId: string) => void;
   onLogout: () => void;
 }
 
@@ -88,7 +89,13 @@ function TaskRow({
   );
 }
 
-function PlanningRow({ s, selected, onSelect }: { s: PlanningSessionMeta; selected: boolean; onSelect: () => void }) {
+function PlanningRow({ s, selected, onSelect, onDelete, deleting }: {
+  s: PlanningSessionMeta;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete: (e: React.MouseEvent) => void;
+  deleting: boolean;
+}) {
   return (
     <div
       role="button"
@@ -99,7 +106,12 @@ function PlanningRow({ s, selected, onSelect }: { s: PlanningSessionMeta; select
     >
       <div className="sidebar-item-top">
         <RepoBadge repo={s.repo} />
-        <span className="sidebar-item-time">{relativeTime(s.updated_at)}</span>
+        <span className="sidebar-item-top-right">
+          <span className="sidebar-item-time">{relativeTime(s.updated_at)}</span>
+          <button className="sidebar-item-delete" title="Delete plan" disabled={deleting} onClick={onDelete}>
+            {deleting ? "…" : "×"}
+          </button>
+        </span>
       </div>
       <div className="sidebar-item-goal">{s.title || "New session"}</div>
       <div className="sidebar-item-bottom">
@@ -159,6 +171,7 @@ export function Sidebar({
   onSelectPlanning,
   onNewPlanning,
   onDeleted,
+  onPlanningDeleted,
   onLogout,
 }: Props) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -180,6 +193,26 @@ export function Sidebar({
     for (const ps of planningSessions) rs.add(ps.repo);
     return [...rs].sort();
   }, [tasks, planningSessions]);
+
+  async function handlePlanningDelete(e: React.MouseEvent, s: PlanningSessionMeta) {
+    e.stopPropagation();
+    const label = s.title || "New session";
+    if (!confirm(
+      `Delete this plan?\n\n"${label.slice(0, 80)}${label.length > 80 ? "…" : ""}"\n\n` +
+      `This removes the conversation and any saved plan. Archive instead if you might come back to it.`,
+    )) {
+      return;
+    }
+    setDeletingId(s.session_id);
+    try {
+      await deletePlanningSession(s.session_id);
+      onPlanningDeleted(s.session_id);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   async function handleDelete(e: React.MouseEvent, t: TaskMeta) {
     e.stopPropagation();
@@ -392,6 +425,8 @@ export function Sidebar({
                     s={s}
                     selected={s.session_id === selectedPlanningSessionId && view === "planning"}
                     onSelect={() => onSelectPlanning(s)}
+                    onDelete={(e) => handlePlanningDelete(e, s)}
+                    deleting={deletingId === s.session_id}
                   />
                 ))}
                 {CATEGORY_ORDER.map((cat) => {
@@ -415,6 +450,8 @@ export function Sidebar({
                               s={s}
                               selected={s.session_id === selectedPlanningSessionId && view === "planning"}
                               onSelect={() => onSelectPlanning(s)}
+                              onDelete={(e) => handlePlanningDelete(e, s)}
+                              deleting={deletingId === s.session_id}
                             />
                           ))}
                         </div>
@@ -438,6 +475,8 @@ export function Sidebar({
                             s={s}
                             selected={s.session_id === selectedPlanningSessionId && view === "planning"}
                             onSelect={() => onSelectPlanning(s)}
+                            onDelete={(e) => handlePlanningDelete(e, s)}
+                            deleting={deletingId === s.session_id}
                           />
                         ))}
                       </div>
