@@ -208,16 +208,31 @@ export function Sidebar({
     return { active, archived };
   }, [planningSessions, planningQuery, repoFilter]);
 
-  // A session gets its category at the same moment it gets a title (its
-  // first real message) -- one with no title yet has nothing to classify,
-  // so it's shown ungrouped up front instead of forced into a fake bucket.
-  const untitledPlanningSessions = useMemo(() => filteredSessions.active.filter((s) => !s.title), [filteredSessions.active]);
+  // A session stays in this ungrouped list until it has a SAVED PLAN, then
+  // settles into its category group.
+  //
+  // It used to move as soon as it got a title, i.e. after the very first
+  // reply -- which meant the sidebar reshuffled at the exact moment the
+  // operator was reading that reply, dropping the session next to an older
+  // one on the same subject that already had a "Build now" button. The flick
+  // plus the neighbouring button read as "your plan is ready" when the agent
+  // had actually just asked a question (operator report, 2026-08-29).
+  //
+  // Now the move happens once, when the session becomes buildable, so it
+  // means something. `plan_markdown` is the same field that gates the Build
+  // button, so the two can never disagree.
+  const inProgressPlanningSessions = useMemo(
+    () => filteredSessions.active.filter((s) => !s.plan_markdown),
+    [filteredSessions.active],
+  );
 
   const planningByCategory = useMemo(() => {
     const groups: Record<string, PlanningSessionMeta[]> = {};
     for (const cat of CATEGORY_ORDER) groups[cat] = [];
     for (const s of filteredSessions.active) {
-      if (!s.title) continue; // shown in the untitled group instead, never both places
+      // No saved plan -> it belongs to the in-progress list above, never both
+      // places (see inProgressPlanningSessions).
+      if (!s.plan_markdown) continue;
       groups[planningCategoryOf(s)].push(s);
     }
     return groups;
@@ -365,7 +380,13 @@ export function Sidebar({
               )}
               <div className="sidebar-scroll">
                 {filteredSessions.active.length === 0 && <div className="sidebar-empty">No planning sessions yet</div>}
-                {untitledPlanningSessions.map((s) => (
+                {inProgressPlanningSessions.length > 0 && (
+                  <div className="sidebar-section-head sidebar-section-head--plain">
+                    <span className="sidebar-category-label">In progress</span>
+                    <span className="sidebar-section-count">{inProgressPlanningSessions.length}</span>
+                  </div>
+                )}
+                {inProgressPlanningSessions.map((s) => (
                   <PlanningRow
                     key={s.session_id}
                     s={s}
