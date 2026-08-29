@@ -41,3 +41,7 @@ skills/local/
 # Per-deployment overrides for the review/deploy services: your repo paths,
 # credential filenames and real check commands. See the .example files.
 services/*/builtin-projects.local.js
+
+# Per-project SSH deploy keys (agent/deploy_keys.py). Private keys — never
+# committed, and the app has no endpoint that returns one.
+keys/

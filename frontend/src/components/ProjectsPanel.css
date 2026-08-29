@@ -156,3 +156,21 @@
   .wiz-input { min-width: 0; }
   .wiz-steps strong { min-width: 0; }
 }
+
+/* Configured projects expand to reveal per-project push access. */
+.wiz-existing-item { display: block; }
+.wiz-existing-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wiz-existing-row:hover { color: var(--text); }
+.wiz-existing-row svg { flex-shrink: 0; width: 13px; height: 13px; align-self: center; }

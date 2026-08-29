@@ -7,6 +7,7 @@ import {
   type ProvisionCandidate,
   type ProvisionStep,
 } from "../api";
+import { DeployKeyCard } from "./DeployKeyCard";
 import { Icon } from "./Icon";
 import "./ProjectsPanel.css";
 
@@ -65,6 +66,8 @@ export function ProjectsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<ProvisionStep[]>([]);
   const [doneMsg, setDoneMsg] = useState<string | null>(null);
+  // Which configured project has its push-access panel open.
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   // Per-candidate operator choices, keyed by list then value. Seeded from the
   // report's recommendation on first render of the review step.
@@ -161,9 +164,17 @@ export function ProjectsPanel() {
 
           <ul className="wiz-existing">
             {Object.entries(existing).map(([name, cfg]) => (
-              <li key={name}>
-                <strong>{name}</strong>
-                <code>{cfg.live}</code>
+              <li key={name} className="wiz-existing-item">
+                <button
+                  type="button"
+                  className="wiz-existing-row"
+                  onClick={() => setExpanded(expanded === name ? null : name)}
+                >
+                  <Icon name={expanded === name ? "chevronDown" : "chevronRight"} />
+                  <strong>{name}</strong>
+                  <code>{cfg.live}</code>
+                </button>
+                {expanded === name && <DeployKeyCard project={name} />}
               </li>
             ))}
             {!Object.keys(existing).length && <li className="wiz-empty">No projects configured yet.</li>}
@@ -264,6 +275,15 @@ export function ProjectsPanel() {
                 ))}
               </ul>
               {doneMsg && <p className="wiz-status">{doneMsg}</p>}
+              {report && steps.some((s) => s.step === "config" && s.ok) && (
+                <>
+                  <p className="wiz-status">
+                    Last step: give this project push access, so approved merges reach your
+                    remote. Merges work without it — they just stay local.
+                  </p>
+                  <DeployKeyCard project={report.name} />
+                </>
+              )}
               <div className="wiz-row wiz-row--end">
                 <button className="wiz-btn wiz-btn--primary" onClick={reset}>Done</button>
               </div>
