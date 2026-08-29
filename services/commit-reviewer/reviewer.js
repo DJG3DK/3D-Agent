@@ -411,7 +411,7 @@ async function setupWorktree(project, cfg, sha, base) {
     // tree too — landing back on live's copy of the package regardless of
     // what this worktree's own build produced. Seen live (2026-08-18): a
     // a monorepo project commit added a new shared-types export; the worktree's
-    // typecheck kept resolving @3dsteals/shared-types straight through to
+    // typecheck kept resolving that shared-types package straight through to
     // live's copy (which never received the export, since this hadn't
     // merged yet) and reported "still doesn't resolve" for 4 review rounds
     // in a row — not a real bug in the reviewed commit, a symlink chain

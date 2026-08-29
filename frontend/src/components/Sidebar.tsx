@@ -280,9 +280,8 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-logo">
-          {/* The real 3D Agent lockup -- the "3D" hexagonal mark shared with
-              the cryptobots brand plus the agent wordmark (operator ask
-              2026-08-28), replacing the placeholder diamond glyph. */}
+          {/* The 3D Agent lockup -- hexagonal "3D" mark plus the wordmark,
+              replacing the placeholder diamond glyph. */}
           {/* Imported through vite (not public/): the backend only mounts
               /assets/*, so a root-level file fell through to the SPA
               catch-all and served HTML as the image (seen live). Bundling
