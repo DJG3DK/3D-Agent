@@ -5,15 +5,23 @@
     <!-- viewport-fit=cover (audit M-21): without it env(safe-area-inset-*) is
          always 0 on iOS, making every --safe-* padding in the CSS inert. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <!-- Link preview (Open Graph). This page is a login-walled React app, so a
-         crawler sees only the shell — without these it previewed as the bare
-         word "Agent" with no image, which is what LinkedIn's Post Inspector
-         reported on 2026-08-25. Absolute URLs: a crawler has no page context to
-         resolve a relative one. The description says the dashboard is private
+    <!-- Link preview (Open Graph). Absolute URLs: a crawler has no page context
+         to resolve a relative one. The description says the dashboard is private
          and points at the repo, so nobody clicks through expecting to get in.
-         noindex because this is a private operator console, not a public page —
-         previews are unaffected, preview crawlers don't read robots directives. -->
-    <meta name="robots" content="noindex, nofollow" />
+
+         noindex was removed 2026-08-29: a signed-out visitor now gets a real
+         landing page rather than a password box, so there is a public page here
+         to index. (It only ever suppressed search listings — preview crawlers
+         don't read robots directives, so link previews were never affected.)
+
+         meta description, because that is the line a search result actually
+         shows; og:description is for social cards and is not a substitute.
+
+         canonical, because the SPA fallback answers 200 with this same shell for
+         every path under /v2/. Without it a crawler can index an unbounded set
+         of URLs that are all in fact this one page. -->
+    <meta name="description" content="An autonomous coding agent that plans, writes and verifies real changes against your own repositories — running the project's real test suite and passing an independent review gate before anything merges. Source available." />
+    <link rel="canonical" href="https://agent.3dcryptobots.com/v2/" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="3D-Agent" />
     <meta property="og:title" content="3D-Agent — autonomous coding agent" />
