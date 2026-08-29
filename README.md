@@ -16,6 +16,80 @@ The agent targets a fixed set of local projects (`PROJECTS` in `agent/config.py`
 live repo at `/home/agent-workspaces/<project>`, on a per-task branch `agent/<task-id>` — one task per project
 at a time, enforced by an in-process lock.
 
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/modelspage1.png" alt="Model Configuration — build pipeline roles"></td>
+<td width="50%"><img src="docs/screenshots/settingspane1.png" alt="Settings — agent behaviour controls"></td>
+</tr>
+<tr>
+<td><b>Every role is a named alias you can repin.</b> Planner, coder, investigator and
+test-writer each show live pricing and an optional pinned provider, so a swap is one dropdown
+rather than a config edit.</td>
+<td><b>The two switches that decide how much rope the agent gets.</b> Auto mode lets a task
+finish unattended; final merge review keeps a human between an approved diff and your live
+repo. Each one spells out exactly what you give up.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/settingspane2.png" alt="Settings — notifications and configured projects"></td>
+<td><img src="docs/screenshots/analytics1.png" alt="Analytics — spend, outcomes and traces"></td>
+</tr>
+<tr>
+<td><b>Add a project by pointing at a directory.</b> Each one becomes a live repo plus a git
+worktree the agent builds in. Telegram alerts are optional and cover task events and service
+restarts.</td>
+<td><b>What it cost and what came of it.</b> Spend against your API balance, average fix cycles
+per task, and outcomes split into done / stopped / escalated.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/modelspage2.png" alt="Reviewer role with model capability probes"></td>
+<td><img src="docs/screenshots/analytics3.png" alt="Analytics — model usage by role"></td>
+</tr>
+<tr>
+<td><b>Models are probed, not assumed.</b> Each role lists which models actually pass its
+requirements — strict tool calling, structured output — so you find out here rather than
+mid-task.</td>
+<td><b>Where the tokens actually went.</b> Per-role model usage with call counts, tokens and
+average latency, so an expensive role is visible instead of inferred.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/settingspane3.png" alt="Settings — API keys and integrations"></td>
+<td><img src="docs/screenshots/analytics4.png" alt="Analytics — tool call reliability"></td>
+</tr>
+<tr>
+<td><b>Credentials live in .env, never the database.</b> Existing values come back masked to
+their last four characters — enough to confirm which key is installed, not enough to use it.</td>
+<td><b>Tool reliability over time.</b> Errors broken down by tool, so a model that has started
+failing a specific call shows up as a trend rather than a bad day.</td>
+</tr>
+</table>
+
+<details>
+<summary>More: planning-chat routing, support roles, SMTP</summary>
+
+<img src="docs/screenshots/modelspage3.png" alt="Planning chat model tiers">
+
+Planning chat runs a two-tier split — an everyday model plus a harder one that a turn escalates
+into — with a classifier deciding which. The escalation is sticky upward within a session, so a
+short follow-up can't quietly downgrade the model mid-plan.
+
+<img src="docs/screenshots/modelspage4.png" alt="Support roles">
+
+Support roles: summarizer, vision, cartographer and consolidator, each with the capability badges
+its job requires.
+
+<img src="docs/screenshots/analytics2.png" alt="Cost by category and by repo">
+
+Spend broken down by the kind of work (bug fix, feature, UI, performance) and by repo, so you can
+see which category is actually eating the budget.
+
+<img src="docs/screenshots/settingspane4.png" alt="SMTP settings">
+
+Outbound mail is optional and only used for password resets.
+
+</details>
+
 ## Contents
 
 - [How a build task runs](#how-a-build-task-runs)
@@ -533,6 +607,13 @@ layer of defense.
   any task orphaned by the restart: same checkpoint, no replanning, +40 iteration headroom, no
   added budget. A task that made no progress since its last auto-resume is left for a human
   instead of crash-looping. Escalated and operator-stopped tasks are never auto-resumed.
+
+## Contributing & security
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, house style, and what makes a useful PR.
+- [SECURITY.md](SECURITY.md) — private vulnerability reporting, the threat model (what the agent
+  is *supposed* to be able to do vs. what counts as a real vulnerability), and how to deploy
+  safely.
 
 ## License
 

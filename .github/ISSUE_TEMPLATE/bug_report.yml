@@ -1,0 +1,65 @@
+name: Bug report
+description: Something behaved differently than documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Not for security issues** — see [SECURITY.md](../blob/main/SECURITY.md)
+        for private reporting.
+
+        This project runs across several services. The version/environment
+        fields below are not bureaucracy: most reports turn out to hinge on a
+        Postgres version, a Node version, or Docker not being usable by the
+        running user.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what happened, what you expected instead.
+      placeholder: |
+        I onboarded a project at /srv/app and clicked Create.
+        The worktree step failed with "…".
+        I expected it to create /home/agent-workspaces/app.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows it.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: |
+        Server log lines, the failing command's output, browser console errors.
+        **Redact secrets** — API keys, deploy keys, `.env` contents, tokens.
+      render: shell
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - Install / setup
+        - Project onboarding
+        - Running a task (plan/build/verify)
+        - Review gate or merge/deploy
+        - Planning chat
+        - Dashboard / UI
+        - Model routing
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Output of:
+        `python3 -V; node -v; docker --version; psql --version; git rev-parse --short HEAD`
+      render: shell
+    validations:
+      required: true
