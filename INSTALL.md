@@ -397,6 +397,20 @@ body, not the app. Add `client_max_body_size 64m;` to the proxy location and
 reload. You can tell which layer refused it: nginx returns an HTML error page,
 the app returns JSON.
 
+**Uploads then fail with 500 instead.** Raising the size limit can expose a
+second problem underneath it: nginx buffers request bodies larger than
+`client_body_buffer_size` to disk, and if its temp directory is not writable by
+the worker user the request dies with a 500. Check the error log for
+`open() "/var/lib/nginx/body/..." failed (13: Permission denied)`, then give
+the worker user ownership — on Debian/Ubuntu:
+
+```bash
+sudo chown -R www-data:www-data /var/lib/nginx/body /var/lib/nginx/proxy
+sudo systemctl reload nginx
+```
+
+(`grep ^user /etc/nginx/nginx.conf` tells you which user to use.)
+
 **Behind a reverse proxy: long tasks die partway with no error.** The proxy's
 read timeout is cutting an idle-but-live connection. nginx defaults to 60s;
 this needs `proxy_read_timeout 1800s;`.
