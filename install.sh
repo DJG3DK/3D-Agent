@@ -289,7 +289,37 @@ elif command -v psql >/dev/null 2>&1; then
         fi
     fi
 else
-    note "psql not found — skipping the connection check (the agent will create its own tables on first start)"
+    # No psql, but Postgres is REQUIRED -- the app opens a connection pool at
+    # startup and retries forever if it cannot reach one, so it never begins
+    # serving and the log fills with "Connection refused". Saying "skipping
+    # the check" here read as reassurance; a clean Debian 13 container
+    # installed perfectly, then hung exactly this way.
+    #
+    # A plain TCP connect needs no client tools, so reachability can still be
+    # verified. Python is already installed by this point.
+    DB_HOST=$(printf '%s' "$PG_DSN" | sed -n 's|.*://\([^@/]*@\)\{0,1\}\([^:/?]*\).*|\2|p')
+    DB_PORT=$(printf '%s' "$PG_DSN" | sed -n 's|.*://[^/]*:\([0-9]\{1,\}\).*|\1|p')
+    DB_HOST=${DB_HOST:-127.0.0.1}
+    DB_PORT=${DB_PORT:-5432}
+    if python3 -c "
+import socket, sys
+try:
+    socket.create_connection(('$DB_HOST', $DB_PORT), timeout=5).close()
+except OSError:
+    sys.exit(1)
+" 2>/dev/null; then
+        ok "Postgres is reachable at $DB_HOST:$DB_PORT"
+        note "database '$DB_NAME' must exist; the agent creates its own TABLES but not the database"
+    else
+        warn "NOTHING IS LISTENING at $DB_HOST:$DB_PORT — Postgres is required."
+        warn "The agent will not start without it: it retries the connection"
+        warn "pool forever and never begins serving."
+        note "Debian/Ubuntu:  sudo apt install postgresql && sudo -u postgres createdb $DB_NAME"
+        note "Arch/CachyOS:   sudo pacman -S postgresql"
+        note "                sudo -u postgres initdb -D /var/lib/postgres/data   # Arch does NOT do this for you"
+        note "                sudo systemctl enable --now postgresql"
+        note "                sudo -u postgres createdb $DB_NAME"
+    fi
 fi
 
 # --- 5. python --------------------------------------------------------------
@@ -372,7 +402,11 @@ say "  The dashboard binds 127.0.0.1:$API_PORT_VALUE and is not reachable from o
 say "  this host. Two supported ways in:"
 say ""
 say "    1. SSH tunnel (nothing to configure, nothing exposed):"
-say "         ssh -L 8100:127.0.0.1:8100 $(id -un)@$(hostname -f 2>/dev/null || hostname)"
+# `hostname` is not installed on a minimal Arch image (it lives in
+# inetutils), so this printed "root@" with nothing after it. Fall back
+# through the options that need no package, then to a placeholder.
+_HOST=$(hostname -f 2>/dev/null || hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo "your-server")
+say "         ssh -L 8100:127.0.0.1:8100 $(id -un)@${_HOST}"
 say "    2. A domain with HTTPS, set up below."
 say ""
 
@@ -408,15 +442,45 @@ else
 fi
 
 if [ -n "$DOMAIN" ] && [ "$DRY_RUN" != "1" ]; then
+    # Package manager and nginx layout both differ by distro. Debian has
+    # sites-available/sites-enabled; Arch has neither -- its nginx.conf
+    # includes conf.d/*.conf and nothing else, so writing a "vhost" into a
+    # sites-available directory that does not exist would silently do nothing.
+    if command -v apt-get >/dev/null 2>&1; then
+        PKG_INSTALL="sudo apt-get install -y -qq"
+        PKG_NGINX="nginx certbot python3-certbot-nginx"
+        NGINX_LAYOUT="debian"
+    elif command -v pacman >/dev/null 2>&1; then
+        PKG_INSTALL="sudo pacman -S --noconfirm --needed"
+        PKG_NGINX="nginx certbot certbot-nginx"
+        NGINX_LAYOUT="archlinux"
+    elif command -v dnf >/dev/null 2>&1; then
+        PKG_INSTALL="sudo dnf install -y"
+        PKG_NGINX="nginx certbot python3-certbot-nginx"
+        NGINX_LAYOUT="archlinux"   # conf.d layout, same as Arch
+    else
+        PKG_INSTALL=""
+        NGINX_LAYOUT="archlinux"
+    fi
+
     for pkg_cmd in nginx certbot; do
         command -v "$pkg_cmd" >/dev/null 2>&1 || {
-            say "  installing $pkg_cmd…"
-            sudo apt-get install -y -qq nginx certbot python3-certbot-nginx >/dev/null 2>&1 \
-                || warn "could not install $pkg_cmd automatically — install it and re-run"
+            if [ -n "$PKG_INSTALL" ]; then
+                say "  installing $pkg_cmd…"
+                $PKG_INSTALL $PKG_NGINX >/dev/null 2>&1 \
+                    || warn "could not install $pkg_cmd automatically — install it and re-run"
+            else
+                warn "no supported package manager found — install nginx and certbot, then re-run"
+            fi
         }
     done
 
-    VHOST=/etc/nginx/sites-available/3d-agent
+    if [ "$NGINX_LAYOUT" = "debian" ]; then
+        VHOST=/etc/nginx/sites-available/3d-agent
+    else
+        VHOST=/etc/nginx/conf.d/3d-agent.conf
+        sudo mkdir -p /etc/nginx/conf.d
+    fi
     if [ -f "$VHOST" ]; then
         ok "nginx vhost already exists at $VHOST — leaving it alone"
     else
@@ -463,12 +527,19 @@ server {
 }
 NGINX
         sudo mkdir -p /var/www/html
-        sudo ln -sfn "$VHOST" /etc/nginx/sites-enabled/3d-agent
+        # conf.d is included directly; only Debian needs the enable symlink.
+        if [ "$NGINX_LAYOUT" = "debian" ]; then
+            sudo ln -sfn "$VHOST" /etc/nginx/sites-enabled/3d-agent
+        fi
         if sudo nginx -t >/dev/null 2>&1; then
             sudo systemctl reload nginx && ok "nginx vhost installed for $DOMAIN"
         else
             warn "nginx config test failed — run 'sudo nginx -t' to see why"
-            sudo rm -f /etc/nginx/sites-enabled/3d-agent
+            if [ "$NGINX_LAYOUT" = "debian" ]; then
+                sudo rm -f /etc/nginx/sites-enabled/3d-agent
+            else
+                sudo rm -f "$VHOST"
+            fi
             DOMAIN=""
         fi
     fi
