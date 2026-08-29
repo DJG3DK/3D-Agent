@@ -434,6 +434,11 @@ server {
     location ^~ /.well-known/acme-challenge/ { root /var/www/html; allow all; }
 
     location / {
+        # nginx's 1MB default rejects file attachments with its OWN 413 page
+        # before the request reaches the app, so uploads fail no matter what
+        # the app's own limits say.
+        client_max_body_size 64m;
+
         proxy_pass         http://127.0.0.1:$API_PORT_VALUE/;
         proxy_http_version 1.1;
 

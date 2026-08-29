@@ -157,6 +157,10 @@ application bug rather than a proxy problem:
 - **Long read/send timeouts (`1800s`).** A planning turn or a build step can run
   for many minutes with no bytes crossing the connection. nginx's 60-second
   default kills those mid-run, and the task dies with nothing explaining why.
+- **`client_max_body_size 64m`.** nginx caps request bodies at 1MB by default
+  and rejects anything larger with its own 413 page, before the request reaches
+  the app — so attaching a screenshot fails with "upload failed: 413" while the
+  app's real limit (25MB per file) is never consulted.
 
 One more, for correctness: use
 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. That variable
@@ -387,6 +391,11 @@ doesn't decode to 16/24/32 raw bytes — see §6.
 proxy is dropping the WebSocket upgrade. Add `proxy_set_header Upgrade
 $http_upgrade;` and `proxy_set_header Connection "upgrade";` — see
 [§3a](#3a-reaching-it-from-another-machine).
+
+**"upload failed: 413" when attaching a file.** The proxy is rejecting the
+body, not the app. Add `client_max_body_size 64m;` to the proxy location and
+reload. You can tell which layer refused it: nginx returns an HTML error page,
+the app returns JSON.
 
 **Behind a reverse proxy: long tasks die partway with no error.** The proxy's
 read timeout is cutting an idle-but-live connection. nginx defaults to 60s;
