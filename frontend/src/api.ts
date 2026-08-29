@@ -734,3 +734,56 @@ export async function provisionProject(body: {
   if (!res.ok) throw new Error(await errText(res));
   return res.json();
 }
+
+// --- Per-project deploy keys (agent/deploy_keys.py) -------------------------
+
+export interface DeployKeyStatus {
+  project: string;
+  installed: boolean;
+  fingerprint: string | null;
+  public_key: string | null;
+  remote: string | null;
+  remote_kind: "ssh" | "https" | null;
+  configured: boolean;
+  detail: string | null;
+}
+
+export async function getDeployKey(project: string): Promise<DeployKeyStatus> {
+  const res = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/deploy-key`);
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export async function installDeployKey(project: string, privateKey: string): Promise<DeployKeyStatus> {
+  const res = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/deploy-key`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ private_key: privateKey }),
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export async function generateDeployKey(project: string): Promise<DeployKeyStatus> {
+  const res = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/deploy-key/generate`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export async function testDeployKey(project: string): Promise<{ ok: boolean; detail: string }> {
+  const res = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/deploy-key/test`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export async function deleteDeployKey(project: string): Promise<DeployKeyStatus> {
+  const res = await apiFetch(`${API_BASE}/projects/${encodeURIComponent(project)}/deploy-key`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}

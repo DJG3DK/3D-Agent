@@ -3217,6 +3217,93 @@ async def provision_project_endpoint(req: ProvisionProjectRequest, user: User = 
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-project deploy keys (agent/deploy_keys.py)
+#
+# The private half is write-only across this API: it can be installed,
+# generated and replaced, and its fingerprint/public half can be read, but
+# nothing here returns it. Admin-only, like every other credential surface.
+# ---------------------------------------------------------------------------
+
+
+class DeployKeyRequest(BaseModel):
+    private_key: str
+
+
+def _project_live_or_404(name: str) -> str:
+    project = PROJECTS.get(name)
+    if not project:
+        raise HTTPException(404, f"unknown project {name!r}")
+    return project["live"]
+
+
+@app.get("/api/projects/{name}/deploy-key")
+async def get_deploy_key_status(name: str, user: User = Depends(require_full_auth)):
+    auth.require_admin(user)
+    from agent import deploy_keys  # noqa: PLC0415
+
+    live = _project_live_or_404(name)
+    try:
+        return (await asyncio.to_thread(deploy_keys.status, name, live)).to_dict()
+    except deploy_keys.DeployKeyError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/projects/{name}/deploy-key")
+async def install_deploy_key(name: str, req: DeployKeyRequest,
+                             user: User = Depends(require_full_auth)):
+    """Install a pasted private key for this project."""
+    auth.require_admin(user)
+    from agent import deploy_keys  # noqa: PLC0415
+
+    live = _project_live_or_404(name)
+    try:
+        st = await asyncio.to_thread(deploy_keys.install_key, name, live, req.private_key)
+    except deploy_keys.DeployKeyError as e:
+        raise HTTPException(400, str(e))
+    logger.info("deploy key installed for %s by %s", name, user.email)
+    return st.to_dict()
+
+
+@app.post("/api/projects/{name}/deploy-key/generate")
+async def generate_deploy_key(name: str, user: User = Depends(require_full_auth)):
+    """Mint a fresh keypair. Preferred over pasting: the operator never
+    handles the private half -- they copy the public half out of the
+    response and register it on the remote."""
+    auth.require_admin(user)
+    from agent import deploy_keys  # noqa: PLC0415
+
+    live = _project_live_or_404(name)
+    try:
+        st = await asyncio.to_thread(deploy_keys.generate_key, name, live)
+    except deploy_keys.DeployKeyError as e:
+        raise HTTPException(400, str(e))
+    logger.info("deploy key generated for %s by %s", name, user.email)
+    return st.to_dict()
+
+
+@app.post("/api/projects/{name}/deploy-key/test")
+async def test_deploy_key(name: str, user: User = Depends(require_full_auth)):
+    """Contact the remote exactly the way the post-merge push will."""
+    auth.require_admin(user)
+    from agent import deploy_keys  # noqa: PLC0415
+
+    live = _project_live_or_404(name)
+    ok, detail = await asyncio.to_thread(deploy_keys.check_remote, name, live)
+    return {"ok": ok, "detail": detail}
+
+
+@app.delete("/api/projects/{name}/deploy-key")
+async def delete_deploy_key(name: str, user: User = Depends(require_full_auth)):
+    auth.require_admin(user)
+    from agent import deploy_keys  # noqa: PLC0415
+
+    live = _project_live_or_404(name)
+    st = await asyncio.to_thread(deploy_keys.remove_key, name, live)
+    logger.info("deploy key removed for %s by %s", name, user.email)
+    return st.to_dict()
+
+
 class SaveEnvKeysRequest(BaseModel):
     updates: dict[str, str]
 

@@ -104,6 +104,39 @@ Onboarding creates a **git worktree** of your repo under
 `AGENT_SANDBOX_ROOT`. The agent works there on a per-task branch and never
 commits to your working checkout.
 
+### Push access (deploy keys)
+
+The agent itself never pushes — `git push` is on its blocked-command list.
+After you approve a merge, the review service pushes from your project's live
+checkout, and that push is **best-effort**: if it cannot authenticate, the
+merge and the deploy still succeed and your remote quietly stays behind.
+
+So each project gets its own **deploy key** — an SSH key scoped to one
+repository rather than your whole account. Expand a project under
+Settings → Projects and use **Push access**:
+
+1. **Generate key** — the server mints an ed25519 keypair. You never handle
+   the private half.
+2. Copy the public key it shows you.
+3. On GitHub: repo → **Settings** → **Deploy keys** → **Add deploy key**,
+   paste it, and tick **Allow write access**. Without that box the key can
+   read but every push is rejected.
+4. **Test connection** — this runs `git ls-remote` exactly as the push will,
+   so a green result means the push will authenticate.
+
+You can paste an existing private key instead. It must have **no passphrase**,
+since nothing can type one during an unattended push; a passphrase-protected
+key is rejected at paste time rather than failing at merge time.
+
+Keys are stored under `keys/` with `0600` permissions (gitignored), and each
+one is wired to a single repo via that repo's own `core.sshCommand` — so one
+project's key never signs another's git operations. No endpoint ever returns a
+private key.
+
+If your `origin` is an **HTTPS** URL, an SSH deploy key cannot authenticate
+it; switch the remote to SSH or configure a credential helper on the host. The
+panel tells you which case you're in.
+
 ---
 
 ## 5. Read this before onboarding a project
