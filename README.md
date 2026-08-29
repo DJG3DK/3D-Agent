@@ -499,8 +499,9 @@ All config is environment variables, loaded from `.env` (see `agent/config.py`).
 | `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM` | Outbound mail for password-reset codes. Sending is optional, but all five keys must be present and `SMTP_PORT` must be numeric — see [INSTALL.md §6a](INSTALL.md#6a-email-smtp) |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional tracing |
 | `LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S` | Streaming chunk timeout |
-| `AGENT_PROJECT_ROOTS` | Colon-separated roots a project may be onboarded from (default `/home`). Onboarding grants an agent bash and write access to what it points at, so this is the boundary — the admin check is only *who may ask* |
+| `AGENT_PROJECT_ROOTS` | Colon-separated roots a project may be onboarded from (default `/home` — the parent of *all* home directories, not just yours; narrow it). Onboarding grants an agent bash and write access to what it points at, so this is the boundary — the admin check is only *who may ask* |
 | `AGENT_SANDBOX_ROOT` | Where agent worktrees are created (default `/home/agent-workspaces`). Server-owned: never accepted from a request |
+| `REVIEW_CONTROL_SECRET` | Shared secret authorising merge/deploy between the agent and the review service. The two sides read it from different files and must match — `install.sh` generates it into both. See [INSTALL.md](INSTALL.md) |
 
 `projects.json` (gitignored; `projects.example.json` is the template) lists the repos this
 deployment can target and each one's sandbox/live checkout paths.

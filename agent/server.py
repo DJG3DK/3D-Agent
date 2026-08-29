@@ -3434,9 +3434,19 @@ async def probe_forced_tool_call(user: User = Depends(require_full_auth)):
         proc.kill()
         raise HTTPException(status_code=504, detail="probe timed out")
 
+    if proc.returncode != 0:
+        # audit H5: this used to return HTTP 200 with the traceback tucked into
+        # `tail`, so a probe that never ran looked to the dashboard exactly
+        # like one that found nothing. A failed probe is an error.
+        tail = (out or b"").decode(errors="replace")[-1200:]
+        logger.error("forced-tool-call probe exited %s: %s", proc.returncode, tail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"probe failed (exit {proc.returncode}). Last output:\n{tail}")
+
     stats = model_config.forced_tool_call_stats()
     return {
-        "ok": proc.returncode == 0,
+        "ok": True,
         **stats,
         "catalog_size": len(await model_config.fetch_model_catalog()),
         "tail": (out or b"").decode(errors="replace")[-1200:],

@@ -30,6 +30,14 @@ not. For a role that must not break, pin the provider explicitly in the router
   python scripts/probe_forced_tool_call.py --all               # full sweep
   python scripts/probe_forced_tool_call.py --models a/b,c/d    # specific ones
 """
+import sys
+from pathlib import Path
+
+# The only script here that lacked this: without it `python scripts/...` dies
+# with ModuleNotFoundError: No module named 'agent', including when the
+# dashboard's "Refresh model list" button spawns it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse, asyncio, json, os, sys, time
 from pathlib import Path
 
