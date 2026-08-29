@@ -1,0 +1,29 @@
+// OPTIONAL per-deployment overrides for the deploy service (merge + restart).
+//
+// Projects onboarded through the wizard get their build/pm2 config written to
+// projects.json automatically; this file is for the steps a wizard cannot
+// infer. Copy to builtin-projects.local.js (gitignored); it WINS over
+// projects.json.
+'use strict';
+
+module.exports = {
+  'my-service': {
+    live: '/home/my-service',
+    workspace: '/home/agent-workspaces/my-service',
+
+    // pm2 apps restarted after a successful merge.
+    pm2Apps: ['my-service'],
+
+    // Build steps run IN ORDER against `live` BEFORE the restart. A bare pm2
+    // restart re-runs whatever is already compiled on disk, so a project with
+    // a build step deploys stale code without this. Real failures this
+    // catches: a merged package.json whose new dependency was never installed
+    // (crash loop on MODULE_NOT_FOUND), a stale generated DB client that made
+    // the build typecheck against the wrong schema, and a prerender step whose
+    // absence emptied a production catalog.
+    build: [
+      { dir: '.', cmd: 'npm', args: ['install', '--no-audit', '--no-fund'] },
+      { dir: '.', cmd: 'npm', args: ['run', 'build'] },
+    ],
+  },
+};

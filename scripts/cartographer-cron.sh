@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Scheduled codebase mapping. Cheap by design: each project's inventory is
+# hashed and the model is only called when a repo's structure actually changed,
+# so running this often costs nothing on quiet days.
+# Resolve the installation from this script's own location, so the same file
+# works wherever the repo is checked out (AGENT_HOME overrides).
+AGENT_HOME="${AGENT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+LOG="${AGENT_LOG_DIR:-$AGENT_HOME/data}/cartographer.log"
+MARK="$AGENT_HOME/data/last_cartography.json"
+
+cd "$AGENT_HOME" || exit 1
+START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+{ echo "=== $START ==="; .venv/bin/python scripts/run_cartographer.py; } >> "$LOG" 2>&1
+RC=$?
+
+mkdir -p "$(dirname "$MARK")" "$(dirname "$LOG")"
+printf '{"ran_at":"%s","exit_code":%d,"ok":%s}\n' \
+    "$START" "$RC" "$([ $RC -eq 0 ] && echo true || echo false)" > "$MARK"
+
+# Same contract as the consolidation cron: fail loudly. A silent exit 0 on a
+# broken run is exactly how the nightly consolidation stayed dead for months.
+if [ $RC -ne 0 ]; then
+    echo "[cartographer] FAILED at $START (exit $RC) — see $LOG" >&2
+fi
+exit $RC

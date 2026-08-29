@@ -1,0 +1,27 @@
+#!/bin/bash
+# Cron wrapper for nightly memory consolidation.
+#
+# The bare cron line appended to a log and exited 0 regardless, so a broken run
+# was indistinguishable from a healthy one -- which is how a provider
+# incompatibility silently skipped consolidation for months. This keeps the log
+# but also leaves a failure marker the dashboard/health check can see, and
+# preserves the non-zero exit so cron's own mailer has something to report.
+# Resolve the installation from this script's own location, so the same file
+# works wherever the repo is checked out (AGENT_HOME overrides).
+AGENT_HOME="${AGENT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+LOG="${AGENT_LOG_DIR:-$AGENT_HOME/data}/consolidation.log"
+MARK="$AGENT_HOME/data/last_consolidation.json"
+
+cd "$AGENT_HOME" || exit 1
+START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+{ echo "=== $START ==="; .venv/bin/python scripts/run_consolidation.py; } >> "$LOG" 2>&1
+RC=$?
+
+mkdir -p "$(dirname "$MARK")" "$(dirname "$LOG")"
+printf '{"ran_at":"%s","exit_code":%d,"ok":%s}\n' \
+    "$START" "$RC" "$([ $RC -eq 0 ] && echo true || echo false)" > "$MARK"
+
+if [ $RC -ne 0 ]; then
+    echo "[consolidation] FAILED at $START (exit $RC) — see $LOG" >&2
+fi
+exit $RC

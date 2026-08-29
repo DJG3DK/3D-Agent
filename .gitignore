@@ -1,0 +1,43 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local run artifacts
+*.log
+projects.json
+.agent-git-excludes
+
+# Per-deployment memory content (see memory/*.example.md for the template)
+memory/*.md
+!memory/*.example.md
+
+# Timestamped edit backups (kept outside the repo in /root/repo-backups)
+*.bak
+*.bak-*
+
+# Runtime data written by the app, regenerable and deployment-specific:
+#   last_consolidation.json  - written by scripts/consolidation-cron.sh each run
+#   forced_tool_call_probe.json - cache of scripts/probe_forced_tool_call.py.
+#     The verdicts that MATTER are committed as STRICT_VERIFIED_OK/BAD in
+#     agent/model_config.py; this file is just the full sweep, refreshable from
+#     the Models page.
+data/
+
+# Deployment-specific skills: your own domain knowledge (architecture notes for
+# YOUR repos, house rules, anything naming your systems). Kept out of the
+# public repo the same way projects.json and memory/*.md are.
+# skills/vendor/ (third-party, license-pinned) and the examples DO ship.
+skills/local/
+!skills/local/README.md
+!skills/local/targets.example.json
+
+# Per-deployment overrides for the review/deploy services: your repo paths,
+# credential filenames and real check commands. See the .example files.
+services/*/builtin-projects.local.js

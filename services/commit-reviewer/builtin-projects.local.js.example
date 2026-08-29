@@ -1,0 +1,41 @@
+// OPTIONAL per-deployment overrides for the commit reviewer.
+//
+// You usually do NOT need this file: projects onboarded through the dashboard
+// wizard (Settings -> Projects) or scripts/add_project.py write everything the
+// reviewer needs into projects.json. This exists for the parts no wizard can
+// derive -- knowledge you only get by having been burned.
+//
+// Copy to builtin-projects.local.js (gitignored). Anything here WINS over
+// projects.json (see services/shared/projects-config.js).
+'use strict';
+
+module.exports = {
+  'my-service': {
+    live: '/home/my-service',
+    sandbox: '/home/agent-workspaces/my-service',
+
+    // Gitignored files the suite needs, copied from the LIVE checkout into the
+    // review worktree. Without them, suites that need real credentials either
+    // fail or -- worse -- silently self-skip and the check is hollow.
+    secretFiles: ['.env', 'config/keys.json'],
+
+    // Gitignored fixture directories, bind-mounted read-only.
+    readOnlyMounts: ['data/fixtures'],
+
+    // Where node_modules must exist (monorepo packages need their own).
+    nodeModulesDirs: ['.', 'apps/api'],
+
+    // The commands that decide whether a commit is READY.
+    //
+    // Be deliberate about what goes here. `npm test` may chain scripts that
+    // talk to a LIVE service: this project's own deployment had two that made
+    // real HTTP calls to the running production app, one of which POSTed
+    // orders. An unattended reviewer running those acts on production for zero
+    // review signal. Prefer a `test:review` script the repo itself defines as
+    // safe in a detached checkout.
+    checks: [
+      { name: 'lint', dir: '.', cmd: 'npm', args: ['run', 'lint'] },
+      { name: 'test', dir: '.', cmd: 'npm', args: ['run', 'test:review'], timeoutMs: 900000 },
+    ],
+  },
+};

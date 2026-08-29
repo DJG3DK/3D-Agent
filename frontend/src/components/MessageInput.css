@@ -1,0 +1,83 @@
+.message-input {
+  display: flex;
+  gap: 10px;
+  padding: 14px 28px 18px;
+  border-top: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, transparent, rgba(139, 124, 246, 0.03));
+  flex-shrink: 0;
+  justify-content: center;
+  /* Keeps the send button pinned to the bottom of the box as the textarea
+     grows upward, instead of floating in the vertical middle of a tall one. */
+  align-items: flex-end;
+}
+
+.message-input textarea {
+  flex: 1;
+  max-width: 760px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  /* Exactly half the 42px one-line height, so a single-line box is still the
+     same pill it always was; as it grows this reads as a rounded rect rather
+     than stretching into a lozenge the way border-radius: 999px would. */
+  border-radius: 21px;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13.5px;
+  padding: 11px 18px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  /* Height is driven by AutoGrowTextarea; a drag handle would fight it. */
+  resize: none;
+  line-height: 1.45;
+  display: block;
+  /* Long unbroken input (a pasted URL or path) wraps instead of forcing the
+     whole composer to scroll sideways. */
+  overflow-wrap: anywhere;
+}
+
+.message-input textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.message-input textarea:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.message-input button {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #5d8bf4);
+  color: #fff;
+  border: none;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.message-input button:hover:not(:disabled) {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.message-input button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ===== mobile ===== */
+@media (max-width: 768px) {
+  .message-input {
+    padding: 10px 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  /* 16px minimum -- anything smaller makes iOS Safari zoom the page on focus */
+  .message-input textarea { font-size: 16px; padding: 10px 16px; }
+}

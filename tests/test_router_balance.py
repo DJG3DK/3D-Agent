@@ -1,0 +1,64 @@
+"""Regression test for the API balance vanishing from the sidebar
+(2026-08-24): the frontend used to call /_review/api/router/balance
+directly, and nginx still gates that path behind the OLD shared
+reverse-proxy login -- one this app's own users no longer
+necessarily have now that /v2/ dropped that redundant gate in favor of
+agent/auth.py's own login. GET /api/router-balance proxies through this
+app's own backend (and its own auth) instead."""
+
+from fastapi.testclient import TestClient
+
+import agent.server as srv
+from agent.auth import User
+
+_FAKE_USER = User(id=1, email="test@example.com", role="admin", allowed_repos=None, totp_enabled=True, must_change_password=False)
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class _FakeAsyncClient:
+    last_url = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def get(self, url):
+        _FakeAsyncClient.last_url = url
+        return _FakeResponse({"totalCredits": 165, "totalUsage": 143.4, "remaining": 21.6})
+
+
+def test_router_balance_proxies_the_review_service_through_this_apps_own_auth(monkeypatch):
+    monkeypatch.setitem(srv.app.dependency_overrides, srv.require_full_auth, lambda: _FAKE_USER)
+    monkeypatch.setattr(srv.httpx, "AsyncClient", _FakeAsyncClient)
+    client = TestClient(srv.app)
+
+    res = client.get("/api/router-balance")
+
+    assert res.status_code == 200
+    assert res.json() == {"totalCredits": 165, "totalUsage": 143.4, "remaining": 21.6}
+    assert _FakeAsyncClient.last_url == f"{srv._REVIEW_SERVICE_BASE_URL}/api/router/balance"
+
+
+def test_router_balance_requires_login(monkeypatch):
+    srv.app.dependency_overrides.pop(srv.require_full_auth, None)
+    monkeypatch.setattr(srv.app.state, "auth_pool", None, raising=False)
+    client = TestClient(srv.app)
+
+    res = client.get("/api/router-balance")
+
+    assert res.status_code in (401, 403)

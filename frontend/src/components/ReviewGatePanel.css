@@ -1,0 +1,131 @@
+.review-panel {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 16px 18px;
+  margin-top: 16px;
+  animation: fadeSlideIn 0.4s ease both;
+}
+
+.review-panel.ready {
+  border-color: rgba(63, 185, 80, 0.35);
+  background: rgba(63, 185, 80, 0.06);
+}
+
+.review-panel.needs-fixes {
+  border-color: rgba(248, 81, 73, 0.35);
+  background: rgba(248, 81, 73, 0.06);
+}
+
+.review-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.review-verdict {
+  font-weight: 700;
+  font-size: 13.5px;
+}
+
+.review-panel.ready .review-verdict {
+  color: var(--green);
+}
+
+.review-panel.needs-fixes .review-verdict {
+  color: var(--red);
+}
+
+.review-source {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.review-summary {
+  font-size: 13.5px;
+  color: var(--text-dim);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.review-findings {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-findings li {
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding-left: 14px;
+  border-left: 2px solid var(--border);
+}
+
+.finding-blocking {
+  border-left-color: var(--red);
+}
+
+.finding-minor {
+  border-left-color: var(--amber);
+}
+
+.finding-severity {
+  display: inline-block;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-right: 8px;
+  color: var(--text-faint);
+}
+
+.finding-file {
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  margin-right: 8px;
+}
+
+.finding-issue {
+  color: var(--text-dim);
+}
+
+/* collapsed strip — old verdict stays one click away while the task runs */
+.review-panel--collapsed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 12px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+.review-collapsed-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.review-collapsed-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.review-hide-btn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}

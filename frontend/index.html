@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover (audit M-21): without it env(safe-area-inset-*) is
+         always 0 on iOS, making every --safe-* padding in the CSS inert. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- Link preview (Open Graph). This page is a login-walled React app, so a
+         crawler sees only the shell — without these it previewed as the bare
+         word "Agent" with no image, which is what LinkedIn's Post Inspector
+         reported on 2026-08-25. Absolute URLs: a crawler has no page context to
+         resolve a relative one. The description says the dashboard is private
+         and points at the repo, so nobody clicks through expecting to get in.
+         noindex because this is a private operator console, not a public page —
+         previews are unaffected, preview crawlers don't read robots directives. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="3D-Agent" />
+    <meta property="og:title" content="3D-Agent — autonomous coding agent" />
+    <meta property="og:description" content="Takes a plain-English goal, plans the work, writes the code, re-runs the project's real test suite, and ships it. Nothing merges on the agent's say-so: a second model reviews every diff in an isolated worktree first." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="3D-Agent — autonomous coding agent" />
+    <meta name="twitter:description" content="Plans, writes, tests and ships code to real repos — with an independent review gate before anything merges." />
+    <!-- RELATIVE hrefs on purpose: this app is
+         served under /v2/ behind nginx, and a root-absolute /favicon.ico gets
+         302-redirected to /v2/ and comes back as HTML. Relative resolves to
+         /v2/favicon.ico, which the backend serves from dist/. No SVG icon —
+         the hand-drawn cube SVG is illegible at 16px (it shipped as mush on
+         the demo site until replaced with these hand-tuned PNGs). -->
+    <link rel="icon" href="favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
+    <title>Agent</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

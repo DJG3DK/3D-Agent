@@ -1,0 +1,53 @@
+.akey-group { margin-top: var(--s5); }
+.akey-group:first-of-type { margin-top: var(--s4); }
+.akey-group-title {
+  font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--text-faint); margin: 0 0 var(--s2);
+}
+.akey-row {
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.akey-row:last-child { border-bottom: 0; }
+.akey-head { display: flex; align-items: center; gap: var(--s2); }
+.akey-label { font-size: var(--fs-base); font-weight: 600; }
+.akey-state {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  padding: 2px 6px; border-radius: var(--radius-xs); border: 1px solid;
+}
+.akey-state.is-set   { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); background: var(--green-bg); }
+.akey-state.is-unset { color: var(--text-faint); border-color: var(--border); }
+.akey-name { display: block; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); margin-top: 2px; }
+.akey-help { font-size: var(--fs-sm); color: var(--text-dim); line-height: 1.45; margin: var(--s2) 0 var(--s2); max-width: 62ch; }
+.akey-input-row { display: flex; gap: var(--s2); align-items: center; }
+.akey-input {
+  flex: 1; min-width: 0;
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text);
+  font-family: var(--font-mono);
+  /* 16px minimum or mobile browsers zoom the viewport on focus. */
+  font-size: 16px; min-height: var(--tap); padding: 0 var(--s3);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.akey-input:hover { border-color: var(--border-strong); }
+.akey-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.akey-input::placeholder { font-family: var(--font-ui); color: var(--text-faint); }
+
+.akey-restart {
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  margin-top: var(--s4); padding: var(--s3);
+  background: var(--amber-bg); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
+  border-radius: var(--radius-sm); color: var(--amber); font-size: var(--fs-sm); line-height: 1.5;
+}
+.akey-restart span { flex: 1; min-width: 220px; color: var(--text-dim); }
+.akey-restart strong { color: var(--amber); }
+.akey-actions { margin-top: var(--s4); }
+
+@media (max-width: 768px) {
+  .akey-help { max-width: none; }
+  .akey-restart { flex-direction: column; align-items: flex-start; }
+}
+
+/* per-group cards (2026-08-28): the group is now the card, so the old
+   in-card group title is retired; rows inherit the card's padding. */
+.settings-grid .akey-group { margin-top: 0; }

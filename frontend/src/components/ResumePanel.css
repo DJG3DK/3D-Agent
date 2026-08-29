@@ -1,0 +1,100 @@
+.resume-panel {
+  border: 1px solid rgba(227, 167, 46, 0.35);
+  background: rgba(227, 167, 46, 0.06);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-top: 16px;
+  animation: fadeSlideIn 0.4s ease both;
+}
+
+.resume-panel-header {
+  font-size: 13.5px;
+  color: var(--amber);
+  margin-bottom: 6px;
+}
+
+.resume-panel-sub {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 0 0 14px;
+}
+
+.resume-panel-row {
+  margin-bottom: 10px;
+}
+
+.resume-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 240px;
+}
+
+.resume-field span {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.resume-field input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  padding: 8px 10px;
+}
+
+.resume-field input:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+
+.resume-message {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  padding: 10px 12px;
+  resize: vertical;
+  margin-bottom: 12px;
+}
+
+.resume-message:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+
+.resume-error {
+  color: var(--red);
+  font-size: 12.5px;
+  margin-bottom: 10px;
+}
+
+.resume-btn {
+  padding: 9px 16px;
+  background: var(--amber);
+  color: #1a1305;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.resume-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.resume-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

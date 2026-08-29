@@ -1,0 +1,188 @@
+import { useEffect, useState } from "react";
+import { createUser, deleteUser, listUsers, updateUserAccess } from "../api";
+import type { CurrentUser } from "../types";
+import "./UsersPanel.css";
+
+interface Props {
+  repos: string[];
+}
+
+function NewUserForm({ repos, onCreated }: { repos: string[]; onCreated: () => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [createdPassword, setCreatedPassword] = useState<string | null>(null);
+
+  function toggleRepo(repo: string) {
+    setSelectedRepos((prev) => {
+      const next = new Set(prev);
+      if (next.has(repo)) next.delete(repo);
+      else next.add(repo);
+      return next;
+    });
+  }
+
+  async function handleCreate() {
+    if (!email.trim() || !password || selectedRepos.size === 0) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await createUser(email.trim(), password, "user", Array.from(selectedRepos));
+      setCreatedPassword(password);
+      setEmail("");
+      setPassword("");
+      setSelectedRepos(new Set());
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to create user");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="users-new-form">
+      <h2>Add a user</h2>
+      <label className="form-field">
+        <span>Email</span>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="off" />
+      </label>
+      <label className="form-field">
+        <span>Initial password</span>
+        <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="at least 12 characters" autoComplete="new-password" />
+      </label>
+      <div className="form-field">
+        <span>Projects they can see and work on</span>
+        <div className="repo-checkbox-list">
+          {repos.map((r) => (
+            <label key={r} className="repo-checkbox">
+              <input type="checkbox" checked={selectedRepos.has(r)} onChange={() => toggleRepo(r)} />
+              {r}
+            </label>
+          ))}
+        </div>
+      </div>
+      {error && <div className="error-banner">{error}</div>}
+      {createdPassword && (
+        <div className="users-created-note">
+          User created. They'll be asked to set their own password on first login.
+        </div>
+      )}
+      <button
+        className="btn btn-primary"
+        disabled={submitting || !email.trim() || !password || selectedRepos.size === 0}
+        onClick={handleCreate}
+      >
+        {submitting ? "Creating..." : "Create user"}
+      </button>
+    </div>
+  );
+}
+
+function UserRow({ user, repos, onChanged }: { user: CurrentUser; repos: string[]; onChanged: () => void }) {
+  const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set(user.allowed_repos ?? []));
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const changed = JSON.stringify([...selectedRepos].sort()) !== JSON.stringify([...(user.allowed_repos ?? [])].sort());
+
+  function toggleRepo(repo: string) {
+    setSelectedRepos((prev) => {
+      const next = new Set(prev);
+      if (next.has(repo)) next.delete(repo);
+      else next.add(repo);
+      return next;
+    });
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await updateUserAccess(user.id, Array.from(selectedRepos));
+      onChanged();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirm(`Remove ${user.email}? They'll be logged out immediately.`)) return;
+    setDeleting(true);
+    try {
+      await deleteUser(user.id);
+      onChanged();
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (user.role === "admin") {
+    return (
+      <div className="users-row">
+        <div className="users-row-email">
+          {user.email} <span className="users-admin-badge">admin</span>
+        </div>
+        <div className="users-row-access">full access to every project</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="users-row">
+      <div className="users-row-email">{user.email}</div>
+      <div className="repo-checkbox-list">
+        {repos.map((r) => (
+          <label key={r} className="repo-checkbox">
+            <input type="checkbox" checked={selectedRepos.has(r)} onChange={() => toggleRepo(r)} />
+            {r}
+          </label>
+        ))}
+      </div>
+      <div className="users-row-actions">
+        {changed && (
+          <button className="btn btn-primary btn-small" disabled={saving} onClick={handleSave}>
+            {saving ? "Saving..." : "Save access"}
+          </button>
+        )}
+        <button className="users-delete-btn" disabled={deleting} onClick={handleDelete}>
+          {deleting ? "…" : "Remove"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function UsersPanel({ repos }: Props) {
+  const [users, setUsers] = useState<CurrentUser[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  async function refresh() {
+    try {
+      setUsers(await listUsers());
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  return (
+    <div className="users-panel">
+      <h1 className="users-title">Users</h1>
+      <p className="users-sub">Control who can log in and which projects they can see and work on.</p>
+
+      {!loading && (
+        <div className="users-list">
+          {users.map((u) => (
+            <UserRow key={u.id} user={u} repos={repos} onChanged={refresh} />
+          ))}
+        </div>
+      )}
+
+      <NewUserForm repos={repos} onCreated={refresh} />
+    </div>
+  );
+}

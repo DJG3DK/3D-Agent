@@ -1,0 +1,158 @@
+/* Project onboarding wizard. Inherits the settings-card shell; everything
+   here is the wizard's own body. Warned items are visually distinct because
+   the whole point of the review step is that the operator NOTICES them. */
+
+.wiz-card { grid-column: 1 / -1; }
+
+.wiz-existing {
+  list-style: none;
+  margin: 12px 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wiz-existing li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+.wiz-existing code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.wiz-empty { color: var(--text-faint); font-size: 12.5px; }
+
+.wiz-row { display: flex; gap: 8px; align-items: center; }
+.wiz-row--end { justify-content: flex-end; margin-top: 16px; }
+
+.wiz-input {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-inset, rgba(128, 128, 128, 0.12));
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.wiz-input:focus { outline: none; border-color: var(--accent); }
+
+.wiz-btn {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.wiz-btn:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.wiz-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d1124;
+  font-weight: 600;
+}
+.wiz-btn--primary:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent); }
+.wiz-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.wiz-status { font-size: 13px; color: var(--text-dim); margin: 12px 0 0; }
+.wiz-error, .wiz-blocker {
+  font-size: 12.5px;
+  color: #ffb4ae;
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin: 10px 0 0;
+}
+.wiz-warn {
+  font-size: 12.5px;
+  color: var(--amber, #f0b429);
+  background: rgba(240, 180, 41, 0.08);
+  border: 1px solid rgba(240, 180, 41, 0.28);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin: 10px 0 0;
+}
+
+.wiz-review { margin-top: 14px; }
+
+.wiz-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+}
+.wiz-path { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+
+.wiz-group { margin-top: 18px; }
+.wiz-group-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.wiz-group-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.wiz-group-help { font-size: 11.5px; color: var(--text-faint); }
+
+.wiz-cmd {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 5px 0;
+  font-size: 12.5px;
+}
+.wiz-cmd code {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  min-width: 88px;
+}
+.wiz-cmd span { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); }
+
+.wiz-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.wiz-item:hover { background: var(--surface-hover); }
+.wiz-item input { margin-top: 3px; flex-shrink: 0; }
+.wiz-item-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.wiz-item-value { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); }
+.wiz-item-reason { font-size: 11.5px; color: var(--text-faint); }
+
+/* A candidate we could not verify. Bordered and tinted so it cannot be
+   skimmed past — this is the class of item that, wrongly enabled, lets an
+   unattended agent run commands against production. */
+.wiz-item--warn {
+  border-color: rgba(240, 180, 41, 0.35);
+  background: rgba(240, 180, 41, 0.06);
+}
+.wiz-item-warning {
+  font-size: 11.5px;
+  color: var(--amber, #f0b429);
+  line-height: 1.45;
+}
+
+.wiz-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.wiz-steps li { display: flex; gap: 9px; align-items: baseline; font-size: 12.5px; }
+.wiz-steps li.ok > span:first-child { color: var(--green, #22c55e); }
+.wiz-steps li.bad > span:first-child { color: var(--red, #f85149); }
+.wiz-steps strong { min-width: 104px; }
+.wiz-step-detail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .wiz-row { flex-wrap: wrap; }
+  .wiz-input { min-width: 0; }
+  .wiz-steps strong { min-width: 0; }
+}

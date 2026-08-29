@@ -1,0 +1,527 @@
+import { useMemo, useState } from "react";
+import { deleteTask } from "../api";
+import type { CurrentUser, PlanningSessionMeta, TaskMeta } from "../types";
+import { CATEGORY_LABELS, CATEGORY_ORDER } from "../categories";
+import { BalanceStrip } from "./BalanceStrip";
+import { RepoBadge } from "./RepoBadge";
+import { StatusBadge } from "./StatusBadge";
+import "./Sidebar.css";
+import logoUrl from "../assets/3d-agent-logo.png";
+import { Icon } from "./Icon";
+
+function relativeTime(ts: number): string {
+  const diffMs = Date.now() - ts * 1000;
+  const s = Math.max(0, Math.floor(diffMs / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+function categoryOf(t: TaskMeta): string {
+  return t.category && CATEGORY_ORDER.includes(t.category) ? t.category : "other";
+}
+
+function planningCategoryOf(s: PlanningSessionMeta): string {
+  return s.category && CATEGORY_ORDER.includes(s.category) ? s.category : "other";
+}
+
+interface Props {
+  tasks: TaskMeta[];
+  selectedTaskId: string | null;
+  planningSessions: PlanningSessionMeta[];
+  selectedPlanningSessionId: string | null;
+  view: "new-task" | "task" | "analytics" | "models" | "planning" | "users" | "settings";
+  user: CurrentUser;
+  onSelect: (task: TaskMeta) => void;
+  onNewTask: () => void;
+  onAnalytics: () => void;
+  onModels: () => void;
+  onUsers: () => void;
+  onSettings: () => void;
+  onSelectPlanning: (session: PlanningSessionMeta) => void;
+  onNewPlanning: () => void;
+  onDeleted: (taskId: string) => void;
+  onLogout: () => void;
+}
+
+function TaskRow({
+  t,
+  selected,
+  onSelect,
+  onDelete,
+  deleting,
+}: {
+  t: TaskMeta;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete: (e: React.MouseEvent) => void;
+  deleting: boolean;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={`sidebar-item ${selected ? "selected" : ""}`}
+      onClick={onSelect}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect()}
+    >
+      <div className="sidebar-item-top">
+        <RepoBadge repo={t.repo} />
+        <span className="sidebar-item-top-right">
+          <span className="sidebar-item-time">{relativeTime(t.created_at)}</span>
+          {t.status !== "running" && (
+            <button className="sidebar-item-delete" title="Delete task" disabled={deleting} onClick={onDelete}>
+              {deleting ? "…" : "×"}
+            </button>
+          )}
+        </span>
+      </div>
+      <div className="sidebar-item-goal">{t.goal}</div>
+      <div className="sidebar-item-bottom">
+        <StatusBadge status={t.status} />
+        {t.cost_so_far !== undefined && <span className="sidebar-item-cost">${t.cost_so_far.toFixed(2)}</span>}
+      </div>
+    </div>
+  );
+}
+
+function PlanningRow({ s, selected, onSelect }: { s: PlanningSessionMeta; selected: boolean; onSelect: () => void }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={`sidebar-item ${selected ? "selected" : ""}`}
+      onClick={onSelect}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect()}
+    >
+      <div className="sidebar-item-top">
+        <RepoBadge repo={s.repo} />
+        <span className="sidebar-item-time">{relativeTime(s.updated_at)}</span>
+      </div>
+      <div className="sidebar-item-goal">{s.title || "New session"}</div>
+      <div className="sidebar-item-bottom">
+        {s.plan_markdown && <span className="sidebar-plan-dot" title="Has a saved plan" />}
+        <span className="sidebar-item-cost">${s.cost_usd.toFixed(3)}</span>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({
+  label,
+  count,
+  open,
+  onToggle,
+  action,
+}: {
+  label: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="sidebar-section-head" role="button" tabIndex={0} onClick={onToggle}
+         onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onToggle())}>
+      <span className={`sidebar-chevron ${open ? "open" : ""}`}>▸</span>
+      <span className="sidebar-section-label">{label}</span>
+      <span className="sidebar-section-count">{count}</span>
+      {action && (
+        <span
+          className="sidebar-section-action"
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
+          {action}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function Sidebar({
+  tasks,
+  selectedTaskId,
+  planningSessions,
+  selectedPlanningSessionId,
+  view,
+  user,
+  onSelect,
+  onNewTask,
+  onAnalytics,
+  onModels,
+  onUsers,
+  onSettings,
+  onSelectPlanning,
+  onNewPlanning,
+  onDeleted,
+  onLogout,
+}: Props) {
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [planningOpen, setPlanningOpen] = useState(true);
+  const [buildingOpen, setBuildingOpen] = useState(true);
+  const [planningQuery, setPlanningQuery] = useState("");
+  const [buildingQuery, setBuildingQuery] = useState("");
+  const [manuallyExpanded, setManuallyExpanded] = useState<Set<string>>(new Set());
+  const [planningManuallyExpanded, setPlanningManuallyExpanded] = useState<Set<string>>(new Set());
+  const [archivedPlanningOpen, setArchivedPlanningOpen] = useState(false);
+  // Project separation (operator request 2026-08-27): one filter, applied to
+  // BOTH lists, rather than a second level of nesting inside the category
+  // groups -- the categories stay (they were their own request), and "show
+  // me one project" is a click instead of a fold hierarchy.
+  const [repoFilter, setRepoFilter] = useState<string | null>(null);
+  const knownRepos = useMemo(() => {
+    const rs = new Set<string>();
+    for (const t of tasks) rs.add(t.repo);
+    for (const ps of planningSessions) rs.add(ps.repo);
+    return [...rs].sort();
+  }, [tasks, planningSessions]);
+
+  async function handleDelete(e: React.MouseEvent, t: TaskMeta) {
+    e.stopPropagation();
+    if (t.status === "running") return; // backend refuses this anyway — button is disabled below
+    if (!confirm(`Delete this task from the list?\n\n"${t.goal.slice(0, 80)}${t.goal.length > 80 ? "…" : ""}"\n\nThis removes its full history — it can't be resumed after.`)) {
+      return;
+    }
+    setDeletingId(t.task_id);
+    try {
+      await deleteTask(t.task_id, t.repo);
+      onDeleted(t.task_id);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const filteredSessions = useMemo(() => {
+    const q = planningQuery.trim().toLowerCase();
+    const matches = (s: PlanningSessionMeta) =>
+      (!repoFilter || s.repo === repoFilter) &&
+      (!q || (s.title ?? "").toLowerCase().includes(q) || s.repo.toLowerCase().includes(q));
+    const active = planningSessions.filter((s) => !s.archived && matches(s));
+    const archived = planningSessions.filter((s) => s.archived && matches(s));
+    return { active, archived };
+  }, [planningSessions, planningQuery, repoFilter]);
+
+  // A session gets its category at the same moment it gets a title (its
+  // first real message) -- one with no title yet has nothing to classify,
+  // so it's shown ungrouped up front instead of forced into a fake bucket.
+  const untitledPlanningSessions = useMemo(() => filteredSessions.active.filter((s) => !s.title), [filteredSessions.active]);
+
+  const planningByCategory = useMemo(() => {
+    const groups: Record<string, PlanningSessionMeta[]> = {};
+    for (const cat of CATEGORY_ORDER) groups[cat] = [];
+    for (const s of filteredSessions.active) {
+      if (!s.title) continue; // shown in the untitled group instead, never both places
+      groups[planningCategoryOf(s)].push(s);
+    }
+    return groups;
+  }, [filteredSessions.active]);
+
+  function togglePlanningCategory(cat: string) {
+    setPlanningManuallyExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      return next;
+    });
+  }
+
+  // Running tasks get their own always-visible group instead of sitting
+  // inside a (possibly collapsed) category -- a page refresh resets which
+  // category was auto-expanded (that tracked the *selected* task, which
+  // resets too), so a running task could otherwise take real hunting to
+  // find again after nothing more than a reload.
+  const runningTasks = useMemo(() => {
+    const q = buildingQuery.trim().toLowerCase();
+    return tasks.filter((t) =>
+      t.status === "running" &&
+      (!repoFilter || t.repo === repoFilter) &&
+      (!q || t.goal.toLowerCase().includes(q) || t.repo.toLowerCase().includes(q)));
+  }, [tasks, buildingQuery, repoFilter]);
+
+  const byCategory = useMemo(() => {
+    const q = buildingQuery.trim().toLowerCase();
+    const groups: Record<string, TaskMeta[]> = {};
+    for (const cat of CATEGORY_ORDER) groups[cat] = [];
+    for (const t of tasks) {
+      if (t.status === "running") continue; // shown in the Running group instead, never both places
+      if (repoFilter && t.repo !== repoFilter) continue;
+      if (q && !t.goal.toLowerCase().includes(q) && !t.repo.toLowerCase().includes(q)) continue;
+      groups[categoryOf(t)].push(t);
+    }
+    return groups;
+  }, [tasks, buildingQuery, repoFilter]);
+
+  function toggleCategory(cat: string) {
+    setManuallyExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      return next;
+    });
+  }
+
+  const searching = buildingQuery.trim().length > 0;
+  const selectedCategory = view === "task" && selectedTaskId ? categoryOf(tasks.find((t) => t.task_id === selectedTaskId) ?? ({} as TaskMeta)) : null;
+
+  const planningSearching = planningQuery.trim().length > 0;
+  const selectedPlanningCategory =
+    view === "planning" && selectedPlanningSessionId
+      ? planningCategoryOf(planningSessions.find((s) => s.session_id === selectedPlanningSessionId) ?? ({} as PlanningSessionMeta))
+      : null;
+
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-header">
+        <div className="sidebar-logo">
+          {/* The real 3D Agent lockup -- the "3D" hexagonal mark shared with
+              the cryptobots brand plus the agent wordmark (operator ask
+              2026-08-28), replacing the placeholder diamond glyph. */}
+          {/* Imported through vite (not public/): the backend only mounts
+              /assets/*, so a root-level file fell through to the SPA
+              catch-all and served HTML as the image (seen live). Bundling
+              gives it a hashed /assets URL the existing mount serves. */}
+          <img className="sidebar-logo-img" src={logoUrl} alt="3D Agent" />
+        </div>
+        {/* Plan-first (operator decision 2026-08-28): "we do not go directly
+            to tasks... Planning chat should always happen first." The primary
+            action starts a planning session; Build Now hands the finished
+            plan to the build pipeline. The raw task composer stays reachable
+            from the Building section header for the rare direct case. */}
+        <button className="new-task-btn" onClick={onNewPlanning}>
+          <Icon name="plus" size={16} />
+          <span>New Plan</span>
+        </button>
+        {user.role === "admin" && (
+          <>
+            <button className={`analytics-nav-btn ${view === "analytics" ? "active" : ""}`} onClick={onAnalytics}>
+              <Icon name="chart" size={15} />
+              <span>Analytics</span>
+            </button>
+            <button className={`analytics-nav-btn ${view === "models" ? "active" : ""}`} onClick={onModels}>
+              <Icon name="cpu" size={15} />
+              <span>Models</span>
+            </button>
+            <button className={`analytics-nav-btn ${view === "users" ? "active" : ""}`} onClick={onUsers}>
+              <Icon name="users" size={15} />
+              <span>Users</span>
+            </button>
+          </>
+        )}
+        {/* Was the same ⚙ glyph as Models — two nav items with identical icons.
+            A cpu for the model pins, a cog for settings. */}
+        <button className={`analytics-nav-btn ${view === "settings" ? "active" : ""}`} onClick={onSettings}>
+          <Icon name="settings" size={15} />
+          <span>Settings</span>
+        </button>
+      </div>
+
+      <div className="sidebar-list">
+        {knownRepos.length > 1 && (
+          <div className="sidebar-repo-filter">
+            <button
+              className={`sidebar-repo-chip ${repoFilter === null ? "active" : ""}`}
+              onClick={() => setRepoFilter(null)}
+            >
+              All
+            </button>
+            {knownRepos.map((r) => (
+              <button
+                key={r}
+                className={`sidebar-repo-chip ${repoFilter === r ? "active" : ""}`}
+                onClick={() => setRepoFilter(repoFilter === r ? null : r)}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="sidebar-section">
+          <SectionHeader
+            label="Planning"
+            count={filteredSessions.active.length}
+            open={planningOpen}
+            onToggle={() => setPlanningOpen((o) => !o)}
+            action={
+              <button className="sidebar-section-new" onClick={onNewPlanning} title="New planning session">
+                +
+              </button>
+            }
+          />
+          {planningOpen && (
+            <div className="sidebar-section-body">
+              {planningSessions.length > 3 && (
+                <input
+                  className="sidebar-search"
+                  placeholder="Search planning..."
+                  value={planningQuery}
+                  onChange={(e) => setPlanningQuery(e.target.value)}
+                />
+              )}
+              <div className="sidebar-scroll">
+                {filteredSessions.active.length === 0 && <div className="sidebar-empty">No planning sessions yet</div>}
+                {untitledPlanningSessions.map((s) => (
+                  <PlanningRow
+                    key={s.session_id}
+                    s={s}
+                    selected={s.session_id === selectedPlanningSessionId && view === "planning"}
+                    onSelect={() => onSelectPlanning(s)}
+                  />
+                ))}
+                {CATEGORY_ORDER.map((cat) => {
+                  const items = planningByCategory[cat];
+                  if (items.length === 0 && !planningSearching) return null;
+                  const expanded = planningManuallyExpanded.has(cat) || planningSearching || selectedPlanningCategory === cat;
+                  return (
+                    <div key={cat} className="sidebar-category">
+                      <div className="sidebar-category-head" role="button" tabIndex={0} onClick={() => togglePlanningCategory(cat)}
+                           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), togglePlanningCategory(cat))}>
+                        <span className={`sidebar-chevron ${expanded ? "open" : ""}`}>▸</span>
+                        <span className="sidebar-category-label">{CATEGORY_LABELS[cat] ?? cat}</span>
+                        <span className="sidebar-section-count">{items.length}</span>
+                      </div>
+                      {expanded && (
+                        <div className="sidebar-category-body">
+                          {items.length === 0 && <div className="sidebar-empty sidebar-empty--small">no matches</div>}
+                          {items.map((s) => (
+                            <PlanningRow
+                              key={s.session_id}
+                              s={s}
+                              selected={s.session_id === selectedPlanningSessionId && view === "planning"}
+                              onSelect={() => onSelectPlanning(s)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {filteredSessions.archived.length > 0 && (
+                  <div className="sidebar-category">
+                    <div className="sidebar-category-head" role="button" tabIndex={0} onClick={() => setArchivedPlanningOpen((o) => !o)}
+                         onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setArchivedPlanningOpen((o) => !o))}>
+                      <span className={`sidebar-chevron ${archivedPlanningOpen ? "open" : ""}`}>▸</span>
+                      <span className="sidebar-category-label">Archived</span>
+                      <span className="sidebar-section-count">{filteredSessions.archived.length}</span>
+                    </div>
+                    {archivedPlanningOpen && (
+                      <div className="sidebar-category-body">
+                        {filteredSessions.archived.map((s) => (
+                          <PlanningRow
+                            key={s.session_id}
+                            s={s}
+                            selected={s.session_id === selectedPlanningSessionId && view === "planning"}
+                            onSelect={() => onSelectPlanning(s)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="sidebar-section">
+          <SectionHeader
+            label="Building"
+            count={tasks.length}
+            open={buildingOpen}
+            onToggle={() => setBuildingOpen((o) => !o)}
+            action={
+              <button className="sidebar-section-new" onClick={onNewTask} title="Start a build task directly (skips planning)">
+                +
+              </button>
+            }
+          />
+          {buildingOpen && (
+            <div className="sidebar-section-body">
+              {tasks.length > 5 && (
+                <input
+                  className="sidebar-search"
+                  placeholder="Search tasks..."
+                  value={buildingQuery}
+                  onChange={(e) => setBuildingQuery(e.target.value)}
+                />
+              )}
+              <div className="sidebar-scroll">
+                {tasks.length === 0 && <div className="sidebar-empty">No tasks yet</div>}
+                {runningTasks.length > 0 && (
+                  <div className="sidebar-category sidebar-running-group">
+                    <div className="sidebar-category-head sidebar-running-head">
+                      <span className="sidebar-running-dot" />
+                      <span className="sidebar-category-label">Running</span>
+                      <span className="sidebar-section-count">{runningTasks.length}</span>
+                    </div>
+                    <div className="sidebar-category-body">
+                      {runningTasks.map((t) => (
+                        <TaskRow
+                          key={t.task_id}
+                          t={t}
+                          selected={t.task_id === selectedTaskId && view === "task"}
+                          onSelect={() => onSelect(t)}
+                          onDelete={(e) => handleDelete(e, t)}
+                          deleting={deletingId === t.task_id}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {CATEGORY_ORDER.map((cat) => {
+                  const items = byCategory[cat];
+                  // Zero-filled taxonomy is useful in Analytics (a category is
+                  // a fixed concept worth always showing); here it would just
+                  // be dead weight in an already-long list, so an empty
+                  // category collapses away entirely unless a search is
+                  // active (searching shows the "0 matches" state instead).
+                  if (items.length === 0 && !searching) return null;
+                  const expanded = manuallyExpanded.has(cat) || searching || selectedCategory === cat;
+                  return (
+                    <div key={cat} className="sidebar-category">
+                      <div className="sidebar-category-head" role="button" tabIndex={0} onClick={() => toggleCategory(cat)}
+                           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCategory(cat))}>
+                        <span className={`sidebar-chevron ${expanded ? "open" : ""}`}>▸</span>
+                        <span className="sidebar-category-label">{CATEGORY_LABELS[cat] ?? cat}</span>
+                        <span className="sidebar-section-count">{items.length}</span>
+                      </div>
+                      {expanded && (
+                        <div className="sidebar-category-body">
+                          {items.length === 0 && <div className="sidebar-empty sidebar-empty--small">no matches</div>}
+                          {items.map((t) => (
+                            <TaskRow
+                              key={t.task_id}
+                              t={t}
+                              selected={t.task_id === selectedTaskId && view === "task"}
+                              onSelect={() => onSelect(t)}
+                              onDelete={(e) => handleDelete(e, t)}
+                              deleting={deletingId === t.task_id}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="sidebar-user-footer">
+        <span className="sidebar-user-email" title={user.email}>{user.email}</span>
+        <button className="sidebar-logout-btn" onClick={onLogout}>
+          Log out
+        </button>
+      </div>
+      <BalanceStrip />
+    </aside>
+  );
+}

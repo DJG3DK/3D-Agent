@@ -1,0 +1,143 @@
+.approval-card {
+  border: 1px solid rgba(227, 167, 46, 0.4);
+  background: rgba(227, 167, 46, 0.08);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-top: 16px;
+  animation: fadeSlideIn 0.4s ease both;
+}
+
+.approval-card-header {
+  font-size: 13.5px;
+  color: var(--amber);
+  margin-bottom: 12px;
+}
+
+.approval-card-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.approval-request {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.approval-request-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 6px;
+}
+
+.approval-request-description {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.approval-reject-message {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  padding: 10px 12px;
+  /* Height is managed by AutoGrowTextarea -- a manual drag handle would
+     fight it on the next keystroke. */
+  resize: none;
+  margin-bottom: 12px;
+}
+
+.approval-reject-message:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+
+.approval-error {
+  color: var(--red);
+  font-size: 12.5px;
+  margin-bottom: 10px;
+}
+
+.approval-card-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.approval-btn {
+  padding: 9px 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.approval-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.approval-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.approval-btn-approve {
+  background: var(--green);
+  color: #06210f;
+}
+
+.approval-btn-reject {
+  background: var(--red);
+  color: #2a0a0a;
+}
+
+.approval-btn-reject-outline {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+
+/* ask_user question variant */
+.approval-card--question { border-color: rgba(88, 166, 255, 0.45); }
+.approval-card--question .approval-card-header { color: var(--blue, #58a6ff); }
+.approval-question-text { font-family: var(--font-ui); font-size: 13.5px; white-space: pre-wrap; }
+.approval-answer-input {
+  width: 100%;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 16px; /* >=16px: prevents iOS focus zoom */
+  padding: 10px 12px;
+  margin-top: 10px;
+  /* Height is managed by AutoGrowTextarea -- a manual drag handle would
+     fight it on the next keystroke. */
+  resize: none;
+}
+.approval-answer-btn {
+  margin-top: 10px;
+  padding: 8px 22px;
+  background: var(--blue, #58a6ff);
+  color: #0a0d12;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+.approval-answer-btn:disabled { opacity: 0.4; cursor: not-allowed; }

@@ -1,0 +1,124 @@
+{
+  "era": "smart-router pools + classifier (pre-pinning)",
+  "window": {
+    "start": "2026-08-06T14:38:20.897129+00:00",
+    "end": "2026-08-20T12:45:00+00:00"
+  },
+  "note": "Adaptive 4-tier complexity routing for the coordinator; investigator/summarizer pinned to glm-5.2. Superseded 2026-08-20 12:45 UTC by fixed per-role pins (agent-planner/coder/investigator/summarizer/test-writer).",
+  "runs_scanned": 1243,
+  "rows": [
+    {
+      "role": "coordinator",
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "calls": 371,
+      "tokens_in": 8256433,
+      "tokens_out": 156780,
+      "est_cost_usd": 10.367
+    },
+    {
+      "role": "coordinator",
+      "model": "x-ai/grok-4.3",
+      "calls": 134,
+      "tokens_in": 2655439,
+      "tokens_out": 29640,
+      "est_cost_usd": 3.393
+    },
+    {
+      "role": "investigator",
+      "model": "glm-5.2",
+      "calls": 134,
+      "tokens_in": 1761030,
+      "tokens_out": 46758,
+      "est_cost_usd": 2.271
+    },
+    {
+      "role": "coordinator",
+      "model": "qwen/qwen3-coder-plus",
+      "calls": 129,
+      "tokens_in": 2725617,
+      "tokens_out": 27543,
+      "est_cost_usd": 1.861
+    },
+    {
+      "role": "summarizer",
+      "model": "glm-5.2",
+      "calls": 74,
+      "tokens_in": 856307,
+      "tokens_out": 157460,
+      "est_cost_usd": 1.608
+    },
+    {
+      "role": "coordinator",
+      "model": "amazon/nova-lite-v1",
+      "calls": 71,
+      "tokens_in": 1247592,
+      "tokens_out": 35339,
+      "est_cost_usd": 0.083
+    },
+    {
+      "role": "coordinator",
+      "model": "anthropic/claude-haiku-4.5",
+      "calls": 62,
+      "tokens_in": 1344136,
+      "tokens_out": 11049,
+      "est_cost_usd": 1.399
+    },
+    {
+      "role": "coordinator",
+      "model": "amazon/nova-micro-v1",
+      "calls": 59,
+      "tokens_in": 959455,
+      "tokens_out": 38089,
+      "est_cost_usd": 0.039
+    },
+    {
+      "role": "coordinator",
+      "model": "openai/gpt-4o-mini",
+      "calls": 50,
+      "tokens_in": 1080722,
+      "tokens_out": 15639,
+      "est_cost_usd": 0.171
+    },
+    {
+      "role": "coordinator",
+      "model": "z-ai/glm-5.2",
+      "calls": 38,
+      "tokens_in": 578235,
+      "tokens_out": 10588,
+      "est_cost_usd": 0.591
+    },
+    {
+      "role": "coordinator",
+      "model": "qwen/qwen3.7-max",
+      "calls": 37,
+      "tokens_in": 660346,
+      "tokens_out": 12768,
+      "est_cost_usd": 1.031
+    },
+    {
+      "role": "coordinator",
+      "model": "openai/gpt-5.3-codex",
+      "calls": 10,
+      "tokens_in": 207997,
+      "tokens_out": 2705,
+      "est_cost_usd": 0.402
+    },
+    {
+      "role": "coordinator",
+      "model": "moonshotai/kimi-k3",
+      "calls": 7,
+      "tokens_in": 136225,
+      "tokens_out": 976,
+      "est_cost_usd": 0.423
+    },
+    {
+      "role": "coordinator",
+      "model": "google/gemini-3.1-pro-preview",
+      "calls": 6,
+      "tokens_in": 149842,
+      "tokens_out": 2606,
+      "est_cost_usd": 0.331
+    }
+  ],
+  "total_est_cost_usd": 23.97
+}

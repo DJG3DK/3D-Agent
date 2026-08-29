@@ -1,0 +1,484 @@
+.model-config-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 36px 48px;
+}
+
+.model-config-view > * {
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.model-config-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+
+.model-config-sub {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 0 0 24px;
+}
+
+.model-config-loading {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.model-config-error {
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  color: var(--red);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.model-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.model-config-row {
+  display: grid;
+  /* Price column is auto-sized to its own content (via minmax's max
+     bound), not a fixed width -- pricing text length varies a lot per
+     model ("$0.048/1M in · $0.193/1M out" vs. "$1.75/1M in · $14.00/1M
+     out"), and a fixed width either clips longer strings or wastes space
+     on shorter ones. The picker column absorbs the space instead of the
+     price column overflowing the card. */
+  grid-template-columns: 160px minmax(0, 1fr) minmax(150px, auto) auto;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  transition: border-color 0.15s;
+}
+
+.model-config-row.changed {
+  border-color: var(--accent-dim);
+  background: var(--accent-glow);
+}
+
+.model-config-role {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.model-config-role-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.model-config-role-alias {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+/* Role capability chips — what the role needs from a model, shown next to the
+   picker so the requirement is visible at choosing time rather than after a
+   nightly job quietly stops working. */
+.model-config-role-caps { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
+
+.model-cap {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* The strict one: a forced tool call is what some providers reject in thinking
+   mode, so it reads as a constraint rather than a feature. */
+.model-cap--strict {
+  background: color-mix(in srgb, #e5a50a 16%, transparent);
+  color: #e5a50a;
+  border-color: color-mix(in srgb, #e5a50a 38%, transparent);
+}
+
+.model-cap--none { background: transparent; color: var(--text-faint); border-color: var(--border); }
+
+.model-config-role-note {
+  font-size: 11px; color: var(--text-dim); line-height: 1.4; margin-top: 4px; max-width: 46ch;
+}
+.model-config-role-note--dim { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+.model-config-role-warn {
+  font-size: 11px; color: #f26d6d; line-height: 1.4; margin-top: 4px; max-width: 46ch;
+}
+
+.model-config-probe-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 13px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.model-config-probe-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.model-config-probe-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.model-config-probe-note { font-size: 12px; color: var(--text-faint); align-self: center; }
+
+.model-config-price {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.model-config-pending-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(139, 124, 246, 0.18);
+  border-radius: 999px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+/* ── ModelPicker (searchable dropdown) ───────────────────────────────── */
+
+.model-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.model-picker-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.model-picker-trigger:hover {
+  border-color: var(--text-faint);
+}
+
+.model-picker-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker-caret {
+  color: var(--text-faint);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.model-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  animation: fadeSlideIn 0.12s ease-out;
+}
+
+.model-picker-search {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.model-picker-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.model-picker-option {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+  font-family: var(--font-ui);
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.model-picker-option:hover {
+  background: var(--surface);
+}
+
+.model-picker-option.selected {
+  background: var(--accent-glow);
+}
+
+.model-picker-option-name {
+  font-size: 13px;
+}
+
+.model-picker-option-price {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.model-picker-empty {
+  padding: 14px 12px;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ── Actions & restart-confirm modal ─────────────────────────────────── */
+
+.model-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.model-config-save-btn,
+.model-config-restart-btn {
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+
+.model-config-save-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.model-config-save-btn:disabled {
+  background: var(--surface-raised);
+  border-color: var(--border);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+.model-config-restart-btn {
+  background: var(--surface);
+  color: var(--amber);
+  border-color: rgba(227, 167, 46, 0.4);
+}
+
+.model-config-restart-btn:disabled {
+  color: var(--text-faint);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+.model-config-saved-note {
+  font-size: 12px;
+  color: var(--green);
+}
+
+.model-config-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.model-config-modal {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 24px;
+  max-width: 420px;
+  width: 90%;
+}
+
+.model-config-modal h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.model-config-modal p {
+  margin: 0 0 20px;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.model-config-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.model-config-modal-cancel-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.model-config-restart-confirm-btn {
+  background: var(--red);
+  border: 1px solid var(--red);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.model-config-restart-confirm-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 700px) {
+  .model-config-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .model-config-price {
+    text-align: left;
+  }
+}
+
+/* Dropdown meta row: how many models are listed, why the list is narrowed,
+   and the way out of that narrowing. Without the count it is impossible to
+   tell a restricted list from a short one. */
+.model-picker-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.model-picker-showall {
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.model-picker-showall:hover { background: var(--surface-hover); }
+.model-picker-showall:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ── grouped sections + provider pinning (2026-08-28) */
+.model-config-group { margin-bottom: 26px; }
+.model-config-group-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-faint);
+  margin: 0 0 10px;
+}
+.model-config-pickers { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+
+.provider-picker { position: relative; }
+.provider-picker-trigger {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.provider-picker-trigger--pinned {
+  border-style: solid;
+  color: var(--text);
+  border-color: var(--accent, #6c8cff);
+}
+.provider-picker-dropdown {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+}
+.provider-picker-option {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.provider-picker-option:hover { background: color-mix(in srgb, var(--accent, #6c8cff) 12%, transparent); }
+.provider-picker-option.active { background: color-mix(in srgb, var(--accent, #6c8cff) 18%, transparent); }
+.provider-picker-price { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.provider-picker-loading, .provider-picker-error { padding: 8px 10px; font-size: 12px; color: var(--text-faint); }
+.provider-picker-error { color: var(--red, #e05555); }
+
+/* pick-by-numbers metrics (2026-08-28) */
+.model-picker-option-name { display: flex; flex-direction: column; gap: 2px; }
+.model-picker-option-metrics { font-size: 10.5px; color: var(--text-faint); }
+.model-picker-option.selected .model-picker-option-metrics { color: var(--text-dim); }
+.provider-picker-metrics { display: block; font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }

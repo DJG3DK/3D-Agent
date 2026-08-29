@@ -1,0 +1,301 @@
+import { memo, useState } from "react";
+import type { LogEntry } from "../types";
+import "./ChatMessage.css";
+
+/**
+ * Classifies a raw LogEntry into a chat-shaped rendering. The stream's
+ * entries are heterogeneous (agent prose, tool calls, tool results, gate
+ * verdicts, operator nudges) — a chat UI needs each to look like what it IS
+ * rather than uniform boxed rows.
+ */
+type Kind = "agent" | "tool-call" | "tool-result" | "system" | "user";
+
+function classify(entry: LogEntry): Kind {
+  if (entry.node === "operator") return "user";
+  if (entry.node === "verify_and_ship") return "system";
+  const s = entry.summary;
+  if (s.startsWith("calling: ")) return "tool-call";
+  if (s.startsWith("tool result:")) return "tool-result";
+  if (s.startsWith("awaiting approval")) return "system";
+  return "agent";
+}
+
+/**
+ * Agent message content arrives as the Python repr of LangChain content
+ * blocks ("[{'type': 'text', 'text': '...'}]"). Extract the human text
+ * instead of showing the raw structure — the single biggest "ugly and
+ * boxed" complaint about the old view.
+ */
+export function cleanText(raw: string): string {
+  if (!raw) return "";
+  if (!raw.trimStart().startsWith("[{")) return raw;
+  const parts: string[] = [];
+  const re = /'text':\s*(['"])((?:[^\\]|\\.)*?)\1(?:,|\})/gs;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    parts.push(
+      m[2]
+        .replace(/\\n/g, "\n")
+        .replace(/\\'/g, "'")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\"),
+    );
+  }
+  if (parts.length) return parts.join("\n\n");
+  // Server-side truncation (detail is capped at 2000 chars) can cut the repr
+  // mid-string so the quote never closes and the strict regex finds nothing.
+  // Lenient fallback: strip the structural prefix/suffix and unescape.
+  const prefix = raw.match(/^\s*\[\{'type':\s*'text',\s*'text':\s*(['"])/);
+  if (prefix) {
+    let body = raw.slice(prefix[0].length);
+    body = body.replace(/(['"]),\s*'index':\s*\d+\}\]\s*$/, "").replace(/(['"])\}\]\s*$/, "");
+    return body
+      .replace(/\\n/g, "\n")
+      .replace(/\\'/g, "'")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\");
+  }
+  return raw;
+}
+
+/** Matches a hex color (#fff or #a1b2c3) or an rgb()/rgba() function call --
+ * the concrete, parseable ways a color actually gets written in prose. Not
+ * CSS keyword names ("teal", "cyan") -- those are ambiguous across
+ * palettes/rendering contexts in a way a literal value isn't. */
+const COLOR_PATTERN = /#(?:[0-9a-fA-F]{3}){1,2}\b|rgba?\([\d.,\s%]+\)/g;
+
+/** Renders `text` as plain strings interleaved with a small swatch
+ * immediately after every hex/rgb color value found in it -- planning
+ * chat's system prompt (agent/planning_chat.py) is told to always include a
+ * real value alongside any color it discusses, specifically so this can
+ * show the color itself rather than making the user picture it from a code
+ * or a name. Swatches are visual-only (aria-hidden); the color text itself
+ * remains screen-reader visible. */
+export function renderWithColorSwatches(text: string): React.ReactNode {
+  const re = new RegExp(COLOR_PATTERN);
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    const color = match[0];
+    nodes.push(color);
+    nodes.push(<span key={`swatch-${key++}`} className="color-swatch" style={{ background: color }} title={color} aria-hidden="true" />);
+    lastIndex = match.index + color.length;
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes.length > 1 ? nodes : text;
+}
+
+/** "calling: bash({'command': 'ls -la'})" -> [{name: "bash", args: "..."}] */
+export function parseToolCalls(summary: string): { name: string; args: string }[] {
+  const body = summary.slice("calling: ".length);
+  const calls: { name: string; args: string }[] = [];
+  const re = /(\w+)\((.*?)\)(?:, (?=\w+\())?/gs;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    calls.push({ name: m[1], args: m[2] });
+  }
+  return calls.length ? calls : [{ name: "tool", args: body }];
+}
+
+function agentName(node: string): string {
+  if (node.startsWith("work:")) return node.slice("work:".length);
+  return "agent";
+}
+
+function verdictTone(summary: string): "good" | "bad" | "warn" | "info" {
+  const s = summary.toLowerCase();
+  if (s.includes("ready") || s.includes("merged and deployed") || s.includes("done")) return "good";
+  if (s.includes("escalated") || s.includes("failed")) return "bad";
+  if (s.includes("needs_fixes") || s.includes("nudging") || s.includes("awaiting")) return "warn";
+  return "info";
+}
+
+export function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const s = Math.max(0, Math.floor(diffMs / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h`;
+}
+
+
+/** Family-based color so different pool models are visually distinct at a
+ * glance (the router picks per call -- one alias, many real models). */
+const MODEL_FAMILY_COLORS: [RegExp, string][] = [
+  [/claude|anthropic/i, "#d97757"],
+  [/gpt|openai|codex/i, "#74c99a"],
+  [/deepseek/i, "#5d8bf4"],
+  [/qwen/i, "#a56ef5"],
+  [/glm|z-ai/i, "#3fb9a5"],
+  [/grok|x-ai/i, "#c9cdd6"],
+  [/kimi|moonshot/i, "#e3702e"],
+  [/nova|amazon/i, "#e3a72e"],
+  [/gemini|google/i, "#6ea8f5"],
+];
+
+export function modelColor(model: string): string {
+  for (const [re, color] of MODEL_FAMILY_COLORS) if (re.test(model)) return color;
+  return "#8b93a1";
+}
+
+/** "deepseek/deepseek-v4-pro-0813" -> "deepseek-v4-pro" (short, no provider
+ * prefix, no date suffix -- the badge has to stay compact). The backend
+ * (agent/nodes/work.py) already resolves a pinned role's bare alias
+ * ("agent-investigator") to the real underlying model before this ever
+ * reaches the frontend -- reading current pins from config.yaml itself
+ * every time, not a hardcoded map here that would silently go stale the
+ * moment an operator changes a pin. This only ever shortens an
+ * already-real model id for display. */
+export function shortModel(model: string): string {
+  const base = model.split("/").pop() ?? model;
+  return base.replace(/-\d{4,8}$/, "").replace(/-v\d$/, (m) => m);
+}
+
+/** Role badge beside the model badge. Two roles can pin the SAME model
+ *  (coder and test-writer both on deepseek), so the model badge alone cannot
+ *  attribute an error in the stream to a role. Muted styling on purpose —
+ *  the role is orientation, the model stays the colored primary badge. */
+export function RoleBadge({ role }: { role?: string | null }) {
+  if (!role) return null;
+  return (
+    <span className="chat-role-badge" title={`agent role: ${role}`}>
+      {role}
+    </span>
+  );
+}
+
+export function ModelBadge({ model }: { model?: string | null }) {
+  if (!model) return null;
+  const color = modelColor(model);
+  return (
+    <span className="chat-model-badge" style={{ color, borderColor: color + "55", background: color + "14" }} title={model}>
+      {shortModel(model)}
+    </span>
+  );
+}
+
+export const TOOL_ICONS: Record<string, string> = {
+  bash: "❯_",
+  read: "📄",
+  write: "✏️",
+  edit: "✏️",
+  read_file: "📄",
+  write_file: "✏️",
+  edit_file: "✏️",
+  ls: "📁",
+  glob: "📁",
+  grep: "🔎",
+  task: "🤝",
+  run_checks: "🧪",
+  write_todos: "☑️",
+};
+
+function ChatMessageImpl({ entry, prevEntry }: { entry: LogEntry; prevEntry?: LogEntry }) {
+  const kind = classify(entry);
+  const [open, setOpen] = useState(false);
+
+  if (kind === "user") {
+    return (
+      <div className="chat-row chat-row--user">
+        <div className="chat-bubble chat-bubble--user">
+          <div className="chat-text">{renderWithColorSwatches(cleanText(entry.detail || entry.summary.replace(/^\[operator message\]\s*/, "")))}</div>
+        </div>
+        <span className="chat-time">{relativeTime(entry.timestamp)}</span>
+      </div>
+    );
+  }
+
+  if (kind === "system") {
+    const tone = verdictTone(entry.summary);
+    const detail = cleanText(entry.detail || "");
+    return (
+      <div className={`chat-system chat-system--${tone}`}>
+        <div className="chat-system-line" onClick={() => detail && setOpen((o) => !o)}>
+          <span className="chat-system-icon">
+            {tone === "good" ? "✓" : tone === "bad" ? "✕" : tone === "warn" ? "!" : "•"}
+          </span>
+          <span className="chat-system-text">{entry.summary}</span>
+          {detail && <span className={`chat-chevron ${open ? "open" : ""}`}>▸</span>}
+        </div>
+        {open && detail && <div className="chat-system-detail">{detail}</div>}
+      </div>
+    );
+  }
+
+  if (kind === "tool-call") {
+    const calls = parseToolCalls(entry.summary);
+    return (
+      <div className="chat-tools">
+        <RoleBadge role={entry.role} /><ModelBadge model={entry.model} />
+        <span className="chat-time">{relativeTime(entry.timestamp)}</span>
+        {calls.map((c, i) => (
+          <span key={i} className="chat-tool-chip" title={c.args}>
+            <span className="chat-tool-icon">{TOOL_ICONS[c.name] ?? "⚙"}</span>
+            <span className="chat-tool-name">{c.name}</span>
+            <span className="chat-tool-args">{c.args.slice(0, 64)}</span>
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  if (kind === "tool-result") {
+    const body = entry.detail || entry.summary.slice("tool result:".length).trim();
+    const failed = /exit_code=[1-9]|ERROR|TIMED OUT/.test(body.slice(0, 120));
+    return (
+      <div className={`chat-tool-result ${failed ? "chat-tool-result--failed" : ""}`}>
+        <div className="chat-tool-result-head" onClick={() => setOpen((o) => !o)}>
+          <span className={`chat-chevron ${open ? "open" : ""}`}>▸</span>
+          <span>{failed ? "output — error" : "output"}</span>
+          <span className="chat-time">{relativeTime(entry.timestamp)}</span>
+          <code className="chat-tool-result-preview">{body.replace(/\s+/g, " ").slice(0, 90)}</code>
+        </div>
+        {open && <pre className="chat-tool-result-body">{body}</pre>}
+      </div>
+    );
+  }
+
+  // agent prose
+  const name = agentName(entry.node);
+  // audit H-16: React.memo on this component (see export below) is what keeps
+  // this cleanText + renderWithColorSwatches pass from re-running for every
+  // entry on each parent re-render -- it now runs only when this entry's own
+  // props change. (Can't useMemo here: this is past the early returns above,
+  // and a conditional hook violates rules-of-hooks.)
+  const text = cleanText(entry.detail || entry.summary);
+  const sameSpeaker = prevEntry && classify(prevEntry) === "agent" && agentName(prevEntry.node) === name;
+  return (
+    <div className={`chat-row chat-row--agent ${sameSpeaker ? "chat-row--cont" : ""}`}>
+      {!sameSpeaker && (
+        <div className={`chat-avatar ${name !== "agent" ? "chat-avatar--sub" : ""}`}>
+          {name === "agent" ? "✦" : name.slice(0, 2)}
+        </div>
+      )}
+      <div className="chat-agent-col">
+        {!sameSpeaker && (
+          <div className="chat-agent-name">
+            {name === "agent" ? "Agent" : name}
+            <RoleBadge role={entry.role} /><ModelBadge model={entry.model} />
+            <span className="chat-time">{relativeTime(entry.timestamp)}</span>
+            {entry.cost_usd > 0 && <span className="chat-cost">${entry.cost_usd.toFixed(3)}</span>}
+          </div>
+        )}
+        <div className="chat-bubble chat-bubble--agent">
+          <div className="chat-text">{renderWithColorSwatches(text)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// audit H-16: the task log renders unvirtualized and grows without bound on a
+// long autonomous run. Wrapping in React.memo means an appended entry only
+// renders the NEW ChatMessage rather than re-running cleanText /
+// renderWithColorSwatches across every entry ever received (was O(N) per event,
+// O(N^2) cumulative). entry / prevEntry are referentially stable per index --
+// useTaskStream appends with [...log, ...new], preserving prior references.
+export const ChatMessage = memo(ChatMessageImpl);

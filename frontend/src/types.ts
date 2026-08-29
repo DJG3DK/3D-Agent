@@ -1,0 +1,359 @@
+// --- Auth (agent/auth.py) ----------------------------------------------
+export interface CurrentUser {
+  id: number;
+  email: string;
+  role: "admin" | "user";
+  allowed_repos: string[] | null; // null == every repo (always true for admin)
+  totp_enabled: boolean;
+  must_change_password: boolean;
+  require_totp_setup: boolean; // admin-only forced enrollment, see agent/server.py's require_full_auth
+  /** Auto mode: skips the approval prompt for sensitive-path bash/write/edit.
+   *  Destructive commands (rm -rf, force push, sudo...) stay gated regardless
+   *  -- see agent/deep_agent.py's interrupt_on_for. */
+  auto_approve_commands: boolean;
+  require_merge_review: boolean;
+}
+
+export type TaskStatus =
+  | "running" | "done" | "escalated" | "error" | "stopped"
+  | "awaiting_approval"
+  /** Review READY; merge parked on the operator's final look at the diff. */
+  | "awaiting_merge";
+
+export interface TaskDiffFile {
+  path: string;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+  untracked: boolean;
+  patch: string;
+  truncated: boolean;
+}
+
+export interface TaskDiff {
+  repo: string;
+  base: string;
+  head: string | null;
+  branch: string | null;
+  files: TaskDiffFile[];
+  total_additions: number;
+  total_deletions: number;
+}
+
+export interface TaskMeta {
+  task_id: string;
+  goal: string;
+  repo: string;
+  budget_usd: number;
+  status: TaskStatus;
+  created_at: number;
+  cost_so_far?: number;
+  escalation_reason?: string | null;
+  error?: string;
+  /** Fixed taxonomy from agent/classify.py, set once at creation -- absent
+   * on tasks created before the classifier existed. */
+  category?: string;
+}
+
+export interface PlanStep {
+  id: string;
+  description: string;
+  status: "pending" | "in_progress" | "done" | "failed" | "skipped";
+  result: string | null;
+  verified: boolean;
+}
+
+// "work"/"verify_and_ship" are the new deepagents-based graph's own two
+// nodes; `work:${name}` tags a subagent's own turns (e.g. "work:investigator")
+// so they're visually distinguishable from the coordinator's. "operator" is
+// unchanged (a human-sent message). The old "plan"/"execute"/"reflect"/
+// "review"/"deploy" node names belonged to the legacy plan->execute->reflect
+// graph and no longer appear once server.py is on the new outer graph.
+export interface LogEntry {
+  node: "work" | "verify_and_ship" | "operator" | `work:${string}`;
+  step_id: string | null;
+  summary: string;
+  detail: string;
+  cost_usd: number;
+  timestamp: string;
+  /** Real underlying model that produced this turn (from the router's
+   * return_raw_model_name), e.g. "deepseek/deepseek-v4-pro-0813" — absent
+   * on tool results, gate events, and entries from before this field. */
+  model?: string | null;
+  /** Which agent ROLE made the call (coder, test-writer, ...) — two roles can pin the same model, so the model badge alone is ambiguous. */
+  role?: string | null;
+}
+
+export interface ReviewGateResult {
+  verdict: "READY" | "NEEDS_FIXES";
+  summary: string;
+  findings: { severity: "blocking" | "minor"; file?: string; issue: string }[];
+}
+
+// A pending human-in-the-loop approval request -- deep_agent.py's
+// INTERRUPT_ON paused the agent mid-turn on one or more risky bash/write/
+// edit calls (a sensitive-looking path or a recognizably dangerous
+// command), and it's waiting on POST /tasks/{id}/approve before continuing.
+// Mirrors LangChain's own HITLRequest shape verbatim (langgraph.types.
+// Interrupt.value, forwarded as-is by work.py) -- no server-side reshaping,
+// so this type is the authoritative contract for what the dashboard renders.
+export interface PendingApprovalActionRequest {
+  name: string;
+  args: Record<string, unknown>;
+  description?: string;
+}
+
+export interface PendingApproval {
+  action_requests: PendingApprovalActionRequest[];
+  review_configs: { action_name: string; allowed_decisions: string[] }[];
+}
+
+export interface TaskState {
+  goal: string;
+  repo: string;
+  budget_usd: number;
+  plan: PlanStep[];
+  current_step_index: number;
+  execution_log: LogEntry[];
+  cost_so_far: number;
+  escalated: boolean;
+  escalation_reason: string | null;
+  review_gate_result: ReviewGateResult | null;
+  pending_approval: PendingApproval | null;
+  committed_sha?: string | null;
+}
+
+export interface RepoStats {
+  per_repo: Record<
+    string,
+    {
+      task_count: number;
+      total_cost: number;
+      status_counts: { running: number; done: number; escalated: number; error: number };
+    }
+  >;
+  total_cost: number;
+  total_tasks: number;
+  status_counts: { running: number; done: number; escalated: number; error: number };
+}
+
+export interface RouterBalance {
+  totalCredits: number;
+  totalUsage: number;
+  remaining: number;
+}
+
+export interface ModelStats {
+  backend: string;
+  label: string;
+  tier: string;
+  requests: number;
+  errors: number;
+  cost: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface StreamEvent {
+  type: "status" | "node_update" | "closed" | "ping";
+  node?: string;
+  execution_log?: LogEntry[];
+  plan?: PlanStep[] | null;
+  current_step_index?: number | null;
+  cost_so_far?: number;
+  escalated?: boolean;
+  escalation_reason?: string | null;
+  review_gate_result?: ReviewGateResult | null;
+  pending_approval?: PendingApproval | null;
+  status?: TaskStatus;
+  error?: string;
+  committed_sha?: string | null;
+}
+
+export interface AnalyticsDaily {
+  date: string;
+  cost: number;
+  tasks: number;
+}
+
+export interface AnalyticsTask {
+  task_id: string;
+  repo: string;
+  goal: string;
+  category: string;
+  cost: number;
+  budget: number;
+  status: string;
+  created_at: number | null;
+}
+
+export interface AnalyticsEpisode {
+  task_id: string;
+  repo: string;
+  iterations: number;
+  outcome: string;
+  cost: number | null;
+  review_verdict: string | null;
+  timestamp: string | null;
+}
+
+// The fixed taxonomy a task's goal gets sorted into at creation time (see
+// agent/classify.py) -- "other" is also the fallback for any task created
+// before this classifier existed at all.
+export interface AnalyticsCategory {
+  category: string;
+  tasks: number;
+  cost: number;
+}
+
+/** The commit reviewer's own model spend.
+ *
+ *  Separate from the agent's totals on purpose: they are different budgets, and
+ *  folding them together would silently change what every other number on the
+ *  Analytics page means. Until 2026-08-25 this was not measured at all — the
+ *  reviewer called OpenRouter directly and never read the response's usage. */
+export interface ReviewerUsage {
+  reviews: number;
+  cost: number;
+  tokens_in: number;
+  tokens_out: number;
+  model: string | null;
+  /** false when some reviews reported no cost — the dollar figure is then a floor. */
+  cost_known: boolean;
+  reviews_missing_cost?: number;
+  per_repo: { repo: string; reviews: number; cost: number }[];
+  daily: { date: string; cost: number; reviews: number }[];
+}
+
+export interface Analytics {
+  daily: AnalyticsDaily[];
+  per_task: AnalyticsTask[];
+  by_category: AnalyticsCategory[];
+  outcomes: Record<string, number>;
+  per_repo: Record<string, { tasks: number; cost: number }>;
+  episodes: AnalyticsEpisode[];
+  total_cost: number;
+  total_tasks: number;
+  reviewer?: ReviewerUsage;
+}
+
+export interface AgentModelUsage {
+  role: string;
+  model: string;
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  avg_latency_s: number | null;
+}
+
+export interface ToolReliabilityEntry {
+  tool: string;
+  calls: number;
+  errors: number;
+  error_rate: number;
+}
+
+export interface ToolReliabilityDaily {
+  date: string;
+  errors: number;
+}
+
+export interface ToolReliability {
+  tools: ToolReliabilityEntry[];
+  daily: ToolReliabilityDaily[];
+}
+
+// Top-level trace health from LangSmith -- one entry per root run (a
+// work/verify pass, planning turn, or subagent invocation), not per
+// individual llm/tool call the way AgentModelUsage/ToolReliability are.
+export interface TraceSummary {
+  trace_count: number;
+  avg_latency_s: number | null;
+  error_rate: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+}
+
+// This agent's own pinned roles only -- see agent/model_config.py's
+// MANAGED_ROLES. Every other llm-router alias (the shared tier system,
+// reasoning-tier, smart-router) belongs to the review service and
+// is never exposed through this API.
+export interface ModelPin {
+  label: string;
+  model: string;
+  input_cost_per_token: number | null;
+  output_cost_per_token: number | null;
+  /** This role hands the model callable tools. */
+  tools?: boolean;
+  /** This role constrains the shape of the output. */
+  structured?: boolean;
+  /** Tools AND structured output in the SAME request — the combination that
+   *  actually breaks models. Only the Consolidator needs it. */
+  strict?: boolean;
+  /** Plain-language description of what the role asks a model to do. */
+  note?: string;
+  /** Models probed against the real strict shape. */
+  strict_ok?: string[];
+  strict_bad?: string[];
+  provider?: string | null;
+}
+
+export interface ModelCatalogEntry {
+  id: string;
+  name: string;
+  context_length: number | null;
+  input_cost_per_token: number;
+  output_cost_per_token: number;
+  knowledge_cutoff?: string | null;
+  arena?: { category: string; elo: number; rank: number; win_rate: number } | null;
+}
+
+// --- Planning chat (agent/planning_chat.py) ---------------------------------
+// A conversational research/design-consulting session, distinct from a
+// TaskMeta/task: no plan/execute/verify graph, no budget, no write/edit/bash
+// access to the repo. Its entire job is to converse and produce a
+// plan_markdown document -- "Build Now" in the frontend hands that off to a
+// real task via the ordinary POST /api/tasks, not a dedicated endpoint here.
+
+export interface PlanningSessionMeta {
+  session_id: string;
+  repo: string;
+  created_at: number;
+  updated_at: number;
+  title: string | null;
+  plan_markdown: string | null;
+  // No budget/cap for planning chat (unlike a task) -- this is purely
+  // informational, computed the same way BudgetGuardMiddleware computes a
+  // task's real spend, just against an uncapped tracker.
+  cost_usd: number;
+  // Set via "New Plan" -- closes out this conversation without deleting it
+  // (still fully reachable), and drops it out of the sidebar's default
+  // active list. Absent (not just false) on any session created before this
+  // field existed.
+  archived?: boolean;
+  /** Same fixed taxonomy as TaskMeta.category (agent/classify.py), set once
+   * on the session's first real message. Absent on a session with no
+   * messages yet, or one created before this classifier existed. */
+  category?: string | null;
+}
+
+export interface PlanningLogEntry {
+  kind: "agent" | "tool-result" | "user";
+  summary: string;
+  detail: string;
+  timestamp: string;
+  model?: string | null;
+  /** Which agent ROLE made the call (coder, test-writer, ...) — two roles can pin the same model, so the model badge alone is ambiguous. */
+  role?: string | null;
+}
+
+export interface PlanningStreamEvent {
+  /** "stopped" is emitted when the operator cancels a turn — distinct from
+   *  "error" (a turn that failed) and from "closed" (which always follows and
+   *  is what actually clears the running flag). */
+  type: "log_entry" | "turn_complete" | "error" | "stopped" | "closed" | "ping" | "cost";
+  entry?: PlanningLogEntry;
+  plan_markdown?: string | null;
+  cost_usd?: number;
+  message?: string;
+}

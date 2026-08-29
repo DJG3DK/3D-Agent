@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent — Review &amp; Merge</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0a0e14; color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 20px 28px; border-bottom: 1px solid #1e293b; display: flex; align-items: center; gap: 16px;
+  }
+  header h1 { font-size: 15px; letter-spacing: 0.08em; text-transform: uppercase; color: #64748b; margin: 0; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 24px 28px 60px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tab {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid #232d3d; background: #131a24;
+    color: #94a3b8; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .tab.active { background: #1e3a5f; border-color: #3b82f6; color: #e2e8f0; }
+  .card {
+    background: #131a24; border: 1px solid #232d3d; border-radius: 14px; padding: 22px; margin-bottom: 18px;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .badge.ok { background: rgba(52,211,153,0.15); color: #34d399; }
+  .badge.warn { background: rgba(251,191,36,0.15); color: #fbbf24; }
+  .badge.blocked { background: rgba(248,113,113,0.15); color: #f87171; }
+  .commit { padding: 10px 0; border-bottom: 1px solid #1e293b; font-size: 13px; }
+  .commit:last-child { border-bottom: none; }
+  .commit .hash { color: #64748b; font-family: ui-monospace, monospace; font-size: 11px; }
+  .commit .subject { color: #e2e8f0; margin-top: 2px; }
+  .commit .meta { color: #64748b; font-size: 11px; margin-top: 2px; }
+  .dirty-file { font-family: ui-monospace, monospace; font-size: 12px; color: #fbbf24; }
+  pre.diff {
+    background: #0a0e14; border: 1px solid #1e293b; border-radius: 10px; padding: 16px;
+    overflow-x: auto; font-size: 12px; line-height: 1.6; max-height: 500px; overflow-y: auto;
+  }
+  .diff .add { color: #34d399; }
+  .diff .del { color: #f87171; }
+  .diff .hunk { color: #60a5fa; }
+  button {
+    padding: 10px 18px; border-radius: 10px; border: none; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button.primary { background: #3b82f6; color: white; }
+  button.primary:hover:not(:disabled) { background: #2563eb; }
+  button.secondary { background: #232d3d; color: #e2e8f0; }
+  button.secondary:hover:not(:disabled) { background: #2d3a4f; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .empty { color: #64748b; font-size: 13px; text-align: center; padding: 30px 0; }
+  .msg { margin-top: 12px; font-size: 13px; }
+  .msg.ok { color: #34d399; }
+  .msg.error { color: #f87171; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+  .actions { display: flex; gap: 10px; margin-top: 16px; }
+  .section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin: 0 0 10px; }
+  .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .model-card { background: #0a0e14; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; }
+  .model-card .name { font-weight: 700; font-size: 13px; }
+  .model-card .tier { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-top: 2px; }
+  .model-card .stat-row { display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8; margin-top: 8px; }
+  .model-card .stat-row b { color: #e2e8f0; font-weight: 600; }
+  .tier-pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .tier-SIMPLE { background: rgba(96,165,250,0.15); color: #60a5fa; }
+  .tier-MEDIUM { background: rgba(52,211,153,0.15); color: #34d399; }
+  .tier-COMPLEX { background: rgba(251,191,36,0.15); color: #fbbf24; }
+  .tier-REASONING { background: rgba(248,113,113,0.15); color: #f87171; }
+  table.recent { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.recent th { text-align: left; color: #64748b; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #1e293b; }
+  table.recent td { padding: 6px 8px; border-bottom: 1px solid #131a24; color: #94a3b8; }
+  table.recent td.model { color: #e2e8f0; font-family: ui-monospace, monospace; font-size: 11px; }
+  .totals-row { display: flex; gap: 24px; margin-bottom: 18px; }
+  .totals-row .stat { }
+  .totals-row .stat .val { font-size: 22px; font-weight: 700; }
+  .totals-row .stat .lbl { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+  .finding { padding: 8px 0; border-bottom: 1px solid #1e293b; font-size: 13px; }
+  .finding:last-child { border-bottom: none; }
+  .finding .file { color: #64748b; font-family: ui-monospace, monospace; font-size: 11px; }
+  .finding .issue { color: #e2e8f0; margin-top: 2px; }
+  .check-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+  .check-row .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .check-row .dot.ok { background: #34d399; }
+  .check-row .dot.fail { background: #f87171; }
+  .review-stale { color: #64748b; font-size: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #1e293b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔀 Review &amp; Merge</h1>
+</header>
+<div class="wrap">
+  <div class="tabs" id="tabs"></div>
+  <div id="content"></div>
+</div>
+
+<script>
+let projects = [];
+let current = null;
+let status = null;
+let review = null;
+let view = 'router'; // 'router' | 'project'
+let reviewPollTimer = null;
+
+function stopReviewPoll() {
+  if (reviewPollTimer) { clearInterval(reviewPollTimer); reviewPollTimer = null; }
+}
+
+// Re-fetches just the (cheap) review state — used both for the background
+// poll and right after "Check now" — and only re-renders when something
+// actually changed, or while a review is actively in progress (so the
+// elapsed-time readout keeps advancing instead of freezing on stale data
+// between polls). Re-rendering on every tick regardless would also wipe out
+// an open diff view for no reason.
+async function refreshReviewOnly() {
+  if (view !== 'project' || !current) return;
+  const { ok, data } = await api('/review/status');
+  if (!ok) return;
+  const next = data[current] || null;
+  const wasOrIsProcessing = (review && review.inProgress) || (next && next.inProgress);
+  const changed = JSON.stringify(next) !== JSON.stringify(review);
+  review = next;
+  if (changed || wasOrIsProcessing) renderContent();
+}
+
+async function doCheckNow() {
+  await api(`/review/check/${encodeURIComponent(current)}`, { method: 'POST' });
+  refreshReviewOnly();
+}
+
+async function api(path, opts) {
+  const r = await fetch('/_review/api' + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderDiff(text) {
+  return text.split('\n').map(line => {
+    const esc = escapeHtml(line);
+    if (line.startsWith('+') && !line.startsWith('+++')) return `<span class="add">${esc}</span>`;
+    if (line.startsWith('-') && !line.startsWith('---')) return `<span class="del">${esc}</span>`;
+    if (line.startsWith('@@')) return `<span class="hunk">${esc}</span>`;
+    return esc;
+  }).join('\n');
+}
+
+async function selectProject(name) {
+  stopReviewPoll();
+  view = 'project';
+  current = name;
+  renderTabs();
+  document.getElementById('content').innerHTML = '<div class="empty">Loading…</div>';
+  const [{ ok, data }, reviewRes] = await Promise.all([
+    api(`/projects/${encodeURIComponent(name)}/status`),
+    api('/review/status'),
+  ]);
+  if (!ok) { document.getElementById('content').innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || 'failed')}</div>`; return; }
+  status = data;
+  review = reviewRes.ok ? (reviewRes.data[name] || null) : null;
+  renderContent();
+  reviewPollTimer = setInterval(refreshReviewOnly, 3000);
+}
+
+async function selectRouter() {
+  stopReviewPoll();
+  view = 'router';
+  current = null;
+  renderTabs();
+  document.getElementById('content').innerHTML = '<div class="empty">Loading…</div>';
+  const [{ ok, data }, balanceRes] = await Promise.all([api('/router/stats'), api('/router/balance')]);
+  if (!ok) { document.getElementById('content').innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || 'failed')}</div>`; return; }
+  renderRouterContent(data, balanceRes.ok ? balanceRes.data : null);
+}
+
+function renderTabs() {
+  const routerTab = `<button class="tab ${view === 'router' ? 'active' : ''}" onclick="selectRouter()">🔀 Router</button>`;
+  const projectTabs = projects.map(p =>
+    `<button class="tab ${view === 'project' && p === current ? 'active' : ''}" onclick="selectProject('${p}')">${p}</button>`
+  ).join('');
+  document.getElementById('tabs').innerHTML = routerTab + projectTabs;
+}
+
+function fmtCost(n) { return '$' + (n || 0).toFixed(4); }
+function fmtTime(ts) { return ts ? new Date(ts * 1000).toLocaleString() : ''; }
+
+function renderRouterContent(data, balance) {
+  const el = document.getElementById('content');
+  const { models, recent, totals, overhead } = data;
+  const balanceHtml = balance ? `
+    <div class="stat"><div class="val">$${balance.remaining.toFixed(2)}</div><div class="lbl">API balance</div></div>
+    <div class="stat"><div class="val" style="font-size:14px;color:#64748b;font-weight:600">$${balance.totalUsage.toFixed(2)} / $${balance.totalCredits.toFixed(2)}</div><div class="lbl">Used / total</div></div>
+  ` : '';
+
+  const modelsHtml = models.map(m => `
+    <div class="model-card">
+      <div class="name">${escapeHtml(m.label || m.backend)}</div>
+      <div class="tier">${m.tier ? `<span class="tier-pill tier-${m.tier}">${m.tier}</span>` : escapeHtml(m.backend)}</div>
+      <div class="stat-row"><span>Requests</span><b>${m.requests}</b></div>
+      <div class="stat-row"><span>Cost</span><b>${fmtCost(m.cost)}</b></div>
+      <div class="stat-row"><span>Tokens (in/out)</span><b>${m.promptTokens}/${m.completionTokens}</b></div>
+      ${m.errors ? `<div class="stat-row"><span>Errors</span><b style="color:#f87171">${m.errors}</b></div>` : ''}
+    </div>
+  `).join('');
+
+  const recentHtml = recent.length ? `
+    <table class="recent">
+      <thead><tr><th>Time</th><th>Model</th><th>Tier</th><th>Cause</th><th>Cost</th><th>Latency</th></tr></thead>
+      <tbody>
+        ${recent.map(r => `
+          <tr>
+            <td>${fmtTime(r.ts)}</td>
+            <td class="model">${escapeHtml(r.routed_model || '—')}</td>
+            <td>${r.tier ? `<span class="tier-pill tier-${r.tier}">${r.tier}</span>` : '—'}</td>
+            <td>${escapeHtml(r.cause || (r.error ? 'error' : '—'))}</td>
+            <td>${r.cost != null ? fmtCost(r.cost) : '—'}</td>
+            <td>${r.duration_s != null ? r.duration_s.toFixed(1) + 's' : '—'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '<div class="empty">No requests logged yet — send something through the router to see it here.</div>';
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="totals-row">
+        <div class="stat"><div class="val">${totals.requests}</div><div class="lbl">Requests</div></div>
+        <div class="stat"><div class="val">${fmtCost(totals.cost)}</div><div class="lbl">Session cost</div></div>
+        ${totals.errors ? `<div class="stat"><div class="val" style="color:#f87171">${totals.errors}</div><div class="lbl">Errors</div></div>` : ''}
+        ${balanceHtml}
+      </div>
+      <div class="section-title">Models</div>
+      <div class="model-grid">${modelsHtml}</div>
+      ${overhead && overhead.requests ? `
+        <div class="stat-row" style="margin-top:14px;padding-top:10px;border-top:1px solid #1e293b;color:#64748b;font-size:12px">
+          <span title="${escapeHtml(overhead.note)}">+ ${overhead.requests} router overhead call(s) (${fmtCost(overhead.cost)}) — complexity classifier + condenser, not real routing decisions, excluded above</span>
+        </div>
+      ` : ''}
+    </div>
+    <div class="card">
+      <div class="section-title">Recent routing decisions</div>
+      ${recentHtml}
+    </div>
+  `;
+}
+
+function renderReviewCard() {
+  const currentTip = status.commits.length ? status.commits[0].hash : null;
+  const checkNowBtn = `<button class="secondary" style="padding:6px 12px;font-size:12px" onclick="doCheckNow()">Check now</button>`;
+
+  if (review && review.inProgress) {
+    const elapsed = Math.max(0, Math.round((Date.now() - new Date(review.inProgress.startedAt).getTime()) / 1000));
+    return `
+      <div class="card">
+        <div class="row">
+          <div class="section-title" style="margin:0">Automated Review — ${escapeHtml(review.inProgress.sha.slice(0,8))}</div>
+          <span class="badge warn">Processing…</span>
+        </div>
+        <div style="color:#94a3b8;font-size:13px">${escapeHtml(review.inProgress.step || 'working')} · ${elapsed}s elapsed</div>
+      </div>
+    `;
+  }
+
+  if (!review) {
+    const msg = currentTip
+      ? 'Not yet reviewed — the review service polls every 2 minutes.'
+      : 'No pending commits to review right now. The review service checks every 2 minutes and will report here as soon as the agent commits something new.';
+    return `<div class="card"><div class="row"><div class="section-title" style="margin:0">Automated Review</div>${checkNowBtn}</div><div class="empty">${msg}</div></div>`;
+  }
+  const isStale = currentTip && review.lastReviewedSha !== currentTip;
+  const badge = review.verdict === 'READY'
+    ? '<span class="badge ok">Ready</span>'
+    : review.escalated
+      ? '<span class="badge blocked">⚠ Escalated — needs human</span>'
+      : '<span class="badge blocked">Needs fixes</span>';
+  const escalatedBanner = review.escalated
+    ? `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:12px 14px;margin-bottom:12px;color:#f87171;font-size:13px">
+        Failed review ${review.consecutiveNeedsFixes || ''} times in a row without reaching a clean state — the agent has been told to stop iterating and wait. This needs your attention, not another automatic nudge.
+      </div>`
+    : '';
+  const checksHtml = (Array.isArray(review.checkResults) ? review.checkResults : []).map(c => `
+    <div class="check-row"><span class="dot ${c.ok ? 'ok' : 'fail'}"></span><span>${escapeHtml(String(c.name || ''))}</span></div>
+  `).join('');
+  // Defensive: the review's shape comes from an LLM tool call, not a schema
+  // the server enforces — a malformed response (e.g. findings coming back as
+  // a string instead of an array) should degrade this one section, not take
+  // the whole page down.
+  const findingsArr = Array.isArray(review.findings) ? review.findings : [];
+  const findingsHtml = findingsArr.length ? findingsArr.map(f => `
+    <div class="finding">
+      <div class="file">${f.severity === 'blocking' ? '🔴 blocking' : '🟡 minor'}${f.file ? ' · ' + escapeHtml(String(f.file)) : ''}</div>
+      <div class="issue">${escapeHtml(String(f.issue || ''))}</div>
+    </div>
+  `).join('') : '';
+  return `
+    <div class="card">
+      <div class="row">
+        <div class="section-title" style="margin:0">Automated Review — ${escapeHtml(review.lastReviewedSha.slice(0,8))}</div>
+        <div style="display:flex;align-items:center;gap:10px">${badge}${checkNowBtn}</div>
+      </div>
+      <div style="color:#94a3b8;font-size:13px;margin-bottom:12px">${escapeHtml(review.summary || '')}</div>
+      ${escalatedBanner}
+      ${checksHtml}
+      ${findingsHtml}
+      <div style="color:#64748b;font-size:11px;margin-top:10px">Reviewed ${escapeHtml(new Date(review.reviewedAt).toLocaleString())}</div>
+      ${isStale ? `<div class="review-stale">Newer commit(s) since this review — re-review pending (polls every 2 min). <a href="#" onclick="doCheckNow();return false" style="color:#60a5fa">Check now</a></div>` : ''}
+    </div>
+  `;
+}
+
+function renderContent() {
+  try {
+    renderContentInner();
+  } catch (e) {
+    // Never leave the page stuck on "Loading…" — an unexpected data shape
+    // anywhere below (this page renders LLM-produced review data, which
+    // isn't schema-enforced) should show a visible, recoverable error
+    // instead of a silent hang.
+    document.getElementById('content').innerHTML =
+      `<div class="card"><div class="empty">Render error: ${escapeHtml(e.message || String(e))}<br><br>` +
+      `<button class="secondary" onclick="selectProject(current)">Retry</button></div></div>`;
+  }
+}
+
+function renderContentInner() {
+  const el = document.getElementById('content');
+  if (!status.commits.length) {
+    el.innerHTML = `
+      <div class="card"><div class="empty">✓ Nothing to merge — live is already caught up with the agent's workspace.</div></div>
+      ${renderReviewCard()}
+      ${renderRestartCard()}
+    `;
+    return;
+  }
+
+  const badge = status.canFastForward
+    ? '<span class="badge ok">Ready to merge</span>'
+    : '<span class="badge blocked">Cannot fast-forward</span>';
+
+  const currentTip = status.commits[0].hash;
+  const reviewOk = review && review.verdict === 'READY' && review.lastReviewedSha === currentTip;
+  const reviewBlockReason = !review ? 'Waiting on the automated review (polls every 2 min).'
+    : review.lastReviewedSha !== currentTip ? 'Newer commit(s) since the last review — re-review pending.'
+    : 'Automated review found blocking issues — see the card above.';
+
+  el.innerHTML = `
+    ${renderReviewCard()}
+    <div class="card">
+      <div class="row">
+        <div class="section-title" style="margin:0">${status.commits.length} commit(s) ready on branch "${status.branch}"</div>
+        ${badge}
+      </div>
+      ${status.commits.map(c => `
+        <div class="commit">
+          <div class="hash">${c.hash.slice(0,8)}</div>
+          <div class="subject">${escapeHtml(c.subject)}</div>
+          <div class="meta">${escapeHtml(c.author)} · ${escapeHtml(c.date)}</div>
+        </div>
+      `).join('')}
+      ${status.dirtyFiles.length ? `
+        <div style="margin-top:16px">
+          <div class="section-title">Live has ${status.dirtyFiles.length} uncommitted file(s) right now</div>
+          ${status.dirtyFiles.map(f => `<div class="dirty-file">${escapeHtml(f)}</div>`).join('')}
+          <div style="color:#64748b;font-size:12px;margin-top:6px">Usually normal live-state drift (e.g. config/data files the bot updates itself). The merge will only be blocked if these specific files actually conflict with the incoming changes.</div>
+        </div>
+      ` : ''}
+      <div id="diff-container"></div>
+      ${!reviewOk ? `<div style="color:#fbbf24;font-size:12px;margin-top:12px">${escapeHtml(reviewBlockReason)}</div>` : ''}
+      <div class="actions">
+        <button class="secondary" onclick="loadDiff()">View diff</button>
+        <button class="primary" ${status.canFastForward && reviewOk ? '' : 'disabled'} onclick="doMerge(false)">Merge to live</button>
+        ${status.canFastForward && !reviewOk ? '<button class="secondary" onclick="doMerge(true)">Merge anyway</button>' : ''}
+      </div>
+      <div id="merge-msg" class="msg"></div>
+    </div>
+    ${renderRestartCard()}
+  `;
+}
+
+function renderRestartCard() {
+  return `
+    <div class="card">
+      <div class="section-title">Deploy</div>
+      <div style="color:#94a3b8;font-size:13px;margin-bottom:14px">Merging updates the files on disk. This button rebuilds whatever needs it for this project (API compile, frontend bundles) and restarts the live process — separate from merge and deliberate, never automatic. Can take up to ~30s for projects with multiple builds.</div>
+      <button class="secondary" onclick="doRestart()">Rebuild &amp; restart</button>
+      <div id="restart-msg" class="msg"></div>
+    </div>
+  `;
+}
+
+async function loadDiff() {
+  const container = document.getElementById('diff-container');
+  container.innerHTML = '<div class="empty">Loading diff…</div>';
+  const r = await fetch(`/_review/api/projects/${encodeURIComponent(current)}/diff`);
+  const text = await r.text();
+  container.innerHTML = text.trim()
+    ? `<pre class="diff">${renderDiff(text)}</pre>`
+    : '<div class="empty">No diff content.</div>';
+}
+
+async function doMerge(force) {
+  const msg = document.getElementById('merge-msg');
+  msg.textContent = 'Merging…'; msg.className = 'msg';
+  const { ok, data } = await api(`/projects/${encodeURIComponent(current)}/merge`, {
+    method: 'POST', body: JSON.stringify({ force: !!force }),
+  });
+  if (!ok) {
+    const findings = (data.findings || []).map(f => `\n  - ${f.file ? f.file + ': ' : ''}${f.issue}`).join('');
+    msg.textContent = (data.error || 'Merge failed') + findings;
+    msg.className = 'msg error';
+    return;
+  }
+  msg.textContent = 'Merged successfully.'; msg.className = 'msg ok';
+  setTimeout(() => selectProject(current), 1200);
+}
+
+async function doRestart() {
+  const msg = document.getElementById('restart-msg');
+  msg.textContent = 'Building…'; msg.className = 'msg';
+  const { ok, data } = await api(`/projects/${encodeURIComponent(current)}/restart`, { method: 'POST' });
+  if (!ok) {
+    const stage = data.stage === 'build' ? 'Build failed' : 'Restart failed';
+    msg.textContent = `${stage}: ${data.error || 'unknown error'}`; msg.className = 'msg error'; return;
+  }
+  const builtMsg = data.built && data.built.length ? ` (built: ${data.built.join(', ')})` : '';
+  msg.textContent = `Restarted: ${data.restarted.join(', ')}${builtMsg}`; msg.className = 'msg ok';
+}
+
+(async function init() {
+  const { data } = await api('/projects');
+  projects = data;
+  selectRouter();
+})();
+</script>
+</body>
+</html>

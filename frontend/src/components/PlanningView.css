@@ -1,0 +1,280 @@
+/* ===== start screen (no active session yet) ===== */
+
+.planning-start-panel {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.planning-start-card {
+  width: 100%;
+  max-width: 560px;
+}
+
+.planning-start-card h1 {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+
+.planning-start-sub {
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+
+.planning-start-card .field {
+  margin-bottom: 16px;
+}
+
+/* ===== active session ===== */
+
+.planning-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+
+.planning-view-cost {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+}
+
+.planning-view-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 28px;
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+  background: linear-gradient(180deg, rgba(139, 124, 246, 0.04), transparent);
+}
+
+.planning-view-repo {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.planning-view-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.planning-view-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.planning-plan-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+  background: rgba(63, 185, 80, 0.12);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.planning-plan-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.planning-plan-toggle:hover:not(:disabled) { border-color: var(--text-faint); }
+.planning-plan-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.planning-new-plan-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.planning-new-plan-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.planning-new-plan-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.planning-build-btn {
+  background: linear-gradient(135deg, var(--green), #2ea043);
+  color: #06210c;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.planning-build-btn:hover { filter: brightness(1.08); }
+
+.planning-build-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px 6px 12px;
+}
+.planning-build-confirm .field {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.planning-build-confirm .field span {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.planning-build-confirm .field input {
+  width: 64px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+.planning-build-confirm-btn {
+  background: var(--green);
+  color: #06210c;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.planning-build-cancel-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  cursor: pointer;
+  padding: 7px 4px;
+}
+
+.planning-view-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.planning-view-log {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px 28px 32px;
+}
+
+.planning-empty-hint {
+  max-width: 520px;
+  margin: 40px auto 0;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.planning-send-error {
+  max-width: 860px;
+  margin: 0 auto;
+  color: var(--red);
+  font-size: 12.5px;
+  padding: 8px 0;
+}
+
+.planning-plan-panel {
+  width: 360px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.planning-plan-panel-head {
+  padding: 14px 18px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+
+.planning-plan-markdown {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0;
+  padding: 16px 18px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 900px) {
+  .planning-view-body { flex-direction: column; }
+  .planning-plan-panel {
+    width: auto;
+    border-left: none;
+    border-top: 1px solid var(--border-soft);
+    max-height: 40vh;
+  }
+}
+
+.planning-attach-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 28px 0;
+  flex-shrink: 0;
+}
+
+.planning-attach-row .attach-chips { margin-top: 0; }
+
+@media (max-width: 768px) {
+  .planning-view-header { padding: 12px 16px; flex-wrap: wrap; }
+  .planning-view-log { padding: 16px; }
+  .planning-attach-row { padding: 8px 16px 0; }
+}
+
+/* Typing indicator + Stop on one row. Stop is only meaningful while a turn is
+   in flight, so it lives with the indicator that marks exactly that state
+   rather than in a toolbar where it would sit disabled most of the time. */
+.chat-typing-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* wrapper hosting the jump-to-bottom arrow over the scrolling log */
+.planning-view-log-wrap { position: relative; flex: 1; display: flex; min-height: 0; }
+.planning-view-log-wrap .planning-view-log { flex: 1; }

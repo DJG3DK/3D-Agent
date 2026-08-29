@@ -1,0 +1,196 @@
+.settings-page {
+  flex: 1;
+  /* The SCROLLER must be full width; the CONTENT is what gets constrained.
+     Previously this element was both — overflow-y:auto together with
+     max-width + margin:auto — so its scrollbar rendered at the right edge of a
+     centred 720px column (mid-screen on a wide display) and the wheel did
+     nothing over the empty margins either side, because those margins are
+     outside the scrolling box.
+
+     Symmetric auto padding centres the content to the same width without the
+     element itself being narrow, so the scrollbar sits at the true right edge
+     and the whole page scrolls from anywhere. */
+  overflow-y: auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: var(--s7) max(var(--s5), calc((100% - 1080px) / 2)) var(--s8);
+}
+
+.settings-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: var(--text);
+}
+
+.settings-account {
+  color: var(--text-dim);
+  font-size: 13.5px;
+  margin: 0 0 26px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-role {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.settings-card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md, 12px);
+  padding: 22px 24px;
+  margin-bottom: 22px;
+}
+
+/* Auto mode on -- the card itself carries the state, so it's obvious at a
+   glance without having to read the pill. */
+.settings-card--armed {
+  border-color: var(--amber, #d9a441);
+  box-shadow: 0 0 0 1px rgba(217, 164, 65, 0.18);
+}
+
+.settings-card h2 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 12px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-pill {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.settings-pill--on {
+  background: rgba(217, 164, 65, 0.15);
+  border-color: var(--amber, #d9a441);
+  color: var(--amber, #d9a441);
+}
+
+.settings-form { display: flex; flex-direction: column; gap: 14px; }
+
+.settings-body {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  margin: 0 0 14px;
+}
+
+.settings-body--dim { color: var(--text-faint); font-size: 12.5px; }
+
+.settings-hint { font-size: 12px; color: var(--text-faint); margin: -4px 0 0; }
+
+.settings-note {
+  border-radius: var(--radius-sm, 8px);
+  padding: 12px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-dim);
+}
+
+.settings-note strong { color: var(--text); display: block; margin-bottom: 6px; }
+.settings-note ul { margin: 0; padding-left: 18px; }
+.settings-note li { margin-bottom: 4px; }
+.settings-note code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+/* Green = what auto mode still protects; amber = what it costs you. Two
+   different messages, so they must not look like one undifferentiated block
+   of warning text the eye skips. */
+.settings-note--keep { border-left: 3px solid var(--green, #4ea87a); }
+.settings-note--warn { border-left: 3px solid var(--amber, #d9a441); }
+
+.settings-error { color: var(--red); font-size: 12.5px; margin-bottom: 10px; }
+.settings-ok { color: var(--green, #4ea87a); font-size: 12.5px; margin-bottom: 10px; }
+
+.settings-btn {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm, 8px);
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-btn:hover:not(:disabled) { filter: brightness(1.15); }
+.settings-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.settings-btn--danger {
+  background: var(--amber, #d9a441);
+  border-color: var(--amber, #d9a441);
+  color: #1a1206;
+}
+
+.settings-btn--off { border-color: var(--amber, #d9a441); color: var(--amber, #d9a441); }
+
+.settings-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text);
+}
+
+@media (max-width: 768px) {
+  /* Narrower gutters on a phone; the max() in the base rule would already
+     collapse to the minimum here, this just makes it tighter still. */
+  .settings-page {
+    padding: var(--s5) calc(var(--s3) + var(--safe-l)) var(--s7) calc(var(--s3) + var(--safe-r));
+  }
+}
+
+/* Telegram card */
+.settings-actions { display: flex; gap: 8px; }
+.settings-actions button[type="button"] { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.settings-actions button[type="button"]:disabled { opacity: 0.45; }
+.settings-done { color: var(--green); font-size: 12.5px; margin-bottom: 10px; }
+
+/* ── grouped grid layout (2026-08-28): themed sections, two-up cards */
+.settings-section-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-faint);
+  margin: 30px 0 12px;
+}
+.settings-section-label:first-of-type { margin-top: 6px; }
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.settings-grid .settings-card { margin-bottom: 0; }

@@ -1,0 +1,18 @@
+.jump-to-bottom {
+  position: absolute;
+  right: 22px;
+  bottom: 18px;
+  z-index: 5;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface-raised, var(--surface));
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  opacity: 0.9;
+}
+.jump-to-bottom:hover { opacity: 1; }

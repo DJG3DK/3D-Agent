@@ -1,0 +1,152 @@
+"""Hands the finished diff off to an external review service rather than
+re-implementing review here: an independent, adversarial check (fresh
+worktree off live's current HEAD, full CI-mirroring check suite, churn
+detection, persistent history). The graph's own step-level checks stay
+deterministic; this is the real pre-merge gate.
+"""
+
+import asyncio
+import logging
+import os
+import subprocess
+import sys
+
+import httpx
+
+from agent import paths
+
+logger = logging.getLogger("3d-agent")
+
+# audit M-5: these are fixed localhost ports, not derived from config. The
+# former REVIEW_GATE_BASE_URL env var was mandatory at startup yet read
+# nowhere (it can't express both the 4100 status port and the 4101 control
+# port anyway), so it was dropped rather than left as a misleading dead knob.
+REVIEW_CONTROL_PORT = 4101  # localhost-only
+REVIEW_SERVICE_PORT = 4100
+
+# audit C-4: the mutating control endpoints now require this shared secret.
+# Read from the agent's own env (load_dotenv in config.py). The check process
+# does NOT have it (C-2 env allow-list), so a rewritten npm script can't forge
+# these calls; only this server-side client and the authenticated dashboard
+# (via nginx injection) can.
+import os as _os
+_CONTROL_HEADERS = (
+    {"X-Review-Secret": _os.environ["REVIEW_CONTROL_SECRET"]}
+    if _os.environ.get("REVIEW_CONTROL_SECRET") else {}
+)
+
+
+async def trigger_check(project: str) -> dict:
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(f"http://127.0.0.1:{REVIEW_CONTROL_PORT}/check/{project}", headers=_CONTROL_HEADERS)
+        r.raise_for_status()
+        return r.json()
+
+
+async def _read_state(project: str) -> dict | None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(f"http://127.0.0.1:{REVIEW_SERVICE_PORT}/api/review/status")
+        r.raise_for_status()
+        return r.json().get(project)
+
+
+async def wait_for_review(project: str, expect_sha: str, timeout: int = 900, poll_interval: int = 5) -> dict:
+    """Polls until the review service has reviewed `expect_sha` specifically,
+    not just any review -- a stale result for an older sha would otherwise
+    silently pass a since-changed diff. Raises TimeoutError past `timeout`.
+
+    A single transient poll failure (connection refused, a 500) is treated
+    as "not ready yet" rather than aborting the wait, since the review
+    service can be mid-restart when a poll lands. Sustained failure still
+    hits the same timeout as before.
+    """
+    elapsed = 0
+    while elapsed < timeout:
+        try:
+            state = await _read_state(project)
+        except httpx.HTTPError as e:
+            logger.warning("wait_for_review: transient poll failure for %s (will retry): %s", project, e)
+            state = None
+        if state and state.get("lastReviewedSha", "").startswith(expect_sha[:12]):
+            return state
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+    raise TimeoutError(f"review service did not review {expect_sha[:12]} within {timeout}s")
+
+
+async def merge_and_deploy(project: str) -> dict:
+    """Only called after wait_for_review returns a ready verdict. Not
+    re-verified here: the review service's own merge endpoint re-gates on
+    current review state server-side, so a stale or incorrect call fails
+    closed rather than merging silently.
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        # audit M-27: BOTH endpoints deliberately return meaningful JSON on
+        # non-2xx (merge: 409 {reason}; restart: 500 {stage: "build"|"restart"}),
+        # so we must NOT raise_for_status-and-discard. The actual bug is a body
+        # that is NOT JSON at all -- an nginx 502 or an HTML 500 -- whose .json()
+        # raised JSONDecodeError up into the caller's committed_sha-losing
+        # escalation path (C-6), possibly after a partial merge. So: parse JSON,
+        # and only synthesize a stage error when the body cannot be decoded.
+        merge_res = await client.post(f"http://127.0.0.1:{REVIEW_SERVICE_PORT}/api/projects/{project}/merge", json={}, headers=_CONTROL_HEADERS)
+        try:
+            merge_body = merge_res.json()
+        except ValueError:
+            return {"ok": False, "stage": "merge",
+                    "error": f"merge returned a non-JSON {merge_res.status_code} body: {merge_res.text[:200]!r}"}
+        if not merge_body.get("ok"):
+            # local "stage" AFTER the spread so a remote body can't override our
+            # determination that this failed at the merge step.
+            return {"ok": False, **merge_body, "stage": "merge"}
+
+        restart_res = await client.post(
+            f"http://127.0.0.1:{REVIEW_SERVICE_PORT}/api/projects/{project}/restart", json={}, headers=_CONTROL_HEADERS, timeout=180
+        )
+        try:
+            restart_body = restart_res.json()
+        except ValueError:
+            # Merge already succeeded; the build/restart is what failed. A
+            # non-JSON body here is infra (proxy/process), i.e. a "restart" stage.
+            return {"ok": False, "stage": "restart",
+                    "error": f"restart returned a non-JSON {restart_res.status_code} body: {restart_res.text[:200]!r}"}
+        if not restart_body.get("ok"):
+            # Preserve the remote's own stage ("build" vs "restart") -- that is
+            # what verify_and_ship uses to loop back on a real compile error
+            # instead of escalating -- but default to "restart" if absent.
+            stage = restart_body.get("stage", "restart")
+            return {"ok": False, **restart_body, "stage": stage}
+
+        # A merged-and-deployed commit may have changed the repo's structure,
+        # and the codebase map is what planning sessions and build tasks use
+        # to orient (agent/cartographer.py). The nightly-turned-half-hourly
+        # cron already bounds staleness for commits landing any other way
+        # (manual, reviewer auto-merge); this closes the gap to ~zero for the
+        # ships THIS process makes. Fire-and-forget detached subprocess, not
+        # an in-loop task: the cartographer's model call can take minutes and
+        # must never couple to this node's lifetime or the server's event
+        # loop -- and NOT --force, so a merge that changed no structure costs
+        # a pure-Python tree walk and no model call (the hash gate decides).
+        _refresh_codebase_map(project)
+        return {"ok": True, "merge": merge_body, "restart": restart_body}
+
+
+def _refresh_codebase_map(project: str) -> None:
+    """Kick a detached cartographer run for one repo; never raises, never
+    blocks -- a map refresh failing must not turn a successful ship into an
+    error, so the subprocess logs to the cartographer's own log and this
+    only reports that the kick itself could not start."""
+    try:
+        # Log location follows the installation, not a fixed /var/log path a
+        # non-root install could not write to.
+        log_path = os.environ.get("AGENT_CARTOGRAPHER_LOG") or str(
+            paths.DATA_DIR / "cartographer.log")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "ab") as log:
+            subprocess.Popen(
+                [sys.executable, str(paths.repo_path("scripts", "run_cartographer.py")), project],
+                cwd=str(paths.REPO_ROOT), stdout=log, stderr=log,
+                start_new_session=True,
+            )
+        logger.info("kicked codebase-map refresh for %s after merge+deploy", project)
+    except Exception:  # noqa: BLE001 -- best-effort by design
+        logger.exception("could not start post-ship cartographer for %s", project)

@@ -1,0 +1,201 @@
+"""Sandboxed shell execution for the agent's own bash/write/edit/read
+tools -- not for the deterministic checks/git operations (agent/tools/
+checks.py, agent/tools/git.py), which stay on the host unchanged since
+those are fixed commands our code runs, never LLM-chosen, and already have
+no isolation concern (nothing an LLM decided goes into them).
+
+Running bash/write/edit directly on the same host as the agent server,
+against real repo checkouts, is a real risk: a context-injected or
+badly-confused agent could otherwise read or touch anything outside its
+intended repo -- another project's live secrets on the same host, this
+project's own .env, other tooling config directories, etc. Docker
+containers, bind-mounting only the target repo's sandbox checkout, close
+that specific risk. Local
+containers were chosen over a remote sandbox provider specifically to avoid
+a new third-party account/credentials. Network access stays enabled
+(package installs still need it) -- the isolation boundary here is
+filesystem, not network, which is still a meaningful improvement over no
+boundary at all, not a claim of complete sandboxing.
+
+Same {"ok", "exit_code", "output"} / ShellTimeout contract as
+agent/tools/shell.py's run_shell, so agent_tools.py's tool functions barely
+change to use this instead.
+"""
+
+import asyncio
+import os
+import uuid
+
+from agent.tools.shell import ShellTimeout
+
+SANDBOX_IMAGE = "3d-agent-sandbox:latest"  # built from docker/agent-sandbox/Dockerfile
+SANDBOX_MEMORY_LIMIT = "2g"
+SANDBOX_CPU_LIMIT = "2"
+# audit M-10: cap process count to blunt a fork bomb, drop all Linux
+# capabilities (git/npm/node need none), and forbid privilege escalation.
+SANDBOX_PIDS_LIMIT = "512"
+
+
+async def _kill_container(name: str) -> None:
+    # `docker run --rm`'s own cleanup only fires on a normal exit -- killing
+    # the `docker run` CLI process (the asyncio subprocess we actually hold
+    # a handle to) does not reliably stop the container itself; without this,
+    # a timed-out or cancelled command would leave the container (and
+    # whatever it's running) orphaned, running detached on the host --
+    # exactly the same class of bug run_shell's own _kill_process_group
+    # exists to prevent, just one layer up (container instead of process
+    # group). `docker kill` + `--rm` together tear it down completely.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "kill", name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+    except Exception:  # noqa: BLE001 -- best-effort cleanup, never worth failing the caller over
+        pass
+
+
+def _node_modules_mounts(cwd: str) -> list[str]:
+    """audit C-2: some project worktrees symlink their `node_modules` (and, in a
+    monorepo, nested ones) to the LIVE checkout's node_modules OUTSIDE the
+    worktree -- e.g. a Next.js project'
+    `<worktree>/node_modules -> /home/a Next.js project/node_modules`. Mounting only
+    the worktree leaves that symlink dangling inside the container, so `npm run
+    lint` fails with "eslint: not found" even though it passes on the host. For
+    each such symlink whose target lives outside `cwd`, bind-mount the target
+    read-only at its own absolute path so the symlink resolves. Read-only: the
+    check phase must never mutate the live install. Real (non-symlink)
+    node_modules dirs are already covered by the /workspace mount and need
+    nothing here.
+    """
+    mounts: list[str] = []
+    seen: set[str] = set()
+    real_cwd = os.path.realpath(cwd)
+    for root, dirs, _files in os.walk(cwd):
+        # don't descend into the store internals; one level of nesting is enough
+        # for the monorepo app/package node_modules layout.
+        depth = root[len(cwd):].count(os.sep)
+        if depth >= 3:
+            dirs[:] = []
+        if "node_modules" in dirs:
+            nm = os.path.join(root, "node_modules")
+            if os.path.islink(nm):
+                target = os.path.realpath(nm)
+                # only mount if it points OUTSIDE the worktree and actually exists
+                if target and target not in seen \
+                        and os.path.isdir(target) \
+                        and not target.startswith(real_cwd + os.sep):
+                    seen.add(target)
+                    mounts += ["-v", f"{target}:{target}:ro"]
+            # never walk into a node_modules tree
+            dirs.remove("node_modules")
+    return mounts
+
+
+async def run_shell_sandboxed(
+    cmd: str,
+    cwd: str,
+    timeout: int = 120,
+    extra_env: dict | None = None,
+    network: str | None = None,
+) -> dict:
+    """Runs `cmd` inside an ephemeral Docker container with only `cwd`
+    (the repo sandbox checkout) bind-mounted, read-write, at /workspace --
+    no other host path is visible inside the container. No TTY, CI=true,
+    hard timeout -- same non-interactive-by-construction discipline as
+    run_shell (see that module's own docstring on why: a pty-based shell tool
+    can hang forever on an unanswered interactive prompt).
+
+    `network` maps to docker's --network (e.g. "none" for full network
+    isolation -- used by the deterministic check runner, whose deps are already
+    installed so it needs no egress; audit C-2/M-10). None keeps the default
+    bridge, which is what the interactive `bash` tool uses.
+
+    Returns {"ok": bool, "exit_code": int, "output": str} -- same shape as
+    run_shell, so callers don't need to branch on which one they used.
+    """
+    container_name = f"lga-{uuid.uuid4().hex[:12]}"
+    env_args = []
+    for k, v in {"CI": "true", "DEBIAN_FRONTEND": "noninteractive", **(extra_env or {})}.items():
+        env_args += ["-e", f"{k}={v}"]
+
+    # The workspace is a git WORKTREE of the live repo (see the 2026-08-25
+    # workspace migration), and a worktree's .git is not a directory but a one-
+    # line file: `gitdir: <live>/.git/worktrees/<name>`. Mounting only the
+    # worktree therefore broke every git command inside the container — status,
+    # diff, log all died with "fatal: not a git repository" because the pointer
+    # target didn't exist in the mount namespace. It went unnoticed because the
+    # deterministic git operations (agent/tools/git.py) run on the HOST; only
+    # LLM-issued `git ...` in the bash tool was affected.
+    #
+    # Fix: when cwd is a worktree, also mount the live repo's .git at the SAME
+    # absolute path, read-only. Same path, because that's what the pointer file
+    # names; read-only, because the sandbox runs unreviewed model commands and
+    # must not be able to rewrite the live repository's history — commits happen
+    # on the host through verify_and_ship, never in here. Read operations work;
+    # an in-sandbox `git commit` fails on the read-only mount, which is correct.
+    git_mount_args: list[str] = []
+    dotgit = os.path.join(cwd, ".git")
+    if os.path.isfile(dotgit):
+        try:
+            with open(dotgit) as fh:
+                gitdir = fh.read().strip().removeprefix("gitdir:").strip()
+            # <live>/.git/worktrees/<name>  ->  <live>/.git
+            marker = f"{os.sep}worktrees{os.sep}"
+            if marker in gitdir:
+                main_git = gitdir[: gitdir.index(marker)]
+                if os.path.isdir(main_git):
+                    git_mount_args = ["-v", f"{main_git}:{main_git}:ro"]
+        except OSError:
+            pass  # unreadable pointer file: run without git rather than not at all
+
+    nm_mount_args = _node_modules_mounts(cwd)
+    net_args = ["--network", network] if network else []
+
+    docker_args = [
+        "docker", "run", "--rm", "--name", container_name,
+        "-v", f"{cwd}:/workspace",
+        *git_mount_args,
+        *nm_mount_args,
+        *net_args,
+        "-w", "/workspace",
+        "--memory", SANDBOX_MEMORY_LIMIT,
+        "--cpus", SANDBOX_CPU_LIMIT,
+        # audit M-10 hardening. --user is deliberately NOT set: the bind-mounted
+        # worktree is root-owned on the host (pm2 runs as root), so a non-root
+        # container user could not write to it. Network stays on the default
+        # bridge (a dedicated network blocking link-local/RFC1918 and binding
+        # llm-router to 127.0.0.1 is tracked as residual infra) -- but
+        # LITELLM_MASTER_KEY is not passed in, so the reachable router surface is
+        # authenticated, not open.
+        "--pids-limit", SANDBOX_PIDS_LIMIT,
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        *env_args,
+        SANDBOX_IMAGE,
+        "bash", "-c", cmd,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *docker_args,
+        stdin=asyncio.subprocess.DEVNULL,  # no stdin at all -- matches run_shell's own reasoning
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        await _kill_container(container_name)
+        await proc.wait()
+        raise ShellTimeout(cmd, timeout)
+    except asyncio.CancelledError:
+        # Same reasoning as run_shell's own CancelledError handler: the
+        # operator's Stop button cancels the asyncio task driving the whole
+        # run, and without explicit cleanup here the container (and
+        # anything running inside it) would keep running orphaned.
+        await _kill_container(container_name)
+        await proc.wait()
+        raise
+
+    output = stdout.decode("utf-8", errors="replace")
+    return {"ok": proc.returncode == 0, "exit_code": proc.returncode, "output": output[-20_000:]}

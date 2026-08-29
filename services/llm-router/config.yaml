@@ -1,0 +1,775 @@
+# LiteLLM intelligent inference router — task-based routing over OpenRouter.
+#
+# The router's ONLY real consumer is OpenHands (a coding agent). Two failed
+# attempts before this one, both wrong in opposite directions — recorded here
+# so the next change doesn't repeat either:
+#   1. (original) All 4 tiers mapped + session_affinity pinning the FIRST
+#      turn's tier for the whole session. A coding conversation that started
+#      looking simple/medium could get stuck there even once it turned hard —
+#      confirmed live (2026-08-15, gemini-flash-lite incident: an active
+#      coding session was pinned to it, weak enough at sustained tool-calling
+#      that the agent started dropping tool calls mid-task).
+#   2. (previous revision) "Fixed" that by dropping SIMPLE/MEDIUM as
+#      destinations entirely, flooring every request at COMPLEX. That
+#      over-corrected — explicit user feedback: "I need the cheap models
+#      doing that work [docs, commits, easy stuff] ... I just don't trust it
+#      to actually assign the hard stuff properly." Flooring cost fixed
+#      nothing about classification TRUST; it just paid COMPLEX-tier pricing
+#      for every one-word acknowledgment.
+#
+# Current fix: all 4 tiers restored AND session_affinity is OFF. The actual
+# trust problem was never "which tiers exist" — it's that pinning skips
+# classification on every turn after the first, so a message 5 turns into a
+# conversation that plainly reads as hard (matches the COMPLEX keyword rules
+# below, or the LLM classifier judges it COMPLEX/REASONING) never got
+# re-evaluated; it just inherited turn 1's tier. With session_affinity off,
+# EVERY message — keyword rules first, then the LLM classifier — is judged
+# fresh on its own merits. Cheap stuff reliably stays cheap; the moment
+# something looks hard, on ANY turn, it reliably routes up. The added cost is
+# one extra cheap classifier call per turn (nova-micro, fractions of a
+# cent) instead of amortizing that call over a whole session — a good trade
+# for actually trustworthy per-message routing.
+#
+# 2026-08-15: kimi-k2.7-code pulled out of the COMPLEX pool. Traced 3 separate
+# OpenHands "agent narrates then stops, no tool call" stalls (the exact
+# recurring complaint) to this model via OpenRouter generation IDs — all 3
+# came back with finish_reason:"tool_calls" but only 1 completion token, i.e.
+# a truncated/malformed tool-call response. It was ~25% of traffic in the
+# routing log but 3/3 of the observed stalls — real overrepresentation, not
+# noise, and mechanistically explained (broken tool-call emission), not a
+# routing/prompting problem.
+#
+# 2026-08-16: briefly reinstated into COMPLEX, then immediately replaced
+# with qwen3-coder-plus at the same price point instead — see the
+# qwen3-coder-plus model_list entry below for why. kimi-k2.7-code's
+# model_list entry was then removed entirely (not just excluded from the
+# tiers list) to keep the dashboard clean. Re-add it from OpenRouter's
+# catalog (openrouter/moonshotai/kimi-k2.7-code) if the upstream tool-call
+# truncation issue ever gets confirmed fixed.
+#
+# 2026-08-16: every tier is now a real adaptive pool (2-3 models each,
+# previously only MEDIUM had more than one option). Each new addition was
+# picked for two things: a real price-band match to the tier's existing
+# model(s), and a DIFFERENT underlying provider than anything already in
+# that tier — genuine diversity for the bandit to learn from, and
+# uncorrelated failure modes (the whole lesson from kimi-k2.7-code's
+# tool-call bug: one provider's serving issue shouldn't be able to take
+# down a whole tier). Every new model was live-verified before being wired
+# in: a real completion AND a real tool-call round-trip with well-formed
+# arguments, not just a pricing-sheet lookup.
+#
+# Tiers (fixed hierarchy: SIMPLE < MEDIUM < COMPLEX < REASONING):
+#   SIMPLE    -> Nova Micro + GPT-4o-mini + Nova Lite, adaptive pool
+#                (cheap/fast — quick, low-stakes asks: docs, commit
+#                messages, acknowledgments)
+#   MEDIUM    -> GLM-5.2 + Qwen3.7 Max + Claude Haiku 4.5, adaptive pool
+#                (balanced generalist — most everyday tasks)
+#   COMPLEX   -> DeepSeek V4 Pro + Grok 4.3 + Qwen3-Coder-Plus, adaptive pool
+#                (hard general/coding asks — Kimi K2.7 Code's history in this
+#                tier is above; Qwen3-Coder-Plus replaced it 2026-08-16)
+#   REASONING -> Kimi K3 + Gemini 3.1 Pro Preview + GPT-5.3-Codex, adaptive
+#                pool (the hardest stuff — reserved for genuinely hard asks)
+#
+# Classification: LLM-based (smarter than pure heuristics for judging difficulty),
+# using the router's own Nova Micro deployment — cheap since it's already in
+# the stack. Falls back to the heuristic scorer if that call fails/times out.
+# Deterministic keyword rules run BEFORE either classifier and force a tier
+# regardless of what the classifier would have said — and now run on EVERY
+# turn, not just the first, since there's no session pin to skip them.
+
+model_list:
+  # ── Individual model deployments (all via OpenRouter) ─────────────────────
+  # model_info cost fields pulled directly from OpenRouter's own /api/v1/models
+  # response (2026-08-14/15) — these are brand-new models not yet in litellm's
+  # bundled cost map, so without this, cost tracking would silently default to
+  # $0 for every request through them.
+  #
+  # 2026-08-16: deepseek-v4-flash and mistral-small-3.2 (formerly here,
+  # originally the SIMPLE tier + classifier model) were
+  # both removed after real, sustained error rates — 31 and 32 errors
+  # respectively against very few successful requests. Traced to a class of
+  # bug, not a one-off: OpenRouter's third-party inference resellers for
+  # open-weight models (Venice, then DeepInfra once Venice was excluded —
+  # same malformed-tool_call_id pattern, different provider name each time)
+  # generate broken tool-call IDs and then reject their own output. Excluding
+  # one provider just relocated the failure to the next one, so the real fix
+  # is avoiding third-party-resold open-weight models for this tier
+  # entirely, not chasing providers. Replaced with Amazon Nova Micro/Lite —
+  # served directly by Amazon Bedrock (first-party, single canonical
+  # backend), so this whole bug class doesn't apply. Live-verified: clean
+  # tool-call round-trips, well-formed IDs, before wiring in.
+  - model_name: nova-micro
+    litellm_params:
+      model: openrouter/amazon/nova-micro-v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.000000035
+      output_cost_per_token: 0.00000014
+
+  # SIMPLE-tier pool partners (2026-08-16). Well-established, reliable
+  # providers for the "docs/commits/acknowledgments" workload — this tier
+  # doesn't need heavy tool-call reliability the way COMPLEX/REASONING does,
+  # so the bar here is genuine diversity + a track record, not benchmark
+  # aggression. gemini-2.5-flash-lite was in this same price band and
+  # deliberately passed over — it's the model from the session_affinity
+  # incident at the top of this file (weak at sustained tool-calling), no
+  # reason to reach for it when clean options exist.
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openrouter/openai/gpt-4o-mini
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+
+  # See nova-micro above for why deepseek-v4-flash/mistral-small-3.2 were
+  # dropped and replaced with first-party Amazon Bedrock models. Nova Lite
+  # additionally has real published benchmark backing, not just a clean
+  # smoke test: Amazon's own reporting has it setting standards on the
+  # Berkeley Function Calling Leaderboard for its price/intelligence tier.
+  - model_name: nova-lite
+    litellm_params:
+      model: openrouter/amazon/nova-lite-v1
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.00000006
+      output_cost_per_token: 0.00000024
+
+  - model_name: glm-5.2
+    litellm_params:
+      model: openrouter/z-ai/glm-5.2
+      api_key: os.environ/OPENROUTER_API_KEY
+      # 2026-08-16: Venice (one of OpenRouter's upstream inference providers
+      # for open-weight models) was seen emitting malformed tool_call_ids
+      # (contains a hyphen, e.g. "298abc-77") that Venice's OWN validation
+      # then rejects with a BadGatewayError — a self-inflicted upstream bug,
+      # not anything on our end, but it repeatedly broke live tool-calling
+      # turns (confirmed live, blocked an OpenHands conversation mid-fix).
+      # Excluding Venice alone wasn't the full fix — the same failure just
+      # relocated to the next third-party reseller (DeepInfra) for
+      # deepseek-v4-flash/mistral-small-3.2, which is why those two were
+      # replaced outright with first-party Amazon Bedrock models instead of
+      # patched with this flag (see nova-micro above). Applied here anyway
+      # as defense-in-depth on the open-weight models that stayed in the
+      # pool — proprietary-lab models (Claude/GPT/Gemini/Grok) don't need
+      # it, they aren't resold through third-party inference providers.
+      extra_body: {"provider": {"ignore": ["Venice"]}}
+    model_info:
+      input_cost_per_token: 0.00000119
+      output_cost_per_token: 0.00000374
+
+  # MEDIUM-tier adaptive pool partner for glm-5.2 (2026-08-15). Independent
+  # benchmarks (Artificial Analysis, CodingFleet) put the two functionally
+  # tied on real-world coding (GLM-5.2 62.1% vs Qwen3.7 Max 60.6% on SWE-bench
+  # Pro — within noise), with Qwen clearly ahead on math/reasoning (GPQA 92.4%,
+  # HMMT 97.1%). ~25% pricier than GLM-5.2 but same band — genuine diversity
+  # for the bandit to learn from, not a redundant near-duplicate.
+  - model_name: qwen3.7-max
+    litellm_params:
+      model: openrouter/qwen/qwen3.7-max
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
+    model_info:
+      input_cost_per_token: 0.000001475
+      output_cost_per_token: 0.000004425
+
+  # Third MEDIUM-tier member (2026-08-16). 73.3% SWE-bench Verified —
+  # Anthropic's own framing is "Sonnet 4-equivalent coding at a third the
+  # cost." Different provider than both existing MEDIUM members (Z.ai, Alibaba).
+  - model_name: claude-haiku-4.5
+    litellm_params:
+      model: openrouter/anthropic/claude-haiku-4.5
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000005
+
+  # 2026-08-17: bare "deepseek-v4-pro" on OpenRouter is NOT a rolling alias —
+  # it's pinned to the old 0423 snapshot. The GA release is a separate model
+  # id, "-0813", which has to be named explicitly or you silently stay on
+  # April's model forever.
+  - model_name: deepseek-v4-pro
+    litellm_params:
+      model: openrouter/deepseek/deepseek-v4-pro-0813
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
+    model_info:
+      input_cost_per_token: 0.00000132
+      output_cost_per_token: 0.00000396
+
+  # COMPLEX-tier pool partner (2026-08-16) — this tier had exactly 1 model
+  # since kimi-k2.7-code was pulled. xAI's reasoning-first flagship, cheap
+  # for its class, and a provider not represented anywhere else in the pool.
+  - model_name: grok-4.3
+    litellm_params:
+      model: openrouter/x-ai/grok-4.3
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.00000125
+      output_cost_per_token: 0.0000025
+
+  # Third COMPLEX-tier member (2026-08-16) — replaces kimi-k2.7-code at the
+  # same price point ($0.65/$3.25 vs $0.71/$3.50) rather than reinstating it.
+  # 75-80% SWE-Bench Verified (vs kimi-k3's 60.4%) and explicitly built and
+  # optimized for reliable function-calling — directly addresses the
+  # truncated-tool-call failure mode that got kimi-k2.7-code pulled, not
+  # just a price-matched swap. Different provider (Alibaba) than either
+  # existing COMPLEX member. Live-verified: clean completion + a real
+  # tool-call round-trip with well-formed arguments.
+  - model_name: qwen3-coder-plus
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder-plus
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
+    model_info:
+      input_cost_per_token: 0.00000065
+      output_cost_per_token: 0.00000325
+
+  - model_name: kimi-k3
+    litellm_params:
+      model: openrouter/moonshotai/kimi-k3
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
+    model_info:
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+
+  # REASONING-tier pool partners (2026-08-16). Genuinely different providers
+  # than Kimi and each other, matched to K3's price band — the exact price
+  # match ($3/$15) turned out to only exist as stale Claude Sonnet 4.x
+  # snapshots, worse than just using current Sonnet 5, so these sit close
+  # rather than identical.
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: openrouter/google/gemini-3.1-pro-preview
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000012
+
+  # OpenAI's terminal/coding-agent specialized line — 77.3% Terminal-Bench
+  # 2.0, which is closer to OpenHands' actual shell/tool-use workload than a
+  # generalist reasoning benchmark would be. Cheaper than Kimi K3 on both
+  # input and output, not pricier.
+  - model_name: gpt-5.3-codex
+    litellm_params:
+      model: openrouter/openai/gpt-5.3-codex
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.00000175
+      output_cost_per_token: 0.000014
+
+  # ── Standing REASONING-tier-only alias (2026-08-17) ────────────────────────
+  # For OpenHands' planning phase: the agent's own switch_llm tool moves the
+  # conversation onto this profile before drafting a plan, then back to
+  # smart-router before writing any code. This is a flat litellm load-balanced
+  # group over the exact same 3 models the REASONING tier above uses — no
+  # complexity_router/classifier involved, since during planning we always
+  # want top-tier quality rather than a judgment call about whether this turn
+  # "deserves" it.
+  - model_name: reasoning-tier
+    litellm_params:
+      model: openrouter/moonshotai/kimi-k3
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
+    model_info:
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+  - model_name: reasoning-tier
+    litellm_params:
+      model: openrouter/google/gemini-3.1-pro-preview
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000012
+  - model_name: reasoning-tier
+    litellm_params:
+      model: openrouter/openai/gpt-5.3-codex
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info:
+      input_cost_per_token: 0.00000175
+      output_cost_per_token: 0.000014
+
+  # ── The intelligent router itself — call THIS model_name from clients ─────
+  # ── Pinned per-role aliases for langgraph-agent (2026-08-20) ──────────────
+  # One FIXED model per role — no pools, no classifier, no bandit. Operator
+  # decision: pin each role so cost/accuracy per model is directly attributable
+  # and comparable. To swap a role's model, edit it HERE (the agent only ever
+  # names the role alias) and restart llm-router. model_info costs mirror
+  # OpenRouter's /api/v1/models pricing on the pin date — BudgetGuard's
+  # fallback rate table (agent/tools/model_rates.py) parses these same fields.
+  - model_name: agent-summarizer
+    litellm_params:
+      # Repinned 2026-08-27 from deepseek/deepseek-v4-flash-0731 on latency,
+      # not cost. That pin was chosen as "the cheapest tier is genuinely fine
+      # here" -- true on dollars, false on wall-clock, and this role sits on
+      # the CRITICAL PATH of every long conversation (SummarizationMiddleware
+      # runs before_model, so nothing else moves until it returns).
+      #
+      # Measured on this router's own routing.jsonl, all traffic 08-26..08-27:
+      #   deepseek-v4-flash-0731   13 calls   median 147.6s    11.4 tok/s
+      #   google/gemini-3.7-flash 272 calls   median   2.3s    81.5 tok/s
+      #   deepseek-v4-pro         549 calls   median   8.4s    31.0 tok/s
+      #   moonshotai/kimi-k3       60 calls   median   7.6s    24.0 tok/s
+      # It was the slowest deployment on the board by 7x per token, despite
+      # the "flash" in its name. A single planning turn on 08-27 spent 635 of
+      # its first 700 seconds inside two summarizer calls (295.2s and 339.9s)
+      # while the planning model itself answered in a median of 7s -- the
+      # operator read the session as hung.
+      #
+      # Cost of the swap is real but trivial next to that: the same 14_488-in
+      # /3_886-out call goes from ~$0.0013 to ~$0.013. A cent per
+      # summarization to stop losing five minutes to it.
+      model: openrouter/google/gemini-3.7-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["Google"], "allow_fallbacks": false}}
+    model_info:
+      input_cost_per_token: 0.000000375
+      output_cost_per_token: 0.000001875
+  - model_name: agent-investigator
+    litellm_params:
+      model: openrouter/z-ai/glm-5.3
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["Z.AI"], "allow_fallbacks": false}}
+    model_info:
+      input_cost_per_token: 0.0000014
+      output_cost_per_token: 0.0000044
+  - model_name: agent-coder
+    litellm_params:
+      # DeepSeek V4 Pro 0423 (undated slug = the 0423 release). Promoted from
+      # planner to coder 2026-08-20 after qwen3-coder showed a 15% edit-miss
+      # rate and flubbed an architectural reviewer round.
+      model: openrouter/deepseek/deepseek-v4-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["StreamLake"], "allow_fallbacks": false}}
+    model_info:
+      input_cost_per_token: 0.0000016
+      output_cost_per_token: 0.0000032
+  - model_name: agent-planner
+    litellm_params:
+      # Gemini 3.7 Flash (operator dashboard swap 2026-08-28): plans and
+      # digests reviewer feedback, lighter-weight than raw code editing.
+      # Previously kimi-k3, gemini-3.7-flash, Kimi K2.7 Code, and
+      # deepseek-v4-pro (moved to coder 2026-08-20).
+      model: openrouter/google/gemini-3.7-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true}}
+    model_info:
+      input_cost_per_token: 0.000000375
+      output_cost_per_token: 0.000001875
+  - model_name: agent-vision
+    litellm_params:
+      # Vision bridge for the coding agent's describe_image tool -- the
+      # pinned planner/coder are text-only, so screenshots/photos attached
+      # to tasks get described through this (2026-08-21).
+      model: openrouter/qwen/qwen3-vl-235b-a22b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+      # Server-side output cap. The client sends NO cap on purpose -- see
+      # agent/tools/vision.py: langchain emits max_completion_tokens, which
+      # no provider of this model supports, and require_parameters turned
+      # that into a 404 on every vision call.
+      max_tokens: 1500
+      extra_body: {"provider": {"require_parameters": true}}
+    model_info:
+      input_cost_per_token: 0.00000021
+      output_cost_per_token: 0.0000019
+  - model_name: agent-test-writer
+    litellm_params:
+      model: openrouter/deepseek/deepseek-v4-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["StreamLake"], "allow_fallbacks": false}}
+    model_info:
+      input_cost_per_token: 0.00000087
+      output_cost_per_token: 0.00000174
+  - model_name: agent-reviewer
+    litellm_params:
+      # The commit reviewer (commit-reviewer/reviewer.js). Added 2026-08-25 —
+      # it previously hardcoded 'anthropic/claude-sonnet-5' and called OpenRouter
+      # DIRECTLY, bypassing this router entirely. Three things followed from
+      # that: it never appeared in the dashboard's model picker, it had no
+      # model_info so its rates were unknown, and it never touched the routing
+      # logger, so its spend was invisible to Analytics. ~82 reviews had run
+      # that way.
+      #
+      # A dedicated alias, not the shared reasoning tier — same reasoning as
+      # agent-consolidator: the reviewer's independence from the agent is the
+      # whole point of the gate, so it must not inherit the agent's pool.
+      #
+      # What this role needs, in order: instruction-following and judgement
+      # (its failure mode is FALSE POSITIVES — a wrong blocking finding costs a
+      # full fix-and-review round), long context (diff + commit log + gathered
+      # test/reference files), then reliable tool calling for the single
+      # submit_review call. It never writes or runs code — the mechanical checks
+      # execute in Node before the model is called — so a coding-tuned model is
+      # the wrong instinct here.
+      model: openrouter/anthropic/claude-sonnet-5
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["Anthropic"], "allow_fallbacks": false}}
+      # [managed] family extras for an Anthropic pin -- auto-added by the
+      # dashboard editor; auto-removed when this role is repinned off
+      # Anthropic. Do not hand-edit: see _normalize_family_extras.
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+    model_info:
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.00001
+
+  - model_name: agent-cartographer
+    litellm_params:
+      # The codebase-map builder (agent/cartographer.py). Runs on a schedule,
+      # once per repo, and only when the repo's file inventory has actually
+      # changed -- so this is a rare call, not a per-task one.
+      #
+      # It never reads files or calls tools: the inventory is gathered
+      # deterministically in Python first and handed over as one prompt. What it
+      # needs is long-context comprehension, summarisation and strict
+      # instruction-following -- not tool reliability, coding skill or reasoning
+      # depth. An instruct model is the right CATEGORY here; reasoning tokens
+      # would be spent on a task with nothing to reason about.
+      #
+      # Repinned 2026-08-26 from gemini-3.1-pro-preview after benchmarking four
+      # candidates on the real a trading-bot project inventory (599 files, ~5.2k tokens) and
+      # grading every cited path against the filesystem:
+      #
+      #   model                       $/M in   ghost paths   bare filenames
+      #   mistral-small-3.2-24b        0.075        0              0
+      #   gemini-3.1-pro-preview       2.000        0             12
+      #   qwen3-30b-instruct           0.048        1             13
+      #   qwen3-next-80b-instruct      0.100        2             30
+      #
+      # Mistral was the only one to cite every path in full and get all of them
+      # right, at 26x less than the model it replaces. The failure mode that
+      # matters for a MAP is confident invention -- both qwen models inferred a
+      # `src/core/pnlReconciler.js` from the existence of
+      # `tests/test_pnl_reconciler.js` -- because an agent trusting the map goes
+      # looking for a file that was never there. More output was not better:
+      # the 80b cited the most paths AND invented the most.
+      model: openrouter/mistralai/mistral-small-3.2-24b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true}}
+    model_info:
+      # Fallback only -- the dashboard now reads price from the live OpenRouter
+      # catalog (get_current_pins_priced), because these hand-written blocks
+      # drift. Kept so a catalog outage degrades to a stale number, not to "—".
+      input_cost_per_token: 0.000000075
+      output_cost_per_token: 0.0000003
+
+  - model_name: agent-consolidator
+    litellm_params:
+      # Dedicated pin (2026-08-23) so the memory-consolidation background job
+      # (agent/consolidation.py) does not depend on the reasoning-tier alias
+      # shared with the reviewer -- that pool is not langgraph-agent's to depend
+      # on. Quality matters more than cost here since this runs once nightly per
+      # project, not per task.
+      #
+      # Repinned 2026-08-25, away from qwen3.8-max. Consolidation sends tools and
+      # response_format together, and deepagents implements structured output as a
+      # FORCED tool call. Every provider OpenRouter has for the qwen*-max family
+      # rejects tool_choice=required/object while the model is in thinking mode:
+      #   "The tool_choice parameter does not support being set to required or
+      #    object in thinking mode"
+      # This silently killed the nightly consolidation for any project that
+      # actually had episodes -- projects with nothing to do short-circuit before
+      # the tool call and "passed", so the log looked healthy.
+      #
+      # Probed against the REAL call shape (tools + response_format) through this
+      # router on 2026-08-25:
+      #   qwen3.8-max FAIL   qwen3.7-max FAIL   (Alibaba thinking-mode limit)
+      #   gemini-3.1-pro-preview OK   deepseek-v4-pro OK
+      #   claude-haiku-4.5 OK         glm-5.2 OK
+      # Still a dedicated pin to a specific model, not the shared reasoning-tier
+      # alias -- which was the point of separating this role in the first place.
+      model: openrouter/google/gemini-3.1-pro-preview
+      api_key: os.environ/OPENROUTER_API_KEY
+      # Provider guard (2026-08-25): OpenRouter fans a model out across several
+      # upstream providers and they do NOT all support the same request
+      # parameters. require_parameters=true routes only to providers that support
+      # every parameter in the request. Per-request, so a call with tools and
+      # reasoning is constrained while a plain completion is not -- no static
+      # provider allow-list to maintain as providers change. This is what turned
+      # a silent 400 into an honest 404 and made the real problem visible.
+      extra_body: {"provider": {"require_parameters": true}}
+    model_info:
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000012
+
+  - model_name: agent-classifier
+    litellm_params:
+      # Dedicated pin (2026-08-23): a single cheap, non-agentic call per task
+      # creation (agent/classify.py) that sorts the goal into a fixed
+      # taxonomy for the Analytics dashboard's cost/count-by-category
+      # breakdown. Never read by the coordinator -- accuracy matters less
+      # here than for any real task-execution role. nova-micro-v1 was tried
+      # first (cheapest option) but showed real, repeated request timeouts
+      # in live testing; gpt-4o-mini is already trusted elsewhere in this
+      # config for reliable, fast completions on simple classification-style
+      # calls, and is still inexpensive.
+      model: openrouter/openai/gpt-4o-mini
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["OpenAI"], "allow_fallbacks": false}}
+    model_info:
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+  - model_name: agent-planning-chat
+    litellm_params:
+      # Dedicated pin (2026-08-23): the Planning tab's chat agent
+      # (agent/planning_chat.py) -- a conversational research/design-
+      # consulting role (web search, browsing pages for design reference,
+      # reading the target repo read-only) that drafts a plan document for
+      # a real build task to pick up later. Operator pick: cheapest model
+      # in the whole lineup, matching how agent-planner is already used for
+      # feedback-digesting/planning-shaped work. Called with
+      # reasoning_effort="high" in code (agent/deep_agent.py's
+      # llm_for_role/planning_chat.py) -- this Gemini model supports
+      # OpenRouter's reasoning_effort param and genuinely spends extra
+      # thinking tokens on it (confirmed live: real, billed reasoning
+      # tokens in the response), so it gets real chain-of-thought on a
+      # cheap base model rather than needing a pricier one just for that.
+      #
+      # 2026-08-23: this is now the EASY half of a two-model pair for
+      # planning chat, not the only model -- see agent-planning-chat-hard
+      # below. planning_chat.py classifies each incoming message
+      # (deterministic keyword floor, then an agent-classifier LLM call,
+      # both per-turn/no session pinning -- same reasoning as smart-router's
+      # own session_affinity:false above) and picks this alias for
+      # web-search/research/simple design-planning turns, escalating to
+      # agent-planning-chat-hard only for a turn that actually reads as
+      # bug-fixing/debugging or a genuinely hard problem.
+      # DeepSeek V4 Pro (operator dashboard swap 2026-08-28, was qwen3.8-max):
+      # cheaper per token AND the provider does automatic prefix caching, so
+      # the high-volume EASY tier's re-sent context bills at the cache-read
+      # rate with no cache_control plumbing needed.
+      model: openrouter/deepseek/deepseek-v4-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["StreamLake"], "allow_fallbacks": false}}
+    model_info:
+      input_cost_per_token: 0.00000087
+      output_cost_per_token: 0.00000174
+  - model_name: agent-planning-chat-hard
+    litellm_params:
+      # HARD half of the planning-chat pair -- see agent-planning-chat above
+      # for the split's rationale. Qwen3.8 Max (operator dashboard swap
+      # 2026-08-28; previously claude-sonnet-5, kimi-k3). NOTE for future
+      # editors: the Sonnet-era extras (additional_drop_params stripping the
+      # sampling params, Anthropic cache_control_injection_points) were
+      # removed with this repin -- dropping temperature on qwen silently
+      # un-pinned temperature=0 and made hard planning nondeterministic, and
+      # the cache injection is Anthropic-specific. If this ever goes back to
+      # an Anthropic model, BOTH must return (see commit c00b7dd / 5a10b93).
+      model: openrouter/qwen/qwen3.8-max
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true}}
+    model_info:
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000006
+  - model_name: agent-demo-chat
+    litellm_params:
+      # Optional public demo bot -- an unauthenticated, resume-style chat
+      # endpoint with web search/browse but NO repo, database or memory
+      # access of any kind. Unused unless a deployment runs one. Pinned to a genuinely free model
+      # (z-ai/glm-5.2:free, 256K context) on purpose: this endpoint is
+      # unauthenticated, so its traffic is whatever the internet decides to
+      # send it. A paid model here would be funding strangers' chat sessions.
+      # Cost entries are 0 to match -- if this alias is ever repointed at a
+      # paid model, update them, or the dashboard's spend attribution will
+      # silently under-report this role.
+      # Switched from z-ai/glm-5.2:free to gpt-4o 2026-08-24: the free tier
+      # is a pool shared across all OpenRouter users and was returning 429
+      # persistently ("temporarily rate-limited upstream"), which made the
+      # demo unusable and untestable. Revisit before exposing it widely --
+      # gpt-4o at $2.50/$10.00 per M on an UNAUTHENTICATED endpoint is a real
+      # bill if it gets traffic. gpt-4o-mini is ~17x cheaper and ample for
+      # resume Q&A, and the free model behind a paid fallback is cheaper
+      # still; the demo server's own rate limits bound the downside
+      # either way.
+      model: openrouter/deepseek/deepseek-v4-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "only": ["DeepInfra"], "allow_fallbacks": false}}
+    model_info:
+      input_cost_per_token: 0.000000088606
+      output_cost_per_token: 0.000000177212
+  - model_name: smart-router
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_default_model: glm-5.2   # last-resort safety-net if tier resolution fails entirely
+      complexity_router_config:
+        # All 4 tiers are real destinations again — see the top-of-file note
+        # for why. Every message gets classified fresh (session_affinity is
+        # off below), so a request that's actually simple reliably lands
+        # cheap and a request that's actually hard reliably lands on a real
+        # coding/reasoning model, on whichever turn it first looks that way.
+        #
+        # Every tier is a real adaptive pool as of 2026-08-16 — see the
+        # top-of-file note for how each addition was picked.
+        tiers:
+          SIMPLE:
+            - nova-micro
+            - gpt-4o-mini
+            - nova-lite
+          MEDIUM:
+            - glm-5.2
+            - qwen3.7-max
+            - claude-haiku-4.5
+          COMPLEX:
+            - deepseek-v4-pro
+            - grok-4.3
+            - qwen3-coder-plus
+          REASONING:
+            - kimi-k3
+            - gemini-3.1-pro-preview
+            - gpt-5.3-codex
+
+        # LLM classifier (smarter than token-count/keyword heuristics), routed
+        # through this same router's own cheap deployment — cheap, low
+        # latency. This call only ever produces a JSON tier tag, never
+        # user-facing content. Was deepseek-v4-flash; switched to nova-micro
+        # 2026-08-16 in the same change that removed deepseek-v4-flash from
+        # model_list entirely (see nova-micro's own entry above for why).
+        # 2026-08-17: nova-micro measured a ~20% failure rate here — it
+        # frequently answers with free text ("MEDIUM\n\nThis task involves...")
+        # instead of the strict JSON this classifier parses, so complexity_router
+        # falls back to the cruder heuristic scorer that often. gpt-4o-mini is
+        # well-established for reliable JSON-mode compliance and is already a
+        # SIMPLE-tier destination, so this doesn't add a new model to trust.
+        classifier_type: llm
+        classifier_llm_config:
+          model: gpt-4o-mini
+          timeout_ms: 2000
+        # If the classifier call itself fails/times out, fall back to the local
+        # heuristic scorer rather than failing the request outright.
+        classifier_fallback: heuristic
+
+        # Deterministic overrides, checked BEFORE either classifier — guarantee
+        # certain obvious cases regardless of what the classifier would decide.
+        keyword_tier_rules:
+          - keywords: ["hi", "hey", "hello", "thanks", "thank you", "sounds good", "got it", "ok cool"]
+            tier: SIMPLE
+          # Explicit deterministic floor for the exact "easy stuff" the cheap
+          # tier exists for — same reasoning as the COMPLEX rule below, just
+          # pointed the other way: don't leave these to the classifier's
+          # subjective judgment call every time.
+          - keywords: ["write documentation", "write docs", "update the docs", "update documentation",
+                       "write a commit message", "commit message", "write a readme",
+                       "add a docstring", "write a docstring"]
+            tier: SIMPLE
+          # Added after live verification: the LLM classifier alone judged a
+          # standard LRU-cache implementation request as only MEDIUM (routing
+          # it to GLM-5.2), which defeats the point of having dedicated
+          # COMPLEX coding models at all — coding-flavored asks need a
+          # deterministic floor of COMPLEX so they actually reach the
+          # deepseek-v4-pro/grok-4.3 pool instead of depending on the
+          # classifier's subjective difficulty judgment call.
+          - keywords: ["write a function", "write code", "write a script", "write a class",
+                       "implement a", "refactor this", "debug this", "fix this bug",
+                       "unit test", "regex", "sql query", "stack trace", "algorithm",
+                       "api endpoint", "python function", "javascript function",
+                       "typescript", "pull request", "code review"]
+            tier: COMPLEX
+          - keywords: ["super hard", "extremely difficult", "think as hard as you can", "hardest part", "spare no effort"]
+            tier: REASONING
+
+        # adaptive=True + adaptive_eligible="classified_tier": scoped to
+        # WITHIN a tier, not across tiers — every tier now has 2-3 models to
+        # sample between (2026-08-16). Without this, "all" (the default)
+        # would let the bandit bleed a low-classified request into a pricier
+        # tier with just a distance penalty, which isn't what we want here.
+        adaptive: true
+        adaptive_eligible: classified_tier
+
+        # OFF, deliberately (2026-08-15) — this is the actual fix for "I don't
+        # trust it to assign the hard stuff properly". With affinity on, only
+        # the FIRST turn of a session was ever classified; every later turn
+        # silently inherited that tier regardless of what it actually asked
+        # for. Off means every message — keyword rules, then the LLM
+        # classifier — is judged fresh, every time. A model can now change
+        # mid-conversation as the actual work changes, which is the point:
+        # cheap stays cheap, and the instant something looks hard it routes
+        # up, on whichever turn that happens to be. The classifier itself is
+        # cheap (nova-micro) and fast (~2s timeout), so the added
+        # per-turn cost of not amortizing one classification over a whole
+        # session is small change against the alternative of a wrongly-cheap
+        # model quietly handling real work for an entire conversation.
+        session_affinity: false
+
+        # Show which model actually answered in the response `model` field,
+        # instead of always echoing back "smart-router" — useful for verifying
+        # routing decisions and for cost/usage attribution per underlying model.
+        return_raw_model_name: true
+
+    # 2026-08-16: complexity_router has no concept of message modality — it
+    # classifies by text content alone, so an image could land on a
+    # text-only model (originally true of most of the pool; still true of
+    # nova-micro, deepseek-v4-pro, glm-5.2, and qwen3.7-max/qwen3-coder-plus —
+    # checked OpenRouter's own model catalog). Without this flag OpenHands
+    # refuses client-side ("does not support image understanding") before
+    # even trying. supports_vision: true here is only honest paired with
+    # custom_callbacks.py's async_pre_call_hook, which detects an image_url
+    # content block and forces model=kimi-k3 before the classifier ever
+    # sees the request — don't remove one without the other. Now that most
+    # of the pool (gpt-4o-mini, nova-lite, claude-haiku-4.5,
+    # grok-4.3, gemini-3.1-pro-preview, gpt-5.3-codex) actually takes images
+    # too, that hard-coded kimi-k3 target is more conservative than it needs
+    # to be — a cheap SIMPLE-tier image could route as cheaply as a text one
+    # instead of always paying REASONING-tier price. Not changing that now;
+    # flagging it as a real future optimization, not acting on it unprompted.
+    model_info:
+      supports_vision: true
+
+router_settings:
+  # A single 4xx used to end that project's consolidation for the night --
+  # the failure literally reported "Available Model Group Fallbacks=None".
+  # These two were verified on 2026-08-25 to handle tools + a forced tool_choice
+  # in thinking mode, so this is a real second chance rather than a different
+  # route to the same wall.
+  fallbacks:
+    - agent-consolidator: ["deepseek-v4-pro", "claude-haiku-4.5"]
+    # Planning chat fails over to its own HARD sibling (operator's call,
+    # 2026-08-26, after an upstream 429 on gemini-3.7-flash's shared pool
+    # killed a planning turn outright -- "No fallback model group found").
+    # The hard model is a strict superset of what the easy role needs: same
+    # tools, same prompt shape, already pinned and paid for. Worst case a
+    # cheap turn runs on the expensive model for one reply.
+    # agent-summarizer runs before_model on every long conversation, so a
+    # provider hiccup there stalls or kills the turn outright rather than
+    # degrading it. gemini-3.7-flash's shared pool is the SAME one that 429'd
+    # a planning turn on 2026-08-26 (see the note just below), so this pin
+    # gets an escape hatch from the day it lands. deepseek-v4-pro: proven,
+    # already the fallback of choice for three other roles, and still ~3x the
+    # tok/s of the deepseek-flash pin this replaced.
+    - agent-summarizer: ["deepseek-v4-pro"]
+    - agent-planning-chat: ["agent-planning-chat-hard"]
+    # And the hard model's own escape hatch, in case ITS provider pool chokes:
+    # deepseek-v4-pro is the proven tool-caller on this board (0 failures in
+    # 3,261 calls as the coder).
+    - agent-planning-chat-hard: ["deepseek-v4-pro"]
+    # agent-planner is ALSO gemini-3.7-flash and coordinates every task's work
+    # pass -- the same upstream shared-pool 429s that killed a planning turn
+    # can kill a work pass mid-task. Same remedy: fail over to the proven
+    # tool-caller rather than dying on a provider hiccup.
+    - agent-planner: ["deepseek-v4-pro"]
+    # audit H-8: the review call had no router fallback, so a stall or a 429 on
+    # the reviewer's provider pool blocked the review outright. Since C-3 makes a
+    # failed review fail CLOSED (NEEDS_FIXES), that would block every merge on a
+    # provider hiccup. claude-haiku-4.5 keeps the reviewer independent from the
+    # coder (a different model than deepseek-v4-pro); deepseek-v4-pro is the
+    # cross-vendor escape hatch and the proven tool-caller for the structured
+    # submit_review call. Complements reviewer.js's own HTTP retry/timeout.
+    - agent-reviewer: ["claude-haiku-4.5", "deepseek-v4-pro"]
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  # Records every routed request (which model actually answered, tier, cost)
+  # to logs/routing.jsonl — powers the Router tab in the review dashboard.
+  # Uses the proxy's `callbacks` key (not success_callback/failure_callback):
+  # that's the path that actually fires CustomLogger instances for proxy-mode
+  # HTTP requests (verified — success_callback loaded the instance fine per
+  # startup logs, but never actually invoked it for real traffic).
+  callbacks: ["custom_callbacks.routing_logger"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

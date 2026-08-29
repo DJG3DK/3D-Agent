@@ -1,0 +1,103 @@
+/* Slide-out from the right. Transform, not width, so opening never reflows
+   the page behind it; the scrim catches clicks and dims the task view. */
+.diff-panel-scrim {
+  position: fixed; inset: 0;
+  background: rgba(4, 6, 10, 0.55);
+  z-index: 60;
+}
+.diff-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(720px, 92vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
+  transform: translateX(100%);
+  transition: transform 0.22s ease;
+  z-index: 61;
+  display: flex; flex-direction: column;
+}
+.diff-panel--open { transform: translateX(0); }
+@media (prefers-reduced-motion: reduce) { .diff-panel { transition: none; } }
+
+.diff-panel-header {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.diff-panel-title { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: var(--s2); }
+.diff-live-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--green);
+  animation: diff-pulse 1.6s ease-in-out infinite;
+}
+@keyframes diff-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .diff-live-dot { animation: none; } }
+.diff-panel-totals { margin-left: auto; display: flex; gap: var(--s2); font-size: 12px; align-items: center; }
+.diff-file-count { color: var(--text-faint); }
+.diff-panel-close {
+  background: none; border: 0; color: var(--text-dim); cursor: pointer;
+  font-size: 14px; padding: 6px 8px; border-radius: var(--radius-sm);
+}
+.diff-panel-close:hover { background: var(--surface-hover); color: var(--text); }
+
+.diff-panel-body { flex: 1; overflow-y: auto; padding: var(--s3); }
+.diff-error { color: var(--red); font-size: 12px; padding: var(--s2) 0; }
+.diff-elided { color: var(--text-faint); font-size: 12px; padding: var(--s3); font-style: italic; }
+
+.diff-file { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: var(--s3); overflow: hidden; }
+.diff-file-header {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  background: var(--surface-raised); border: 0; cursor: pointer;
+  padding: var(--s2) var(--s3); font: inherit; color: var(--text);
+}
+.diff-file-header:hover { background: var(--surface-hover); }
+.diff-file-path {
+  font-family: var(--mono, ui-monospace, monospace); font-size: 12px;
+  overflow-wrap: anywhere; text-align: left;
+}
+.diff-file-stats { display: flex; gap: var(--s2); align-items: center; flex-shrink: 0; font-size: 11px; }
+.diff-stat-add { color: var(--green); font-family: var(--mono, ui-monospace, monospace); }
+.diff-stat-del { color: var(--red); font-family: var(--mono, ui-monospace, monospace); }
+.diff-badge-new, .diff-badge-bin {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 1px 6px; border-radius: 999px;
+}
+.diff-badge-new { color: var(--green); border: 1px solid var(--green); }
+.diff-badge-bin { color: var(--text-faint); border: 1px solid var(--border-strong); }
+.diff-caret { color: var(--text-faint); }
+
+/* The shading itself: whole-line background, not text color alone, so the
+   changed regions read as blocks at a glance -- what "shade the changes in
+   different colors" actually asks for. */
+.diff-file-body { overflow-x: auto; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5; }
+.diff-line { white-space: pre; padding: 0 var(--s3); }
+.diff-add { background: rgba(72, 199, 142, 0.13); color: var(--green); }
+.diff-del { background: rgba(240, 86, 74, 0.12); color: var(--red); }
+.diff-hunk { background: var(--surface-sunken); color: var(--accent); padding-top: 2px; padding-bottom: 2px; }
+.diff-meta { color: var(--text-faint); }
+
+.diff-panel-footer {
+  border-top: 1px solid var(--border-strong);
+  padding: var(--s3) var(--s4);
+  flex-shrink: 0;
+  display: flex; flex-direction: column; gap: var(--s2);
+  background: var(--surface-raised);
+}
+.diff-footer-row { display: flex; gap: var(--s3); justify-content: flex-end; }
+.diff-notes {
+  width: 100%; min-height: 84px; resize: vertical;
+  background: var(--surface-sunken); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: var(--s2) var(--s3); font: inherit; font-size: 13px;
+}
+.diff-btn-approve, .diff-btn-warn, .diff-btn-secondary {
+  border: 0; border-radius: var(--radius-sm); padding: 10px 18px;
+  font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+  min-height: 40px;
+}
+.diff-btn-approve { background: var(--green); color: #06130c; }
+.diff-btn-approve:hover:not(:disabled) { filter: brightness(1.1); }
+.diff-btn-warn { background: var(--amber, #d9a441); color: #140f04; }
+.diff-btn-secondary { background: var(--surface-hover); color: var(--text-dim); }
+.diff-btn-approve:disabled, .diff-btn-warn:disabled, .diff-btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }

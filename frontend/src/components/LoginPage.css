@@ -1,0 +1,196 @@
+.login-page {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  /* Column so the public links sit under the card rather than beside it. */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s6);
+  /* Respect the notch and gesture bar — on a phone the card was otherwise
+     centred against the full viewport and sat visually low. */
+  padding-top: calc(var(--s6) + var(--safe-t));
+  padding-bottom: calc(var(--s6) + var(--safe-b));
+  background: var(--bg);
+  position: relative;
+  overflow: hidden;
+}
+
+/* A single soft accent bloom behind the card. One gradient, no animation — it
+   gives the page a centre of gravity so the card doesn't read as a stray box
+   on a black field, without turning the login into a marketing page. */
+.login-page::before {
+  content: "";
+  position: absolute;
+  top: -22%;
+  left: 50%;
+  width: min(760px, 165%);
+  aspect-ratio: 1;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, var(--accent-glow) 0%, transparent 62%);
+  pointer-events: none;
+}
+
+.login-card {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--s7) var(--s6);
+  box-shadow: var(--shadow-pop);
+}
+
+.login-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: var(--accent-glow);
+  border-radius: 999px;
+  padding: 4px 12px;
+  margin-bottom: 18px;
+}
+
+.login-card h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+
+.login-sub {
+  color: var(--text-dim);
+  font-size: 13.5px;
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.form-field span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.form-field input,
+.form-field select {
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-ui);
+  /* 16px minimum: anything smaller makes iOS/Android zoom the viewport on
+     focus, which throws the whole layout off on a phone. */
+  font-size: 16px;
+  min-height: var(--tap);
+  padding: 0 var(--s3);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), background var(--t-fast);
+}
+.form-field input:hover,
+.form-field select:hover { border-color: var(--border-strong); }
+
+.form-field input:focus,
+.form-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.error-banner {
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  color: var(--red);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+/* audit M-22: scope these to .login-page so they don't shadow the global
+   design-system `.btn` in theme.css (a bare `.btn` here leaked app-wide via the
+   import and quietly overrode the design system wherever it loaded later). The
+   login/setup pages keep their own button look; everything else gets the
+   design system's `.btn`. */
+.login-page .btn {
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 10px 16px;
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+.login-page .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.login-page .btn:active:not(:disabled) { transform: scale(0.98); }
+
+.btn-primary {
+  background: var(--accent);
+  color: #0a0d12;
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+
+.btn-block { width: 100%; }
+
+.login-back-link {
+  display: block;
+  width: 100%;
+  text-align: center;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 13px;
+  cursor: pointer;
+  margin-top: 14px;
+  padding: 4px;
+}
+.login-back-link:hover { color: var(--text-dim); }
+
+/* Public links under the login card. This console is private by design, so the
+   page is a dead end for anyone who arrives from a shared link — these give
+   them somewhere real to go. Kept recessive (faint ink, no button chrome) so
+   they never compete with the sign-in action for an actual operator. */
+.login-links {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: var(--s4);
+  font-size: 13px;
+}
+.login-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+  text-decoration: none;
+  /* Generous padding rather than a fixed height: keeps the touch target near
+     44px on a phone without the links reading as buttons. */
+  padding: 11px 10px;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.login-links a:hover,
+.login-links a:focus-visible {
+  color: var(--accent-hover);
+  background: var(--surface-hover);
+}
+.login-links a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.login-links-sep {
+  color: var(--border-strong);
+}

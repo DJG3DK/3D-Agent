@@ -1,0 +1,677 @@
+"""Username/password + TOTP 2FA login: argon2id hashing, RFC 6238 TOTP via
+an encrypted-at-rest secret, one-time recovery codes -- deliberately
+simplified on the session side to a single opaque, httpOnly session cookie
+(hashed, stored server-side, revocable by deleting its row) rather than a
+JWT access/refresh pair. An access/refresh split earns its keep at
+customer-facing scale, where bounding the blast radius of a leaked token
+matters more than the extra moving state; this is a 2-3-user internal tool,
+and one server-side-revocable session covers the same practical need (a
+cookie's contents are useless without a live database row, and logout or an
+admin action can kill it immediately) with far less state to keep
+consistent -- and it covers WebSocket auth for free, since a browser
+attaches cookies to a WS handshake the same as any other request, where a
+Bearer-header JWT would need a separate mechanism.
+
+Schema lives in the SAME Postgres database this agent already uses for its
+LangGraph checkpointer/store (config.pg_dsn) -- a real relational schema
+(unique email, FK-cascaded sessions/recovery codes) rather than the
+key-value Store, since uniqueness/cascade-delete are exactly the kind of
+integrity a KV store can't give you for free.
+
+Per-user project access: `allowed_repos` is NULL for a role="admin" account
+(every configured repo, including ones added later, with no ACL table to
+keep in sync) and an explicit list for role="user" (e.g. a restricted
+account scoped to exactly one project). Checked via `check_repo_access`,
+called explicitly by every repo-scoped endpoint in server.py -- not wired
+through FastAPI's dependency-injection, since the existing endpoints take
+`repo` in enough different shapes (query param, request body field, or
+implied by an existing task/session's own stored repo) that one uniform DI
+signature can't cover all of them without real risk of silently missing one.
+"""
+
+import base64
+import hashlib
+import secrets
+import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+
+import pyotp
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from fastapi import Cookie, HTTPException, Request
+from psycopg_pool import AsyncConnectionPool
+
+from agent.config import Config
+
+SESSION_COOKIE_NAME = "agent_session"
+SESSION_TTL_SECONDS = 7 * 24 * 3600
+PENDING_2FA_TTL_SECONDS = 2 * 60
+RECOVERY_CODE_COUNT = 10
+# A numeric code emailed rather than a link, with a 30-minute expiry and a
+# hard attempt cap so a leaked/guessed-at code can't be brute-forced
+# indefinitely.
+RESET_CODE_TTL_SECONDS = 30 * 60
+RESET_CODE_MAX_ATTEMPTS = 5
+
+# Cost params pinned explicitly (not left to library defaults) so a future
+# argon2-cffi upgrade changing its defaults can't silently reduce the real
+# work factor out from under already-stored hashes.
+_hasher = PasswordHasher(memory_cost=19456, time_cost=2, parallelism=1)
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_users (
+    id SERIAL PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+    allowed_repos TEXT[],
+    totp_secret_enc TEXT,
+    totp_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    totp_last_used_step BIGINT,
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Added 2026-08-23, after agent_users already existed in production --
+-- CREATE TABLE IF NOT EXISTS alone never adds a column to an existing
+-- table, so this needs its own idempotent migration statement.
+ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS auto_approve_commands BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS require_merge_review BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS telegram_bot_token TEXT;
+ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT;
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES agent_users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS agent_2fa_pending (
+    temp_token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES agent_users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_recovery_codes (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES agent_users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    used_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS agent_password_resets (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES agent_users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ
+);
+"""
+
+
+@dataclass
+class User:
+    id: int
+    email: str
+    role: str  # "admin" | "user"
+    allowed_repos: list[str] | None  # None == every repo (admin)
+    totp_enabled: bool
+    must_change_password: bool
+    # Admin-settable per-user toggle (Users panel): when True, a task this
+    # user creates skips deep_agent.py's HITL approval gate on bash/write/
+    # edit calls entirely (still asks via ask_user, which is a real question
+    # channel, not a safety gate) -- for an operator trusted to run genuinely
+    # hands-free. Defaults False; a brand new/existing user is never
+    # auto-approved until an admin opts them in explicitly.
+    auto_approve_commands: bool = False
+    require_merge_review: bool = True
+
+    def can_access(self, repo: str) -> bool:
+        return self.role == "admin" or self.allowed_repos is None or repo in self.allowed_repos
+
+
+
+def check_repo_access(user: User, repo: str) -> None:
+    if not user.can_access(repo):
+        raise HTTPException(403, f"you don't have access to {repo!r}")
+
+
+@asynccontextmanager
+async def open_auth_pool(config: Config):
+    from psycopg.rows import dict_row
+
+    pool = AsyncConnectionPool(
+        config.pg_dsn,
+        min_size=1,
+        max_size=5,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        # audit H-6: same liveness config as the checkpointer pool (graph.py),
+        # so a Postgres restart doesn't strand dead connections and take auth
+        # down with it -- the README already explains why the checkpointer has
+        # this; the auth pool was simply missing it.
+        check=AsyncConnectionPool.check_connection,
+        max_idle=300,
+        max_lifetime=1800,
+        open=False,
+    )
+    await pool.open(wait=True)
+    try:
+        async with pool.connection() as conn:
+            # psycopg's execute() refuses a multi-statement string outright
+            # ("cannot insert multiple commands into a prepared statement")
+            # -- each CREATE TABLE has to go in its own execute() call.
+            for statement in _SCHEMA.split(";"):
+                if statement.strip():
+                    await conn.execute(statement)
+        yield pool
+    finally:
+        await pool.close()
+
+
+def _fernet_key(config: Config) -> bytes:
+    # AUTH_SECRET_KEY is a urlsafe-base64-encoded 32-byte key (see .env.example's
+    # own comment on how it was generated) -- AESGCM wants the raw 32 bytes, not
+    # the encoded form.
+    #
+    # audit M-4: validate the decoded length with an actionable message. The old
+    # .env.example said `openssl rand -hex 32`, whose 64 hex chars base64-decode
+    # to 48 bytes -- AESGCM then raised a bare "key must be 128, 192, or 256
+    # bits" only on the FIRST 2FA setup, bricking admin onboarding (require_full
+    # _auth won't let an admin past without totp_enabled). Fail loudly and early
+    # with the exact fix instead.
+    try:
+        raw = base64.urlsafe_b64decode(config.auth_secret_key)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "AUTH_SECRET_KEY is not valid urlsafe-base64. Generate one with: "
+            'python -c "import base64,secrets;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"'
+        ) from e
+    if len(raw) not in (16, 24, 32):
+        raise RuntimeError(
+            f"AUTH_SECRET_KEY decodes to {len(raw)} bytes; AESGCM needs 16, 24, or 32. "
+            "If you used `openssl rand -hex 32` (48 bytes), regenerate with: "
+            'python -c "import base64,secrets;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"'
+        )
+    return raw
+
+
+def _encrypt_totp_secret(config: Config, secret: str) -> str:
+    key = _fernet_key(config)
+    nonce = secrets.token_bytes(12)
+    ciphertext = AESGCM(key).encrypt(nonce, secret.encode(), None)
+    return base64.urlsafe_b64encode(nonce + ciphertext).decode()
+
+
+def _decrypt_totp_secret(config: Config, enc: str) -> str:
+    key = _fernet_key(config)
+    raw = base64.urlsafe_b64decode(enc)
+    nonce, ciphertext = raw[:12], raw[12:]
+    return AESGCM(key).decrypt(nonce, ciphertext, None).decode()
+
+
+def hash_password(password: str) -> str:
+    return _hasher.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        _hasher.verify(password_hash, password)
+    except VerifyMismatchError:
+        return False
+    return True
+
+
+# audit M-1: a fixed argon2 hash to verify against when the account does not
+# exist, so login runs the same expensive KDF whether or not the email is real.
+# Without this, argon2 only ran for real accounts (~18ms) and short-circuited for
+# unknown ones (~1ms) -- a 15x timing oracle that enumerates valid emails.
+_DUMMY_PASSWORD_HASH = _hasher.hash("timing-equalizer-not-a-real-password")
+
+
+def verify_password_absent() -> bool:
+    """Burn one argon2 verification against a dummy hash and return False.
+    Called on the no-such-user branch of login to equalize timing (M-1)."""
+    try:
+        _hasher.verify(_DUMMY_PASSWORD_HASH, "timing-equalizer-wrong-guess")
+    except VerifyMismatchError:
+        pass
+    return False
+
+
+def validate_password_strength(password: str) -> str | None:
+    """Returns an error message, or None if the password is acceptable."""
+    if len(password) < 12:
+        return "password must be at least 12 characters"
+    if not any(c.islower() for c in password):
+        return "password must include a lowercase letter"
+    if not any(c.isupper() for c in password):
+        return "password must include an uppercase letter"
+    if not any(c.isdigit() for c in password):
+        return "password must include a digit"
+    return None
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _row_to_user(row: dict) -> User:
+    return User(
+        id=row["id"],
+        email=row["email"],
+        role=row["role"],
+        allowed_repos=row["allowed_repos"],
+        totp_enabled=row["totp_enabled"],
+        must_change_password=row["must_change_password"],
+        auto_approve_commands=row["auto_approve_commands"],
+        require_merge_review=row["require_merge_review"],
+    )
+
+
+async def get_user_by_email(pool: AsyncConnectionPool, email: str) -> dict | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT * FROM agent_users WHERE email = %s", (email,))
+        return await cur.fetchone()
+
+
+async def get_user_by_id(pool: AsyncConnectionPool, user_id: int) -> dict | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT * FROM agent_users WHERE id = %s", (user_id,))
+        return await cur.fetchone()
+
+
+async def list_users(pool: AsyncConnectionPool) -> list[dict]:
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT * FROM agent_users ORDER BY created_at")
+        return await cur.fetchall()
+
+
+async def create_user(
+    pool: AsyncConnectionPool, email: str, password: str, role: str, allowed_repos: list[str] | None,
+    must_change_password: bool = False,
+) -> dict:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """INSERT INTO agent_users (email, password_hash, role, allowed_repos, must_change_password)
+               VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+            (email, hash_password(password), role, allowed_repos, must_change_password),
+        )
+        return await cur.fetchone()
+
+
+async def seed_admin_if_none(pool: AsyncConnectionPool, email: str) -> str | None:
+    """Idempotent, safe to call on every startup (matches deep_agent.py's
+    seed_memory/seed_org_memory convention) -- only ever acts the very first
+    time this deployment has zero users at all. Returns the generated
+    initial password (must_change_password=True forces it to be replaced on
+    first login) if a user was actually created, otherwise None."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT count(*) AS n FROM agent_users")
+        row = await cur.fetchone()
+    if row["n"] > 0:
+        return None
+    password = secrets.token_urlsafe(18)
+    await create_user(pool, email, password, "admin", None, must_change_password=True)
+    return password
+
+
+async def update_user_access(pool: AsyncConnectionPool, user_id: int, allowed_repos: list[str] | None) -> None:
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE agent_users SET allowed_repos = %s WHERE id = %s", (allowed_repos, user_id))
+
+
+async def update_auto_approve(pool: AsyncConnectionPool, user_id: int, auto_approve_commands: bool) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_users SET auto_approve_commands = %s WHERE id = %s", (auto_approve_commands, user_id)
+        )
+
+async def update_telegram(pool: AsyncConnectionPool, user_id: int, bot_token: str | None, chat_id: str | None) -> None:
+    """Set (or clear, with Nones/empties) a user's Telegram alert target.
+    The token is a real secret -- it is stored here, returned ONLY through
+    get_telegram_settings' masked shape, and never placed on the User
+    dataclass, so no existing endpoint that serializes users can leak it."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_users SET telegram_bot_token = %s, telegram_chat_id = %s WHERE id = %s",
+            (bot_token or None, chat_id or None, user_id),
+        )
+
+
+async def get_telegram_settings(pool: AsyncConnectionPool, user_id: int) -> dict:
+    """Masked view for the Settings page: whether a token exists, never the
+    token itself. chat_id is not meaningfully secret and is shown for
+    confirmation."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT telegram_bot_token, telegram_chat_id FROM agent_users WHERE id = %s", (user_id,)
+        )
+        row = await cur.fetchone()
+    if not row:
+        return {"configured": False, "chat_id": None}
+    token, chat_id = row["telegram_bot_token"], row["telegram_chat_id"]
+    return {"configured": bool(token and chat_id), "chat_id": chat_id}
+
+
+async def get_telegram_raw(pool: AsyncConnectionPool, user_id: int) -> tuple[str, str] | None:
+    """(token, chat_id) for ONE user, or None if incomplete -- only the
+    send-test endpoint uses this; everything user-facing stays masked."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT telegram_bot_token, telegram_chat_id FROM agent_users WHERE id = %s", (user_id,)
+        )
+        row = await cur.fetchone()
+    if not row or not row["telegram_bot_token"] or not row["telegram_chat_id"]:
+        return None
+    return (row["telegram_bot_token"], row["telegram_chat_id"])
+
+
+async def update_telegram_chat_only(pool: AsyncConnectionPool, user_id: int, chat_id: str | None) -> None:
+    """Change the chat id while keeping the stored token -- the Settings page
+    can never send the real token back (it only ever sees the masked view)."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_users SET telegram_chat_id = %s WHERE id = %s", (chat_id, user_id)
+        )
+
+
+async def get_telegram_targets(pool: AsyncConnectionPool) -> list[tuple[str, str]]:
+    """Every configured (bot_token, chat_id) pair -- alert fan-out reads this."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT telegram_bot_token, telegram_chat_id FROM agent_users "
+            "WHERE telegram_bot_token IS NOT NULL AND telegram_chat_id IS NOT NULL"
+        )
+        rows = await cur.fetchall()
+    return [(r["telegram_bot_token"], r["telegram_chat_id"]) for r in rows]
+
+
+async def update_require_merge_review(pool: AsyncConnectionPool, user_id: int, require_merge_review: bool) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_users SET require_merge_review = %s WHERE id = %s", (require_merge_review, user_id)
+        )
+
+
+async def delete_user(pool: AsyncConnectionPool, user_id: int) -> None:
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM agent_users WHERE id = %s", (user_id,))
+
+
+async def change_password(pool: AsyncConnectionPool, user_id: int, new_password: str) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_users SET password_hash = %s, must_change_password = FALSE WHERE id = %s",
+            (hash_password(new_password), user_id),
+        )
+    # audit H-4: revoke every other session on a password change, exactly as
+    # reset_password does. A password change is often a response to a suspected
+    # compromise; leaving other sessions live defeats the point. This was the
+    # asymmetry the audit flagged -- reset_password got it right, this did not.
+    await revoke_all_sessions(pool, user_id)
+
+
+# --- sessions ---------------------------------------------------------------
+
+
+async def create_session(pool: AsyncConnectionPool, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    async with pool.connection() as conn:
+        # SESSION_TTL_SECONDS is a fixed module constant, never user input --
+        # safe to interpolate directly; token_hash/user_id are the real
+        # per-call values and stay as proper psycopg %s params.
+        await conn.execute(
+            f"INSERT INTO agent_sessions (token_hash, user_id, expires_at) "
+            f"VALUES (%s, %s, now() + interval '{SESSION_TTL_SECONDS} seconds')",
+            (_hash_token(token), user_id),
+        )
+    return token
+
+
+async def resolve_session(pool: AsyncConnectionPool, token: str) -> User | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """SELECT u.* FROM agent_sessions s JOIN agent_users u ON u.id = s.user_id
+               WHERE s.token_hash = %s AND s.expires_at > now()""",
+            (_hash_token(token),),
+        )
+        row = await cur.fetchone()
+    return _row_to_user(row) if row else None
+
+
+async def revoke_session(pool: AsyncConnectionPool, token: str) -> None:
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM agent_sessions WHERE token_hash = %s", (_hash_token(token),))
+
+
+async def revoke_all_sessions(pool: AsyncConnectionPool, user_id: int) -> None:
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM agent_sessions WHERE user_id = %s", (user_id,))
+
+
+# --- 2FA ---------------------------------------------------------------
+
+
+async def create_pending_2fa(pool: AsyncConnectionPool, user_id: int) -> str:
+    temp_token = secrets.token_urlsafe(32)
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"INSERT INTO agent_2fa_pending (temp_token_hash, user_id, expires_at) "
+            f"VALUES (%s, %s, now() + interval '{PENDING_2FA_TTL_SECONDS} seconds')",
+            (_hash_token(temp_token), user_id),
+        )
+    return temp_token
+
+
+async def resolve_pending_2fa(pool: AsyncConnectionPool, temp_token: str) -> dict | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT * FROM agent_2fa_pending WHERE temp_token_hash = %s AND expires_at > now()",
+            (_hash_token(temp_token),),
+        )
+        row = await cur.fetchone()
+        if row:
+            await conn.execute("DELETE FROM agent_2fa_pending WHERE temp_token_hash = %s", (_hash_token(temp_token),))
+    return row
+
+
+def new_totp_secret() -> str:
+    return pyotp.random_base32()
+
+
+def totp_provisioning_uri(secret: str, email: str) -> str:
+    return pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="3D-Agent")
+
+
+async def start_totp_setup(pool: AsyncConnectionPool, config: Config, user_id: int) -> tuple[str, str]:
+    """Generates a fresh secret (not yet committed as enabled -- confirm_totp_setup
+    does that), returns (secret, provisioning_uri) for the frontend to render as a QR."""
+    row = await get_user_by_id(pool, user_id)
+    secret = new_totp_secret()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_users SET totp_secret_enc = %s, totp_enabled = FALSE WHERE id = %s",
+            (_encrypt_totp_secret(config, secret), user_id),
+        )
+    return secret, totp_provisioning_uri(secret, row["email"])
+
+
+async def confirm_totp_setup(pool: AsyncConnectionPool, config: Config, user_id: int, code: str) -> list[str]:
+    """Verifies the enrollment code, flips totp_enabled on, and issues fresh
+    recovery codes (returned in plaintext ONCE -- only the hash is kept)."""
+    row = await get_user_by_id(pool, user_id)
+    if not row or not row["totp_secret_enc"]:
+        raise HTTPException(400, "no pending 2FA setup for this account")
+    secret = _decrypt_totp_secret(config, row["totp_secret_enc"])
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(code, valid_window=1):
+        raise HTTPException(400, "invalid code")
+    codes = [f"{secrets.token_hex(3)}-{secrets.token_hex(3)}" for _ in range(RECOVERY_CODE_COUNT)]
+    async with pool.connection() as conn:
+        # Records this step as already-used -- otherwise the same code just
+        # entered to complete enrollment could immediately be replayed for a
+        # real login (verify_totp_or_recovery's own replay guard only ever
+        # sees totp_last_used_step, which enrollment never touched before).
+        await conn.execute(
+            "UPDATE agent_users SET totp_enabled = TRUE, totp_last_used_step = %s WHERE id = %s",
+            (int(time.time()) // totp.interval, user_id),
+        )
+        await conn.execute("DELETE FROM agent_recovery_codes WHERE user_id = %s", (user_id,))
+        for code_str in codes:
+            await conn.execute(
+                "INSERT INTO agent_recovery_codes (user_id, code_hash) VALUES (%s, %s)",
+                (user_id, _hash_token(code_str)),
+            )
+    return codes
+
+
+async def disable_totp(pool: AsyncConnectionPool, user_id: int) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE agent_users SET totp_enabled = FALSE, totp_secret_enc = NULL, totp_last_used_step = NULL WHERE id = %s",
+            (user_id,),
+        )
+        await conn.execute("DELETE FROM agent_recovery_codes WHERE user_id = %s", (user_id,))
+
+
+def _matched_totp_step(totp: "pyotp.TOTP", code: str) -> int | None:
+    """Return the time-step the given code was minted for (S-1, S, or S+1,
+    matching valid_window=1's acceptance range), or None if it matches none.
+    Each candidate is checked with valid_window=0 so the exact step is known --
+    that step, not the wall-clock step, is what the replay ratchet records
+    (audit M-2). Constant time over the three candidates (pyotp.verify uses an
+    hmac compare); no early return on the first match.
+    """
+    now_step = int(time.time()) // totp.interval
+    matched: int | None = None
+    for step in (now_step - 1, now_step, now_step + 1):
+        if totp.verify(code, for_time=step * totp.interval, valid_window=0):
+            matched = step
+    return matched
+
+
+async def verify_totp_or_recovery(pool: AsyncConnectionPool, config: Config, user_id: int, code: str) -> bool:
+    row = await get_user_by_id(pool, user_id)
+    if not row or not row["totp_enabled"] or not row["totp_secret_enc"]:
+        return False
+    secret = _decrypt_totp_secret(config, row["totp_secret_enc"])
+    totp = pyotp.TOTP(secret)
+    # audit M-2: identify the step the code was MINTED for, not the step at
+    # verification time. The old guard stored current_step and only rejected an
+    # exact re-submit of that same step, so a code minted for step S (which
+    # verify(valid_window=1) accepts at S-1, S, S+1) verified at S, stored S,
+    # then replayed at S+1 computed current_step=S+1 != S and passed the guard --
+    # a real replay window of ~60s. Now each candidate step is checked with
+    # valid_window=0, the MATCHED step is stored, and any code whose step is
+    # <= the last consumed step is rejected (monotonic ratchet).
+    matched_step = _matched_totp_step(totp, code)
+    if matched_step is not None:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                """UPDATE agent_users SET totp_last_used_step = %s
+                   WHERE id = %s AND (totp_last_used_step IS NULL OR totp_last_used_step < %s)""",
+                (matched_step, user_id, matched_step),
+            )
+            return bool(cur.rowcount)
+    # TOTP didn't match at all (wrong or expired code) -- fall back to a one-time recovery code.
+    code_hash = _hash_token(code.strip())
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT id FROM agent_recovery_codes WHERE user_id = %s AND code_hash = %s AND used_at IS NULL",
+            (user_id, code_hash),
+        )
+        recovery_row = await cur.fetchone()
+        if not recovery_row:
+            return False
+        await conn.execute("UPDATE agent_recovery_codes SET used_at = now() WHERE id = %s", (recovery_row["id"],))
+    return True
+
+
+# --- password reset ----------------------------------------------------
+
+
+async def request_password_reset(pool: AsyncConnectionPool, config: Config, email: str) -> None:
+    """Always succeeds from the caller's point of view (see server.py's own
+    endpoint, which returns {"ok": true} unconditionally) -- silently no-ops
+    if the email doesn't match a real account, the same anti-enumeration
+    behavior any password-reset flow needs. Only ever sends real email
+    if a matching user actually exists.
+    """
+    row = await get_user_by_email(pool, email.strip().lower())
+    if not row:
+        return
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"INSERT INTO agent_password_resets (user_id, code_hash, expires_at) "
+            f"VALUES (%s, %s, now() + interval '{RESET_CODE_TTL_SECONDS} seconds')",
+            (row["id"], _hash_token(code)),
+        )
+    from agent.mailer import send_password_reset_email
+
+    await send_password_reset_email(config, row["email"], code)
+
+
+async def reset_password(pool: AsyncConnectionPool, email: str, code: str, new_password: str) -> bool:
+    """Verifies the emailed code (single-use, ≤5 attempts, 30-minute expiry)
+    and, if valid, sets the new password -- also revoking every existing
+    session for this account (a reset is exactly the moment you can no
+    longer assume the old password, and whatever session it created, is
+    still trustworthy) and clearing must_change_password (the new password
+    the operator just chose IS the real one, nothing left to force).
+    Returns False for any invalid/expired/exhausted code, without
+    distinguishing why (same anti-enumeration posture as the request side).
+    """
+    row = await get_user_by_email(pool, email.strip().lower())
+    if not row:
+        return False
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """SELECT * FROM agent_password_resets WHERE user_id = %s AND used_at IS NULL
+               AND expires_at > now() AND attempts < %s ORDER BY id DESC LIMIT 1""",
+            (row["id"], RESET_CODE_MAX_ATTEMPTS),
+        )
+        reset_row = await cur.fetchone()
+        if not reset_row:
+            return False
+        if reset_row["code_hash"] != _hash_token(code.strip()):
+            await conn.execute(
+                "UPDATE agent_password_resets SET attempts = attempts + 1 WHERE id = %s", (reset_row["id"],)
+            )
+            return False
+        await conn.execute("UPDATE agent_password_resets SET used_at = now() WHERE id = %s", (reset_row["id"],))
+    await change_password(pool, row["id"], new_password)
+    await revoke_all_sessions(pool, row["id"])
+    return True
+
+
+# --- FastAPI wiring ---------------------------------------------------------
+
+
+async def get_current_user(
+    request: Request,
+    agent_session: str | None = Cookie(default=None),
+) -> User:
+    pool = request.app.state.auth_pool
+    if not agent_session:
+        raise HTTPException(401, "not logged in")
+    user = await resolve_session(pool, agent_session)
+    if not user:
+        raise HTTPException(401, "session expired or invalid")
+    return user
+
+
+def require_admin(user: User) -> None:
+    if user.role != "admin":
+        raise HTTPException(403, "admin only")
+
+
+async def get_user_from_ws_cookie(pool: AsyncConnectionPool, cookies: dict) -> User | None:
+    token = cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return None
+    return await resolve_session(pool, token)

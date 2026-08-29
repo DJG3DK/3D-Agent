@@ -1,0 +1,5 @@
+{
+  "_comment": "Optional. Maps a local skill's directory name to the projects it should be seeded into. Any skill not listed here goes to every project. Copy to targets.json (gitignored).",
+  "my-service-architecture": ["my-service"],
+  "house-style": ["my-service", "my-other-service"]
+}

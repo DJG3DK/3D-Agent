@@ -1,0 +1,120 @@
+/* ── Ambient light (2026-08-28) — the demo scheme's actual trick. Three
+   fixed radial glows under everything: violet upper-left, cyan upper-right,
+   amber low — the app sits in colored light instead of a void. Painted as
+   body backgrounds (no extra element, no stacking-context risk), fixed so
+   scrolling content moves through the light. */
+body {
+  background:
+    radial-gradient(38% 45% at 16% 10%, rgba(143, 131, 255, 0.16), transparent 70%),
+    radial-gradient(34% 40% at 86% 16%, rgba(61, 219, 217, 0.10), transparent 70%),
+    radial-gradient(42% 44% at 68% 94%, rgba(240, 180, 41, 0.07), transparent 72%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+.app-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh; /* mobile browsers: exclude the collapsing URL bar */
+  /* 100% not 100vw: 100vw INCLUDES the scrollbar width, so on any page with a
+     vertical scrollbar the shell is ~11px wider than the viewport and the whole
+     document scrolls sideways. Measured exactly that — scrollWidth 423 vs
+     clientWidth 412 on every page, with no single element over the edge, which
+     is the signature of this bug rather than a wide child. */
+  width: 100%;
+  overflow: hidden;
+}
+
+/* On mobile the shell becomes a column: the active pane on top, the tab bar
+   pinned underneath. Without this the nav would be laid out as a flex ROW
+   sibling of the sidebar and end up beside the content. */
+@media (max-width: 768px) {
+  .app-shell { flex-direction: column; }
+  .app-shell > .sidebar,
+  .app-shell > .main-pane { flex: 1; min-height: 0; }
+}
+
+.main-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Views (task/new-task/analytics) fill the pane below the (mobile-only)
+   topbar. Overrides each view's own height:100% which predates the wrapper. */
+.main-pane > *:not(.mobile-topbar) {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+/* Models view: the status card is a content-height card stacked on top, and the
+   model list takes the rest. Needed because .main-pane gives `flex: 1` to every
+   direct child — two siblings there split the pane 50/50, which is how the
+   status card ended up half the screen. min-height:0 lets the list scroll
+   inside the column rather than pushing the card off-screen. */
+.models-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.models-view > .consol-panel { flex: 0 0 auto; }
+.models-view > *:not(.consol-panel) { flex: 1; min-height: 0; }
+
+.mobile-topbar {
+  display: none;
+}
+
+/* ===== mobile: one pane at a time — list is home, main slides in ===== */
+@media (max-width: 768px) {
+  .app-shell.show-main .sidebar { display: none; }
+  .app-shell.show-list .main-pane { display: none; }
+
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    padding: var(--s2) var(--s3);
+    /* Notch / status bar. The bar's own background extends up behind it. */
+    padding-top: calc(var(--s2) + var(--safe-t));
+    padding-left: calc(var(--s3) + var(--safe-l));
+    padding-right: calc(var(--s3) + var(--safe-r));
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: color-mix(in srgb, var(--surface) 92%, black);
+    backdrop-filter: blur(10px);
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+
+  .mobile-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    background: transparent;
+    border: 0;
+    color: var(--accent);
+    font-size: var(--fs-base);
+    font-weight: 600;
+    /* Full tap target, but pulled left so the label still aligns to the
+       content edge rather than floating in padding. */
+    min-height: var(--tap);
+    padding: 0 var(--s2) 0 0;
+    margin-left: -2px;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: color var(--t-fast);
+  }
+  .mobile-back:active { color: var(--accent-hover); }
+  .mobile-back:active { background: var(--surface-raised); }
+
+  .mobile-topbar-title {
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--text);
+  }
+}

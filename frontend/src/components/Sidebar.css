@@ -1,0 +1,450 @@
+.sidebar {
+  width: 300px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.sidebar-header {
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.sidebar-logo {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-logo-img {
+  height: 30px;
+  width: auto;
+  display: block;
+  /* the PNG's light-blue wordmark sits well on the navy ground as-is */
+}
+
+.new-task-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--accent);
+  color: #0a0d12;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.new-task-btn:hover {
+  background: #a396f8;
+}
+
+.new-task-btn:active {
+  transform: scale(0.98);
+}
+
+.analytics-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 12px;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+/* Rollover. The left rail marks the active destination and is reserved on
+   every state so hovering can't shift the label. */
+.analytics-nav-btn {
+  position: relative;
+  transition: background var(--t-fast), color var(--t-fast), box-shadow var(--t-fast);
+}
+.analytics-nav-btn:hover { background: var(--surface-hover); color: var(--text); }
+.analytics-nav-btn.active { color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.analytics-nav-btn .icon { opacity: .85; }
+.analytics-nav-btn:hover .icon,
+.analytics-nav-btn.active .icon { opacity: 1; }
+
+.new-task-btn { transition: background var(--t-fast), transform var(--t-fast); }
+.new-task-btn:active { transform: translateY(1px); }
+
+.analytics-nav-btn:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.analytics-nav-btn.active {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.sidebar-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+  text-align: center;
+  padding: 32px 12px;
+}
+
+.sidebar-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 10px 10px;
+  margin-bottom: 2px;
+  cursor: pointer;
+  color: inherit;
+}
+
+/* Rollover: the row lifts a step and grows a left accent rail. The rail is a
+   reserved 2px inset shadow rather than a border, so hovering cannot reflow the
+   text beside it — a border would shift every row by 2px on hover. */
+.sidebar-item {
+  transition: background var(--t-fast), border-color var(--t-fast),
+              box-shadow var(--t-fast);
+}
+.sidebar-item:hover {
+  background: var(--surface-raised);
+  box-shadow: inset 2px 0 0 var(--border-strong);
+}
+.sidebar-item:active { background: var(--surface-hover); }
+
+.sidebar-item.selected {
+  background: var(--surface-raised);
+  border-color: var(--border);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.sidebar-item.selected:hover { box-shadow: inset 2px 0 0 var(--accent); }
+
+.sidebar-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sidebar-item-time {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.sidebar-item-goal {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.sidebar-item-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-item-cost {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+}
+
+.sidebar-plan-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+
+/* ===== Planning / Building sections ===== */
+
+.sidebar-section {
+  margin-bottom: 4px;
+}
+
+.sidebar-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  user-select: none;
+}
+.sidebar-section-head:hover {
+  background: var(--surface-raised);
+}
+
+.sidebar-chevron {
+  display: inline-block;
+  font-size: 9px;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+  flex-shrink: 0;
+}
+.sidebar-chevron.open {
+  transform: rotate(90deg);
+}
+
+.sidebar-section-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.sidebar-section-count {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  background: var(--surface-raised);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.sidebar-section-action {
+  margin-left: auto;
+}
+
+.sidebar-section-new {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-section-new:hover {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sidebar-section-body {
+  padding-left: 4px;
+}
+
+.sidebar-search {
+  width: 100%;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 10px;
+  margin: 2px 2px 6px;
+  box-sizing: border-box;
+}
+.sidebar-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Independently-scrollable region (not one endless page) -- each section
+   caps its own height rather than letting the whole sidebar grow forever
+   as tasks/sessions accumulate. */
+.sidebar-scroll {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.sidebar-category {
+  margin-bottom: 2px;
+}
+
+.sidebar-category-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  user-select: none;
+}
+.sidebar-category-head:hover {
+  background: var(--surface-raised);
+}
+
+.sidebar-category-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.sidebar-category-body {
+  padding-left: 14px;
+}
+
+.sidebar-empty--small {
+  padding: 8px 12px;
+  font-size: 11.5px;
+}
+
+.sidebar-user-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.sidebar-user-email {
+  font-size: 12px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sidebar-logout-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.sidebar-logout-btn:hover { background: var(--surface-raised); }
+
+.sidebar-running-group {
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.sidebar-running-head {
+  cursor: default;
+}
+.sidebar-running-head:hover { background: transparent; }
+
+.sidebar-running-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--blue);
+  flex-shrink: 0;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ===== mobile ===== */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    border-right: none;
+  }
+  .sidebar-header {
+    padding-top: calc(var(--s5) + var(--safe-t));
+    padding-left: calc(var(--s4) + var(--safe-l));
+    padding-right: calc(var(--s4) + var(--safe-r));
+  }
+
+  /* Thumb-sized rows and controls. */
+  .new-task-btn { min-height: var(--tap); font-size: var(--fs-lg); font-weight: 650; }
+  .analytics-nav-btn { min-height: var(--tap); font-size: var(--fs-base); }
+  .sidebar-item { padding: var(--s3); margin-bottom: var(--s1); }
+  .sidebar-item-goal { font-size: var(--fs-base); line-height: 1.4; }
+  .sidebar-item-time, .sidebar-item-cost { font-size: var(--fs-sm); }
+  /* .sidebar-search IS the input, not a wrapper — an earlier pass targeted
+     `.sidebar-search input`, which matches nothing, so the touch sizing here
+     silently did nothing. 16px is the floor that stops mobile browsers zooming
+     the viewport on focus. */
+  .sidebar-search { font-size: 16px; min-height: var(--tap); padding: 0 var(--s3); }
+  .sidebar-logout-btn { min-height: var(--tap); }
+
+  /* The bottom tab bar owns the very bottom of the screen, so the list must
+     stop above it — otherwise the last task sits under the nav and can't be
+     tapped. The nav itself carries the gesture-bar inset. */
+  .sidebar-list, .sidebar-scroll { padding-bottom: var(--s4); }
+
+  /* The desktop footer duplicates what the tab bar now provides. */
+  .sidebar-user-footer { padding-bottom: var(--s3); }
+}
+
+/* ── delete button: was a raw unstyled <button> (default white box). Ghost
+   glyph, only visible while hovering the row, red only on its own hover. */
+.sidebar-item-delete {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0 2px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+.sidebar-item:hover .sidebar-item-delete { opacity: 0.7; }
+.sidebar-item-delete:hover { opacity: 1; color: var(--red); }
+.sidebar-item-delete:disabled { opacity: 0.4; cursor: default; }
+
+/* ── repo filter chips */
+.sidebar-repo-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 10px 2px;
+}
+.sidebar-repo-chip {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.sidebar-repo-chip:hover { color: var(--text); }
+.sidebar-repo-chip.active {
+  color: var(--text);
+  border-color: var(--accent, #6c8cff);
+  background: color-mix(in srgb, var(--accent, #6c8cff) 14%, transparent);
+}

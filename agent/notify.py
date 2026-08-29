@@ -1,0 +1,174 @@
+"""Telegram alerts for the events an operator would act on.
+
+Telegram, specifically, because the operator already lives there -- the
+trading bot's own alerts go to Telegram (engineNotify.js), so this reuses a
+channel that is already open on their phone rather than introducing a second
+messaging system to configure and monitor.
+
+Design constraints, in order:
+  1. BEST-EFFORT, ALWAYS. An alert failing must never break, slow, or fail
+     the thing it is alerting about. Every public function here swallows its
+     own errors after logging them.
+  2. One choke point per event class. Task alerts hook _stream_graph's
+     terminal-status write (every rest state funnels through it), not a
+     scatter of call sites.
+  3. Details AND costs in every message (operator requirement, 2026-08-27):
+     an alert should carry enough to decide "phone or laptop?" without
+     opening the dashboard.
+
+Recipients are every user with Telegram configured in Settings (bot token +
+chat id, stored per-user in agent_users). This is a small-team deployment;
+per-user routing rules can come later if it ever matters.
+"""
+
+import asyncio
+import logging
+
+import httpx
+
+logger = logging.getLogger("3d-agent")
+
+_API = "https://api.telegram.org/bot{token}/sendMessage"
+# Telegram hard limit is 4096 chars/message; leave margin for the ellipsis.
+_MAX_LEN = 4000
+
+
+async def send_telegram(token: str, chat_id: str, text: str) -> bool:
+    """One message to one chat. Returns success; never raises."""
+    if len(text) > _MAX_LEN:
+        text = text[:_MAX_LEN] + "…"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(_API.format(token=token), json={
+                "chat_id": chat_id,
+                "text": text,
+                # Plain text on purpose: goals/errors contain arbitrary
+                # markdown-hostile characters, and a 400 from a bad entity
+                # would silently eat the alert. Reliability beats bold text.
+                "disable_web_page_preview": True,
+            })
+        if r.status_code != 200:
+            logger.warning("telegram send failed (%s): %s", r.status_code, r.text[:200])
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001 -- constraint 1: alerts never break the caller
+        logger.warning("telegram send failed: %s", e)
+        return False
+
+
+async def notify_operators(auth_pool, text: str) -> int:
+    """Send `text` to every user with Telegram configured. Returns how many
+    sends succeeded; never raises."""
+    try:
+        from agent import auth
+        targets = await auth.get_telegram_targets(auth_pool)
+    except Exception:  # noqa: BLE001
+        logger.exception("telegram: could not load recipients")
+        return 0
+    sent = 0
+    for token, chat_id in targets:
+        if await send_telegram(token, chat_id, text):
+            sent += 1
+    return sent
+
+
+def notify_operators_bg(auth_pool, text: str) -> None:
+    """Fire-and-forget wrapper for call sites inside request/stream handlers."""
+    try:
+        task = asyncio.create_task(notify_operators(auth_pool, text))
+        task.add_done_callback(lambda t: t.exception())  # retrieve, never surface
+    except Exception:  # noqa: BLE001
+        logger.exception("telegram: could not schedule notification")
+
+
+# ---------------------------------------------------------------------------
+# message builders -- pure functions, unit-tested
+# ---------------------------------------------------------------------------
+
+_STATUS_LINES = {
+    "escalated":         "🔴 Task ESCALATED — needs you",
+    "awaiting_approval": "🟡 Task waiting on your APPROVAL",
+    "awaiting_merge":    "🟡 Review READY — waiting on your merge approval",
+    "done":              "✅ Task DONE",
+    "error":             "🔴 Task ERROR",
+    "auto_resumed":      "🔄 Task auto-resumed after a restart",
+    "planning_error":    "🔴 Planning turn FAILED",
+}
+
+
+def task_alert(kind: str, repo: str, goal: str, cost_usd: float | None, detail: str | None = None) -> str:
+    """One alert message: what happened, which task, the cost so far, and the
+    actionable detail (escalation reason / approval prompt / error)."""
+    goal_line = (goal or "").strip().splitlines()[0][:120] if goal else "(no goal recorded)"
+    lines = [
+        _STATUS_LINES.get(kind, kind),
+        f"repo: {repo}",
+        f"task: {goal_line}",
+    ]
+    if cost_usd is not None:
+        lines.append(f"cost so far: ${cost_usd:.2f}")
+    if detail:
+        lines.append("")
+        lines.append(str(detail).strip()[:1500])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# pm2 service-restart watch
+# ---------------------------------------------------------------------------
+
+def snapshot_services(pm2_jlist: list) -> dict:
+    """{name: (pid, restart_count)} from `pm2 jlist` output."""
+    snap = {}
+    for proc in pm2_jlist:
+        try:
+            name = proc["name"]
+            env = proc.get("pm2_env") or {}
+            snap[name] = (proc.get("pid"), env.get("restart_time", 0), env.get("status"))
+        except (KeyError, TypeError):
+            continue
+    return snap
+
+
+def diff_services(prev: dict, cur: dict) -> list[str]:
+    """Human alert lines for anything that restarted, died, or appeared since
+    `prev`. Pure function -- the poller wraps it; tests pin it."""
+    alerts = []
+    for name, (pid, restarts, status) in cur.items():
+        if name not in prev:
+            continue  # new service appearing is a deploy action, not an incident
+        p_pid, p_restarts, p_status = prev[name]
+        if status != "online" and p_status == "online":
+            alerts.append(f"🔴 service DOWN: {name} (status: {status})")
+        elif restarts > p_restarts or (pid != p_pid and status == "online"):
+            alerts.append(f"🔄 service restarted: {name} (restart #{restarts})")
+    for name in prev:
+        if name not in cur:
+            alerts.append(f"🔴 service GONE from pm2: {name}")
+    return alerts
+
+
+async def watch_services(auth_pool, interval: float = 60.0, exclude: tuple = ("3d-agent",)) -> None:
+    """Poll `pm2 jlist` and alert on restarts/deaths of the OTHER services --
+    llm-router, the trading bots, the reviewers. The agent backend itself is
+    excluded: its own restart resets this watcher's baseline (it runs inside
+    that process), so it announces itself via the startup alert instead.
+    Runs forever; every failure is swallowed after logging -- constraint 1.
+    """
+    import json as _json
+    prev: dict = {}
+    while True:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pm2", "jlist", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+            cur = snapshot_services(_json.loads(out.decode() or "[]"))
+            for name in exclude:
+                cur.pop(name, None)
+            if prev:
+                for line in diff_services(prev, cur):
+                    await notify_operators(auth_pool, line)
+            prev = cur
+        except Exception:  # noqa: BLE001
+            logger.exception("service watch poll failed (will retry)")
+        await asyncio.sleep(interval)

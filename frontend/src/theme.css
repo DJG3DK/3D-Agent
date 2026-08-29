@@ -1,0 +1,220 @@
+/* ============================================================================
+   3D-Agent design tokens
+   ----------------------------------------------------------------------------
+   Rebuilt 2026-08-25. Three things drove it:
+
+   1. CONTRAST. --text-faint had 64 usages at 3.04:1 against the card surface —
+      below the 4.5:1 body minimum, which is why meta text read as mush. Every
+      foreground token below is measured against --surface and clears 4.5:1.
+   2. MOBILE. Breakpoints were scattered across 640/700/768/900/1000/1100px with
+      no shared scale, and nothing accounted for a phone's gesture bar. There is
+      one --bp-mobile story now, plus safe-area insets.
+   3. TOUCH. Controls were sized for a mouse. --tap (44px) is the floor for
+      anything you press with a thumb.
+
+   Density is deliberate: this is an operator console, so information sits close
+   together and the type scale is tight. Colour is reserved for STATE — running,
+   failed, waiting — and never used decoratively.
+   ========================================================================== */
+
+:root {
+  /* ── Ground & elevation ────────────────────────────────────────────────
+     Four steps, each a real step. The old palette had surface and
+     surface-raised only ~6% apart, so cards on cards vanished.            */
+  /* Luminous navy scheme (2026-08-28, operator ask: "brighten the
+     dashboard… I love the demo agent scheme"). Ported from the demo bot:
+     deep navy-indigo ground instead of flat charcoal, surfaces a real step
+     brighter and blue-tinted, and AMBIENT LIGHT painted at the body level
+     (see App.css) — three soft radial glows, which is what actually makes
+     the demo feel lit rather than dark. Every foreground below re-measured
+     against the NEW --surface; all clear 4.5:1 (script in commit 7bff949's
+     successor).                                                            */
+  --bg:             #0d1124;
+  --surface:        #1a2140;
+  --surface-raised: #232b52;
+  --surface-hover:  #2b3462;
+  --surface-sunken: #121732;
+
+  --border:       #333d6b;
+  --border-soft:  #272f58;
+  --border-strong:#465391;
+
+  /* ── Foreground (all ≥ 4.5:1 on --surface) ──────────────────────────── */
+  --text:       #eef2f8;   /* 14.00:1 */
+  --text-dim:   #aeb8d6;   /*  7.96:1 */
+  --text-faint: #8791b4;   /*  5.05:1 */
+
+  /* ── Accent ──────────────────────────────────────────────────────────── */
+  --accent:       #9a8fff;   /* 5.80:1 */
+  --accent-hover: #b0a7ff;
+  --accent-dim:   #6a5cd6;
+  --accent-glow:  rgba(143, 131, 255, 0.16);
+  --accent-ring:  rgba(143, 131, 255, 0.45);
+
+  /* ── State. Text-safe values; -bg variants for fills. ────────────────── */
+  --blue:   #5ab0ff;  --blue-bg:  rgba(90, 176, 255, 0.13);
+  --amber:  #f0b429;  --amber-bg: rgba(240, 180, 41, 0.13);
+  --green:  #3ecf7e;  --green-bg: rgba(62, 207, 126, 0.13);
+  --red:    #ff6b63;  --red-bg:   rgba(255, 107, 99, 0.13);
+  --cyan:   #3ddbd9;  --cyan-bg:  rgba(61, 219, 217, 0.13);
+
+  /* ── Space scale (4px base) ──────────────────────────────────────────── */
+  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
+  --s5: 20px; --s6: 24px; --s7: 32px; --s8: 48px;
+
+  /* ── Radii ───────────────────────────────────────────────────────────── */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius:    10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* ── Type ────────────────────────────────────────────────────────────── */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px;
+  --fs-base: 14px; --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 26px;
+
+  /* ── Elevation ───────────────────────────────────────────────────────── */
+  /* Shadows carry a hint of the ambient violet instead of pure black —
+     part of the "lit" feel: elevation reads as light, not absence.        */
+  --shadow-card:  0 1px 2px rgba(4,6,18,.45), 0 6px 20px rgba(80,70,200,.10);
+  --shadow-pop:   0 8px 28px rgba(4,6,18,.55), 0 2px 40px rgba(120,110,255,.08);
+  --shadow-inset: inset 0 1px 0 rgba(255,255,255,.05);
+
+  /* ── Motion. Short, and honoured only when the user allows it. ───────── */
+  --t-fast: 110ms cubic-bezier(.4,0,.2,1);
+  --t:      170ms cubic-bezier(.4,0,.2,1);
+
+  /* ── Touch ───────────────────────────────────────────────────────────── */
+  --tap: 44px;
+
+  /* Phone gesture bar / notch. 0 on desktop, real values on a Pixel. */
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Stop iOS/Android inflating text in landscape and breaking the layout. */
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+}
+
+::selection { background: var(--accent-glow); }
+
+/* ── Scrollbars: visible enough to grab, quiet enough to ignore ────────── */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: content-box; }
+
+/* ── Focus: keyboard only. A visible ring is not optional. ─────────────── */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+button, input, textarea, select { font-family: inherit; font-size: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+
+/* ============================================================================
+   Button system. One place, so every control in the app agrees on height,
+   radius, hover and disabled — previously each component reinvented these and
+   they drifted.
+   ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  min-height: 34px;
+  padding: 0 var(--s3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), border-color var(--t-fast),
+              color var(--t-fast), transform var(--t-fast);
+}
+.btn:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--border-strong); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b0e14;
+  font-weight: 650;
+}
+.btn--primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.btn--ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
+.btn--ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+
+.btn--danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+.btn--danger:hover:not(:disabled) { background: var(--red-bg); border-color: var(--red); }
+
+.btn--sm { min-height: 28px; padding: 0 var(--s2); font-size: var(--fs-sm); }
+.btn--lg { min-height: var(--tap); padding: 0 var(--s4); font-size: var(--fs-base); }
+.btn--icon { padding: 0; width: 34px; min-height: 34px; }
+
+/* Anything thumb-operated grows to the 44px floor on touch devices. */
+@media (pointer: coarse) {
+  .btn { min-height: var(--tap); padding: 0 var(--s4); }
+  .btn--icon { width: var(--tap); }
+  .btn--sm { min-height: 36px; }
+}
+
+/* ── Shared surface ────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+/* ── Monospace data. Shas, ids, money, counts. ─────────────────────────── */
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+@keyframes spin  { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* ── Icons ─────────────────────────────────────────────────────────────── */
+.icon { flex: 0 0 auto; display: block; }
+.icon--spin { animation: spin .8s linear infinite; }
