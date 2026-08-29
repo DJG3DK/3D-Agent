@@ -27,6 +27,14 @@ class _FakeStore:
     async def asearch(self, ns, limit=50):
         return [_Item(t["task_id"], dict(t)) for t in self.tasks]
 
+    async def aget(self, ns, key):
+        """write_task_meta reads before it writes -- the read-merge-write that
+        stops one caller's omission from deleting another's field."""
+        for t in self.tasks:
+            if t["task_id"] == key:
+                return _Item(key, dict(t))
+        return None
+
     async def aput(self, ns, key, value):
         self.puts.append((key, dict(value)))
 

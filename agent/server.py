@@ -6,6 +6,7 @@ opening a fresh connection per request would be wasteful and race-prone).
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -143,8 +144,8 @@ async def _auto_resume_orphaned_tasks(startup_delay: float = 5.0) -> None:
                     "budget_usd": values["budget_usd"],
                     "max_iterations": values.get("max_iterations", 40) + 40,
                 })
-                await app.state.store.aput(("tasks", repo), task_id,
-                                           {**meta, "auto_resume_ckpt": ckpt_ts})
+                await write_task_meta(app.state.store, repo, task_id,
+                                      auto_resume_ckpt=ckpt_ts)
                 _running_tasks[task_id] = asyncio.create_task(
                     _stream_graph(task_id, values["repo"], values["goal"], values["budget_usd"], None)
                 )
@@ -1006,6 +1007,68 @@ def _final_status(values: dict) -> str:
     return "done"
 
 
+@contextlib.contextmanager
+def _claim_run_slot(registry: dict, key: str, already_running: str):
+    """Reserve a slot in a run registry BEFORE the handler's awaits.
+
+    The registries below are plain dicts guarded by `if key in registry:
+    raise 409`. That check sat at the top of each handler and the real
+    assignment came several awaits later -- and the event loop switches at
+    every await, so two concurrent requests could both pass the check and
+    both create a driver for the same thread. The unconditional
+    `registry.pop(key)` in the driver's finally then orphaned whichever one
+    survived.
+
+    A dict write with no await between it and the check IS atomic here, so
+    the fix is to reserve immediately: place a None placeholder, then let the
+    handler replace it with the real Task. Both consumers of these registries
+    do `registry.get(key)` and treat a falsy value as "not running", which is
+    exactly right for the reservation window -- there is genuinely nothing to
+    cancel yet.
+
+    The slot is released if the handler raises, or if it returns without ever
+    assigning a task; otherwise a rejected request would strand the key and
+    the task could never be started again.
+    """
+    if registry.get(key) is not None or key in registry:
+        raise HTTPException(409, already_running)
+    registry[key] = None
+    try:
+        yield
+    except BaseException:
+        registry.pop(key, None)
+        raise
+    if registry.get(key) is None:
+        registry.pop(key, None)
+
+
+async def write_task_meta(store, repo: str, task_id: str, **updates) -> dict:
+    """The single writer for a task's Store record.
+
+    Every caller used to hand-build the entire dict, so a key one site
+    remembered and another forgot was silently deleted by the next write.
+    That is not hypothetical:
+
+      * audit H-20 -- the error path was a full overwrite carrying neither
+        cost_so_far nor escalation_reason, so a failed task erased the spend
+        already mirrored mid-pass and reported $0.00 in stats and analytics;
+      * the "stopped" path dropped escalation_reason outright, so stopping a
+        task that had escalated lost the reason it escalated for.
+
+    Read-merge-write, so unspecified keys are PRESERVED and forgetting one can
+    no longer delete it. Pass an explicit None to clear a field deliberately.
+    task_id and repo are always stamped -- they identify the record.
+    """
+    existing = await store.aget(("tasks", repo), task_id)
+    record = dict(existing.value) if existing else {}
+    record.update(updates)
+    record["task_id"] = task_id
+    record["repo"] = repo
+    record.setdefault("created_at", time.time())
+    await store.aput(("tasks", repo), task_id, record)
+    return record
+
+
 async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, graph_input, category: str | None = None) -> None:
     """Shared by a fresh task (graph_input = the initial state) and a resume
     (graph_input = None, meaning "continue from the last checkpoint" -- the
@@ -1057,10 +1120,11 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
         if existing and existing.values:
             starting_cost = existing.values.get("cost_so_far", 0.0)
 
-    await store.aput(("tasks", repo), task_id, {
-        "task_id": task_id, "goal": goal, "repo": repo, "budget_usd": budget_usd, "category": category,
-        "status": "running", "created_at": original_created_at or time.time(), "cost_so_far": starting_cost,
-    })
+    await write_task_meta(
+        store, repo, task_id, goal=goal, budget_usd=budget_usd, category=category,
+        status="running", created_at=original_created_at or time.time(),
+        cost_so_far=starting_cost,
+    )
     _publish(task_id, {"type": "status", "status": "running"})
 
     # Declared here (not just inside the loop below) so the CancelledError
@@ -1147,7 +1211,7 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
                             meta_item = await store.aget(("tasks", repo), task_id)
                             if meta_item:
                                 last_meta_cost = live_cost
-                                await store.aput(("tasks", repo), task_id, {**meta_item.value, "cost_so_far": live_cost})
+                                await write_task_meta(store, repo, task_id, cost_so_far=live_cost)
                     continue
 
                 # mode == "updates": one event per outer node ("work" or
@@ -1188,16 +1252,17 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
                         last_meta_cost = update["cost_so_far"]
                         meta_item = await store.aget(("tasks", repo), task_id)
                         if meta_item:
-                            await store.aput(("tasks", repo), task_id, {**meta_item.value, "cost_so_far": update["cost_so_far"]})
+                            await write_task_meta(store, repo, task_id, cost_so_far=update["cost_so_far"])
 
         final = await graph.aget_state(thread_config)
         values = final.values
         status = _final_status(values)
-        await store.aput(("tasks", repo), task_id, {
-            "task_id": task_id, "goal": goal, "repo": repo, "budget_usd": values.get("budget_usd", budget_usd),
-            "category": category, "status": status, "created_at": original_created_at or time.time(), "cost_so_far": values.get("cost_so_far", 0.0),
-            "escalation_reason": values.get("escalation_reason"),
-        })
+        await write_task_meta(
+            store, repo, task_id, goal=goal, budget_usd=values.get("budget_usd", budget_usd),
+            category=category, status=status, created_at=original_created_at or time.time(),
+            cost_so_far=values.get("cost_so_far", 0.0),
+            escalation_reason=values.get("escalation_reason"),
+        )
         _publish(task_id, {
             "type": "status",
             "status": status,
@@ -1247,10 +1312,13 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
         except Exception:
             pass
         try:
-            await store.aput(("tasks", repo), task_id, {
-                "task_id": task_id, "goal": goal, "repo": repo, "budget_usd": budget_usd, "category": category,
-                "status": "stopped", "created_at": original_created_at or time.time(), "cost_so_far": cost_now,
-            })
+            # escalation_reason is no longer named here -- and no longer lost.
+            # The merge preserves whatever the record already carried.
+            await write_task_meta(
+                store, repo, task_id, goal=goal, budget_usd=budget_usd, category=category,
+                status="stopped", created_at=original_created_at or time.time(),
+                cost_so_far=cost_now,
+            )
             _publish(task_id, {"type": "status", "status": "stopped"})
         except Exception:  # noqa: BLE001
             logger.exception("stopped-status write failed for task %s (cancellation still honored)", task_id)
@@ -1262,16 +1330,14 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
         # still only need the short message, that's what the user sees.
         logger.error("task %s failed: %s", task_id, str(e))
         logger.error(traceback.format_exc())
-        await store.aput(("tasks", repo), task_id, {
-            "task_id": task_id, "goal": goal, "repo": repo, "budget_usd": budget_usd, "category": category,
-            # audit H-20: carry cost_so_far and escalation_reason forward. This
-            # was a full overwrite with neither key, so a failed task erased the
-            # spend already mirrored mid-pass and read as $0.00 in get_stats /
-            # get_analytics. last_meta_cost holds the latest live-tracked total.
-            "status": "error", "created_at": original_created_at or time.time(), "error": str(e),
-            "cost_so_far": last_meta_cost,
-            "escalation_reason": _existing_val.get("escalation_reason"),
-        })
+        # audit H-20 fixed this path by naming cost_so_far and escalation_reason
+        # explicitly after a full overwrite had erased them. The merge now makes
+        # that structural rather than remembered.
+        await write_task_meta(
+            store, repo, task_id, goal=goal, budget_usd=budget_usd, category=category,
+            status="error", created_at=original_created_at or time.time(),
+            error=str(e), cost_so_far=last_meta_cost,
+        )
         _publish(task_id, {"type": "status", "status": "error", "error": str(e)})
         _alert_task_status(task_id, "error", repo, goal, last_meta_cost, str(e)[:400])
     finally:
@@ -1737,18 +1803,17 @@ async def stop_planning_turn(session_id: str, user: User = Depends(require_full_
 
 @app.post("/api/planning/sessions/{session_id}/message", status_code=202)
 async def send_planning_message(session_id: str, req: PlanningMessageRequest, user: User = Depends(require_full_auth)):
-    if session_id in _running_planning_turns:
-        raise HTTPException(409, "planning session is already processing a message")
-    repo, meta = await _find_planning_meta(session_id)
-    if not meta:
-        raise HTTPException(404, "planning session not found")
-    check_repo_access(user, repo)
-    if not req.text.strip():
-        raise HTTPException(400, "message text is required")
-    _running_planning_turns[session_id] = asyncio.create_task(
-        _run_planning_turn_bg(session_id, repo, req.text.strip(), req.attachments, allowed_repos=user.allowed_repos)
-    )
-    return {"ok": True}
+    with _claim_run_slot(_running_planning_turns, session_id, "planning session is already processing a message"):
+        repo, meta = await _find_planning_meta(session_id)
+        if not meta:
+            raise HTTPException(404, "planning session not found")
+        check_repo_access(user, repo)
+        if not req.text.strip():
+            raise HTTPException(400, "message text is required")
+        _running_planning_turns[session_id] = asyncio.create_task(
+            _run_planning_turn_bg(session_id, repo, req.text.strip(), req.attachments, allowed_repos=user.allowed_repos)
+        )
+        return {"ok": True}
 
 
 @app.websocket("/api/planning/sessions/{session_id}/stream")
@@ -2713,125 +2778,124 @@ async def resume_task(task_id: str, req: ResumeTaskRequest, user: User = Depends
       content: what the escalation was and that budget was added, plus the
       operator's own resume message if they left one.
     """
-    if task_id in _running_tasks:
-        raise HTTPException(409, "task is already running")
-    graph = app.state.graph
-    thread_config = {"configurable": {"thread_id": task_id}}
-    checkpoint = await graph.aget_state(thread_config)
-    if not checkpoint or not checkpoint.values:
-        raise HTTPException(404, "task not found")
-    values = checkpoint.values
-    check_repo_access(user, values["repo"])
+    with _claim_run_slot(_running_tasks, task_id, "task is already running"):
+        graph = app.state.graph
+        thread_config = {"configurable": {"thread_id": task_id}}
+        checkpoint = await graph.aget_state(thread_config)
+        if not checkpoint or not checkpoint.values:
+            raise HTTPException(404, "task not found")
+        values = checkpoint.values
+        check_repo_access(user, values["repo"])
 
-    meta = await app.state.store.aget(("tasks", values["repo"]), task_id)
-    store_status = meta.value.get("status") if meta else None
-    was_escalated = bool(values.get("escalated"))
-    # "done" is resumable too, not fully terminal like any other completion:
-    # the "two consecutive no-diff passes -> done, no changes needed"
-    # safeguard in verify_and_ship.py (built to stop genuinely-finished
-    # investigations from looping forever) can't always tell a real
-    # conclusion apart from the model dropping a tool call mid-investigation.
-    # An operator who judges a "done" verdict premature needs a way back in,
-    # the same as an escalation -- there's no substitute for a human catching
-    # a wrong "done" and saying "no, keep going."
-    was_done = (not was_escalated) and store_status == "done"
-    # "running" here means orphaned (Store says running, nothing actually
-    # driving it) rather than genuinely running, since the endpoint itself
-    # already 409s above when task_id is truly in _running_tasks.
-    # "stopped" is the operator's own Stop button (/stop below) -- same
-    # "nothing lost, just paused" situation as an orphaned task, so it's
-    # resumable through the exact same non-replanning path.
-    # audit H-20: "error" is resumable too. verify_and_ship's catch-all exists
-    # specifically to route around an unresumable error status, but anything
-    # raising outside that handler still lands with an intact checkpoint the
-    # endpoint used to refuse -- contradicting "a task is never a dead end."
-    # The checkpoint is intact, so a resume continues from the last good state.
-    resumable = was_escalated or was_done or store_status in ("running", "stopped", "error")
-    if not resumable:
-        raise HTTPException(409, f"task status is {store_status!r} -- nothing to resume")
-    if was_done and not req.message:
-        # Unlike an escalation (which always has a real reason to restate),
-        # a "done" task has nothing to nudge with on its own -- silently
-        # reopening it with no instruction would just re-run the same
-        # investigation and likely land on the same premature conclusion.
-        raise HTTPException(400, "resuming a done task requires a message telling it what to do next")
+        meta = await app.state.store.aget(("tasks", values["repo"]), task_id)
+        store_status = meta.value.get("status") if meta else None
+        was_escalated = bool(values.get("escalated"))
+        # "done" is resumable too, not fully terminal like any other completion:
+        # the "two consecutive no-diff passes -> done, no changes needed"
+        # safeguard in verify_and_ship.py (built to stop genuinely-finished
+        # investigations from looping forever) can't always tell a real
+        # conclusion apart from the model dropping a tool call mid-investigation.
+        # An operator who judges a "done" verdict premature needs a way back in,
+        # the same as an escalation -- there's no substitute for a human catching
+        # a wrong "done" and saying "no, keep going."
+        was_done = (not was_escalated) and store_status == "done"
+        # "running" here means orphaned (Store says running, nothing actually
+        # driving it) rather than genuinely running, since the endpoint itself
+        # already 409s above when task_id is truly in _running_tasks.
+        # "stopped" is the operator's own Stop button (/stop below) -- same
+        # "nothing lost, just paused" situation as an orphaned task, so it's
+        # resumable through the exact same non-replanning path.
+        # audit H-20: "error" is resumable too. verify_and_ship's catch-all exists
+        # specifically to route around an unresumable error status, but anything
+        # raising outside that handler still lands with an intact checkpoint the
+        # endpoint used to refuse -- contradicting "a task is never a dead end."
+        # The checkpoint is intact, so a resume continues from the last good state.
+        resumable = was_escalated or was_done or store_status in ("running", "stopped", "error")
+        if not resumable:
+            raise HTTPException(409, f"task status is {store_status!r} -- nothing to resume")
+        if was_done and not req.message:
+            # Unlike an escalation (which always has a real reason to restate),
+            # a "done" task has nothing to nudge with on its own -- silently
+            # reopening it with no instruction would just re-run the same
+            # investigation and likely land on the same premature conclusion.
+            raise HTTPException(400, "resuming a done task requires a message telling it what to do next")
 
-    # A bare float let a negative value shrink the ceiling below what has
-    # already been spent (making the guard fire immediately and look like a
-    # crash) and let an enormous one defeat the budget entirely. Bound it to a
-    # sane top-up range; the field is a *delta*, not a new total.
-    if not (0 < req.additional_budget_usd <= _MAX_BUDGET_TOPUP_USD):
-        raise HTTPException(
-            400, f"additional_budget_usd must be greater than 0 and at most "
-                 f"${_MAX_BUDGET_TOPUP_USD:.2f}")
-    new_budget = values["budget_usd"] + req.additional_budget_usd
-    # max_iterations is set once at task creation (40) and, unlike
-    # budget_usd, was never bumped on resume -- every work<->verify_and_ship
-    # cycle across the task's entire lifetime counts against that same fixed
-    # cap, no matter how many times it's legitimately been resumed (backend
-    # restarts, manual stop/resume, operator nudges). Without growing it on
-    # each resume, a task resumed several times over one long session could
-    # hit iteration_count == max_iterations with cost_so_far nowhere near
-    # budget_usd -- an iteration-count artifact, not real futility. +40 per
-    # resume mirrors how budget_usd already grows here.
-    new_max_iterations = values.get("max_iterations", 40) + 40
-    # Explicit even though initial_state() already sets this for any task
-    # created after task_id was added to AgentState -- this closes the gap
-    # for older tasks that predate that field.
-    patch = {"task_id": task_id, "budget_usd": new_budget, "max_iterations": new_max_iterations}
-    if was_escalated:
-        budget_note = (
-            f"Additional budget granted -- ${req.additional_budget_usd:.2f} more, ${new_budget:.2f} total now. "
-            if req.additional_budget_usd > 0
-            else "No additional budget added. "
+        # A bare float let a negative value shrink the ceiling below what has
+        # already been spent (making the guard fire immediately and look like a
+        # crash) and let an enormous one defeat the budget entirely. Bound it to a
+        # sane top-up range; the field is a *delta*, not a new total.
+        if not (0 < req.additional_budget_usd <= _MAX_BUDGET_TOPUP_USD):
+            raise HTTPException(
+                400, f"additional_budget_usd must be greater than 0 and at most "
+                     f"${_MAX_BUDGET_TOPUP_USD:.2f}")
+        new_budget = values["budget_usd"] + req.additional_budget_usd
+        # max_iterations is set once at task creation (40) and, unlike
+        # budget_usd, was never bumped on resume -- every work<->verify_and_ship
+        # cycle across the task's entire lifetime counts against that same fixed
+        # cap, no matter how many times it's legitimately been resumed (backend
+        # restarts, manual stop/resume, operator nudges). Without growing it on
+        # each resume, a task resumed several times over one long session could
+        # hit iteration_count == max_iterations with cost_so_far nowhere near
+        # budget_usd -- an iteration-count artifact, not real futility. +40 per
+        # resume mirrors how budget_usd already grows here.
+        new_max_iterations = values.get("max_iterations", 40) + 40
+        # Explicit even though initial_state() already sets this for any task
+        # created after task_id was added to AgentState -- this closes the gap
+        # for older tasks that predate that field.
+        patch = {"task_id": task_id, "budget_usd": new_budget, "max_iterations": new_max_iterations}
+        if was_escalated:
+            budget_note = (
+                f"Additional budget granted -- ${req.additional_budget_usd:.2f} more, ${new_budget:.2f} total now. "
+                if req.additional_budget_usd > 0
+                else "No additional budget added. "
+            )
+            resume_note = (
+                f"Resumed by operator after escalation (was: {values.get('escalation_reason') or 'unknown reason'}). "
+                f"{budget_note}"
+                "Continue the task from where you left off."
+            )
+            if req.message:
+                resume_note += f"\n\nOperator note: {req.message}"
+            patch["escalated"] = False
+            patch["escalation_reason"] = None
+            patch["pending_feedback"] = resume_note
+            patch["no_diff_streak"] = 0  # fresh attempt -- don't inherit a streak from before the escalation
+            # Same reasoning as no_diff_streak: an operator resume is a fresh
+            # attempt. Without this, a task escalated for a maxed stale streak
+            # resumes with that streak still at the limit and re-escalates on
+            # its very first quiet pass -- zero real runway.
+            patch["stale_pending_review_streak"] = 0
+            await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
+        elif was_done:
+            # Same as_node-forces-re-routing mechanism as the escalated branch --
+            # _route_after_verify checks escalated (False here) then
+            # pending_approval (None) then pending_feedback, so a truthy
+            # pending_feedback alone is enough to route back to "work".
+            # no_diff_streak must reset to 0: it's sitting at 2 (that's exactly
+            # what triggered "done" in the first place) -- without resetting it,
+            # a work pass that produces no diff for any reason (including the
+            # agent legitimately needing one more read-only turn before it can
+            # act on the operator's note) would immediately re-trigger the same
+            # "done, no changes needed" verdict before the nudge had a real
+            # chance to land.
+            patch["pending_feedback"] = f"Operator note: {req.message}"
+            patch["no_diff_streak"] = 0
+            await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
+        else:
+            # Orphaned/stopped resume -- an operator message here goes through
+            # the same mailbox work_node already drains on its own next pass
+            # (see agent/messages.py, work.py), not baked into this patch --
+            # unlike the escalated branch, there's no synthetic pending_feedback
+            # already being constructed here to fold it into, and routing must
+            # stay untouched (see this function's own docstring).
+            if req.message:
+                add_message(task_id, req.message)
+            await graph.aupdate_state(thread_config, patch)
+
+        _running_tasks[task_id] = asyncio.create_task(
+            _stream_graph(task_id, values["repo"], values["goal"], new_budget, None)
         )
-        resume_note = (
-            f"Resumed by operator after escalation (was: {values.get('escalation_reason') or 'unknown reason'}). "
-            f"{budget_note}"
-            "Continue the task from where you left off."
-        )
-        if req.message:
-            resume_note += f"\n\nOperator note: {req.message}"
-        patch["escalated"] = False
-        patch["escalation_reason"] = None
-        patch["pending_feedback"] = resume_note
-        patch["no_diff_streak"] = 0  # fresh attempt -- don't inherit a streak from before the escalation
-        # Same reasoning as no_diff_streak: an operator resume is a fresh
-        # attempt. Without this, a task escalated for a maxed stale streak
-        # resumes with that streak still at the limit and re-escalates on
-        # its very first quiet pass -- zero real runway.
-        patch["stale_pending_review_streak"] = 0
-        await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
-    elif was_done:
-        # Same as_node-forces-re-routing mechanism as the escalated branch --
-        # _route_after_verify checks escalated (False here) then
-        # pending_approval (None) then pending_feedback, so a truthy
-        # pending_feedback alone is enough to route back to "work".
-        # no_diff_streak must reset to 0: it's sitting at 2 (that's exactly
-        # what triggered "done" in the first place) -- without resetting it,
-        # a work pass that produces no diff for any reason (including the
-        # agent legitimately needing one more read-only turn before it can
-        # act on the operator's note) would immediately re-trigger the same
-        # "done, no changes needed" verdict before the nudge had a real
-        # chance to land.
-        patch["pending_feedback"] = f"Operator note: {req.message}"
-        patch["no_diff_streak"] = 0
-        await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
-    else:
-        # Orphaned/stopped resume -- an operator message here goes through
-        # the same mailbox work_node already drains on its own next pass
-        # (see agent/messages.py, work.py), not baked into this patch --
-        # unlike the escalated branch, there's no synthetic pending_feedback
-        # already being constructed here to fold it into, and routing must
-        # stay untouched (see this function's own docstring).
-        if req.message:
-            add_message(task_id, req.message)
-        await graph.aupdate_state(thread_config, patch)
-
-    _running_tasks[task_id] = asyncio.create_task(
-        _stream_graph(task_id, values["repo"], values["goal"], new_budget, None)
-    )
-    return {"ok": True, "new_budget_usd": new_budget, "new_max_iterations": new_max_iterations}
+        return {"ok": True, "new_budget_usd": new_budget, "new_max_iterations": new_max_iterations}
 
 
 @app.get("/api/tasks/{task_id}/diff")
@@ -2870,47 +2934,46 @@ async def merge_decision(task_id: str, req: MergeDecisionRequest, user: User = D
     the shape a review-service rejection produces, so the agent loops back
     into work with the notes as its next instruction.
     """
-    if task_id in _running_tasks:
-        raise HTTPException(409, "task is already running")
-    graph = app.state.graph
-    thread_config = {"configurable": {"thread_id": task_id}}
-    checkpoint = await graph.aget_state(thread_config)
-    if not checkpoint or not checkpoint.values:
-        raise HTTPException(404, "task not found")
-    values = checkpoint.values
-    check_repo_access(user, values["repo"])
+    with _claim_run_slot(_running_tasks, task_id, "task is already running"):
+        graph = app.state.graph
+        thread_config = {"configurable": {"thread_id": task_id}}
+        checkpoint = await graph.aget_state(thread_config)
+        if not checkpoint or not checkpoint.values:
+            raise HTTPException(404, "task not found")
+        values = checkpoint.values
+        check_repo_access(user, values["repo"])
 
-    pending = values.get("pending_merge_approval")
-    if not pending:
-        raise HTTPException(409, "task is not awaiting a merge decision")
+        pending = values.get("pending_merge_approval")
+        if not pending:
+            raise HTTPException(409, "task is not awaiting a merge decision")
 
-    if req.decision == "approve":
-        patch = {
-            "merge_approved_sha": pending["sha"],
-            "pending_merge_approval": None,
-        }
-    elif req.decision == "request_changes":
-        if not (req.message or "").strip():
-            raise HTTPException(400, "request_changes requires a message -- the agent needs to know what to change")
-        patch = {
-            "pending_merge_approval": None,
-            "merge_approved_sha": None,
-            "pending_feedback": (
-                "The operator reviewed the final diff and sent it back for more work "
-                "before it may merge. Their notes:\n\n" + req.message.strip()
-            ),
-            # Fresh attempt, same reasoning as resume_task's escalated branch.
-            "no_diff_streak": 0,
-            "stale_pending_review_streak": 0,
-        }
-    else:
-        raise HTTPException(400, "decision must be 'approve' or 'request_changes'")
+        if req.decision == "approve":
+            patch = {
+                "merge_approved_sha": pending["sha"],
+                "pending_merge_approval": None,
+            }
+        elif req.decision == "request_changes":
+            if not (req.message or "").strip():
+                raise HTTPException(400, "request_changes requires a message -- the agent needs to know what to change")
+            patch = {
+                "pending_merge_approval": None,
+                "merge_approved_sha": None,
+                "pending_feedback": (
+                    "The operator reviewed the final diff and sent it back for more work "
+                    "before it may merge. Their notes:\n\n" + req.message.strip()
+                ),
+                # Fresh attempt, same reasoning as resume_task's escalated branch.
+                "no_diff_streak": 0,
+                "stale_pending_review_streak": 0,
+            }
+        else:
+            raise HTTPException(400, "decision must be 'approve' or 'request_changes'")
 
-    await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
-    _running_tasks[task_id] = asyncio.create_task(
-        _stream_graph(task_id, values["repo"], values["goal"], values.get("budget_usd", 0.0), None)
-    )
-    return {"ok": True, "decision": req.decision}
+        await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
+        _running_tasks[task_id] = asyncio.create_task(
+            _stream_graph(task_id, values["repo"], values["goal"], values.get("budget_usd", 0.0), None)
+        )
+        return {"ok": True, "decision": req.decision}
 
 
 @app.post("/api/tasks/{task_id}/approve")
@@ -2934,53 +2997,52 @@ async def approve_task(task_id: str, req: ApprovalRequest, user: User = Depends(
     per-action-request UI is real added complexity for a case that's
     rare enough not to justify it in this first pass.
     """
-    if task_id in _running_tasks:
-        raise HTTPException(409, "task is already running")
-    graph = app.state.graph
-    thread_config = {"configurable": {"thread_id": task_id}}
-    checkpoint = await graph.aget_state(thread_config)
-    if not checkpoint or not checkpoint.values:
-        raise HTTPException(404, "task not found")
-    values = checkpoint.values
-    check_repo_access(user, values["repo"])
+    with _claim_run_slot(_running_tasks, task_id, "task is already running"):
+        graph = app.state.graph
+        thread_config = {"configurable": {"thread_id": task_id}}
+        checkpoint = await graph.aget_state(thread_config)
+        if not checkpoint or not checkpoint.values:
+            raise HTTPException(404, "task not found")
+        values = checkpoint.values
+        check_repo_access(user, values["repo"])
 
-    pending = values.get("pending_approval")
-    if not pending:
-        raise HTTPException(409, "task has no pending approval request")
+        pending = values.get("pending_approval")
+        if not pending:
+            raise HTTPException(409, "task has no pending approval request")
 
-    action_count = len(pending.get("action_requests") or [])
-    if req.decision == "approve":
-        decisions = [{"type": "approve"} for _ in range(action_count)]
-    elif req.decision == "respond":
-        # ask_user answers: the operator's text IS the tool result (the
-        # library's native "ask user"-style-tool pattern -- see deep_agent's
-        # INTERRUPT_ON["ask_user"]). A respond without text is meaningless.
-        if not (req.message or "").strip():
-            raise HTTPException(400, "respond decision requires a message (the answer)")
-        decisions = [{"type": "respond", "message": req.message} for _ in range(action_count)]
-    else:
-        reject = {"type": "reject"}
-        if req.message:
-            reject["message"] = req.message
-        decisions = [dict(reject) for _ in range(action_count)]
+        action_count = len(pending.get("action_requests") or [])
+        if req.decision == "approve":
+            decisions = [{"type": "approve"} for _ in range(action_count)]
+        elif req.decision == "respond":
+            # ask_user answers: the operator's text IS the tool result (the
+            # library's native "ask user"-style-tool pattern -- see deep_agent's
+            # INTERRUPT_ON["ask_user"]). A respond without text is meaningless.
+            if not (req.message or "").strip():
+                raise HTTPException(400, "respond decision requires a message (the answer)")
+            decisions = [{"type": "respond", "message": req.message} for _ in range(action_count)]
+        else:
+            reject = {"type": "reject"}
+            if req.message:
+                reject["message"] = req.message
+            decisions = [dict(reject) for _ in range(action_count)]
 
-    patch = {
-        "task_id": task_id,
-        "pending_approval": None,
-        "approval_decision": decisions,
-        # Placeholder text, never actually sent to the model -- work_node's
-        # graph_input logic checks approval_decision first and uses that
-        # instead whenever it's set (see work.py case 0). This exists
-        # purely so _route_after_verify's existing "pending_feedback set ->
-        # route to work" check fires, reusing that already-proven mechanism.
-        "pending_feedback": "[operator submitted an approval decision]",
-    }
-    await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
+        patch = {
+            "task_id": task_id,
+            "pending_approval": None,
+            "approval_decision": decisions,
+            # Placeholder text, never actually sent to the model -- work_node's
+            # graph_input logic checks approval_decision first and uses that
+            # instead whenever it's set (see work.py case 0). This exists
+            # purely so _route_after_verify's existing "pending_feedback set ->
+            # route to work" check fires, reusing that already-proven mechanism.
+            "pending_feedback": "[operator submitted an approval decision]",
+        }
+        await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
 
-    _running_tasks[task_id] = asyncio.create_task(
-        _stream_graph(task_id, values["repo"], values["goal"], values["budget_usd"], None)
-    )
-    return {"ok": True, "decision": req.decision}
+        _running_tasks[task_id] = asyncio.create_task(
+            _stream_graph(task_id, values["repo"], values["goal"], values["budget_usd"], None)
+        )
+        return {"ok": True, "decision": req.decision}
 
 
 @app.get("/api/tasks/{task_id}")
@@ -3033,36 +3095,35 @@ async def delete_task(task_id: str, repo: str, user: User = Depends(require_full
     any other state-changing action here.
     """
     check_repo_access(user, repo)
-    if task_id in _running_tasks:
-        raise HTTPException(409, "task is running -- stop it before deleting")
-    store = app.state.store
-    meta = await store.aget(("tasks", repo), task_id)
-    if not meta:
-        raise HTTPException(404, "task not found")
-    await store.adelete(("tasks", repo), task_id)
-    await app.state.checkpointer.adelete_thread(task_id)
-    # Also delete the inner deep-agent thread's own checkpoints. Every "work"
-    # pass runs the deep agent against a derived thread_id, f"{task_id}:work"
-    # (see work.py's inner_thread_config), on the same checkpointer/DB as
-    # the outer graph -- deleting only the outer task_id's thread would leave
-    # that inner thread's checkpoints orphaned in the checkpoints table.
-    await app.state.checkpointer.adelete_thread(f"{task_id}:work")
-    # Fresh-restart generations (work.py's inner_thread_config with
-    # generation > 0 -- see outer_state.py's inner_thread_generation) get
-    # their own derived thread_ids too; delete those as well or they'd be
-    # orphaned exactly the way the base :work thread would be. The actual
-    # generation count lives in the outer thread's now-deleted checkpoint,
-    # so sweep a bounded range instead -- adelete_thread on a nonexistent
-    # thread is a harmless no-op, and MAX_THREAD_RESTARTS (currently 1)
-    # keeps real generations far below this bound.
-    for generation in range(1, 10):
-        await app.state.checkpointer.adelete_thread(f"{task_id}:work:g{generation}")
-    for _q, ws in _subscribers.pop(task_id, []):
-        try:
-            await ws.close(code=4000, reason="task deleted")
-        except Exception:
-            pass
-    return {"ok": True}
+    with _claim_run_slot(_running_tasks, task_id, "task is already running"):
+        store = app.state.store
+        meta = await store.aget(("tasks", repo), task_id)
+        if not meta:
+            raise HTTPException(404, "task not found")
+        await store.adelete(("tasks", repo), task_id)
+        await app.state.checkpointer.adelete_thread(task_id)
+        # Also delete the inner deep-agent thread's own checkpoints. Every "work"
+        # pass runs the deep agent against a derived thread_id, f"{task_id}:work"
+        # (see work.py's inner_thread_config), on the same checkpointer/DB as
+        # the outer graph -- deleting only the outer task_id's thread would leave
+        # that inner thread's checkpoints orphaned in the checkpoints table.
+        await app.state.checkpointer.adelete_thread(f"{task_id}:work")
+        # Fresh-restart generations (work.py's inner_thread_config with
+        # generation > 0 -- see outer_state.py's inner_thread_generation) get
+        # their own derived thread_ids too; delete those as well or they'd be
+        # orphaned exactly the way the base :work thread would be. The actual
+        # generation count lives in the outer thread's now-deleted checkpoint,
+        # so sweep a bounded range instead -- adelete_thread on a nonexistent
+        # thread is a harmless no-op, and MAX_THREAD_RESTARTS (currently 1)
+        # keeps real generations far below this bound.
+        for generation in range(1, 10):
+            await app.state.checkpointer.adelete_thread(f"{task_id}:work:g{generation}")
+        for _q, ws in _subscribers.pop(task_id, []):
+            try:
+                await ws.close(code=4000, reason="task deleted")
+            except Exception:
+                pass
+        return {"ok": True}
 
 
 @app.get("/api/model-config")
