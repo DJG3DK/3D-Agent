@@ -1,0 +1,43 @@
+# The source already carries ~65 `# noqa` codes written against ruff, but ruff
+# was never configured -- so none of them did anything and no lint ever ran.
+# This makes those annotations meaningful instead of decorative.
+#
+# The ruleset is deliberately what the code ALREADY satisfies, not an
+# aspirational one. A linter that fails 237 times on the day it lands gets
+# switched off, and a bulk auto-fix across a security-sensitive codebase is a
+# large unreviewed diff. The deferred rules are listed at the bottom with why;
+# turn them on one at a time behind their own cleanup commit.
+line-length = 110
+target-version = "py312"
+
+exclude = [".venv", "frontend", "services", "docs", "skills"]
+
+[lint]
+select = [
+    "F",     # pyflakes: undefined names, unused imports -- real bugs
+    "E7",    # pycodestyle statement errors (E701 multiple statements, E741 ambiguous names)
+    "E9",    # syntax/IO errors
+    "UP",    # pyupgrade: dated idioms, incl. the deprecated asyncio.TimeoutError alias
+    "B",     # bugbear: mutable defaults, shadowed loop vars
+]
+ignore = [
+    "E501",   # long lines: many comments here are prose and deliberately wide
+    "B008",   # Depends() in a default is FastAPI's own idiom, not a bug
+    "B904",   # `raise ... from` inside except: worth doing, 17 sites, own commit
+]
+
+[lint.per-file-ignores]
+# Tests favour readability over import hygiene.
+# UP031/E701: a couple of tests build node -e probes with % formatting and
+# use one-line guard clauses; both read better as written.
+"tests/*" = ["E402", "F401", "F841", "UP031", "E701"]
+# Scripts MUST set sys.path before importing agent.*, which is E402 by
+# construction -- CI asserts that prelude exists.
+"scripts/*" = ["E402"]
+
+# Deferred, each needing its own cleanup pass rather than a blanket fix:
+#   PLC0415 (118) import-outside-top-level -- most are deliberate lazy imports
+#                 that keep server start-up fast or dodge a cycle.
+#   E402    (27)  module-import-not-at-top-of-file -- same cause.
+#   I001    (26)  unsorted-imports -- cosmetic; a 26-file diff buys nothing today.
+#   BLE001  (13)  blind-except -- every one is annotated with why it is blind.

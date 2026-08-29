@@ -61,7 +61,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.types import Command
 
-from agent.config import Config, PROJECTS
+from agent.config import Config
 from agent.deep_agent import build_deep_agent
 from agent.message_text import content_text
 from agent.messages import pop_messages

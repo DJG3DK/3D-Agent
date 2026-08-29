@@ -56,9 +56,31 @@ async def send_telegram(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-async def notify_operators(auth_pool, text: str) -> int:
-    """Send `text` to every user with Telegram configured. Returns how many
-    sends succeeded; never raises."""
+def _may_hear_about(role: str, allowed_repos, repo: str | None) -> bool:
+    """Mirror of User.can_access, applied to an alert recipient.
+
+    `repo=None` means an alert with no project scope (a service restart, the
+    backend coming back up). Those name infrastructure rather than anyone's
+    code, so they go to admins only rather than to every token holder.
+    """
+    if role == "admin":
+        return True
+    if repo is None:
+        return False
+    return allowed_repos is None or repo in allowed_repos
+
+
+async def notify_operators(auth_pool, text: str, repo: str | None = None) -> int:
+    """Send `text` to the users allowed to know about `repo`.
+
+    audit H1: the fan-out used to reach everyone with a token configured,
+    regardless of allowed_repos, while the message body carries the repo name,
+    a goal excerpt and up to 1500 characters of failure detail. Passing the
+    repo through and filtering here is what stops a single-repo user from
+    receiving a live feed of every project.
+
+    Returns how many sends succeeded; never raises.
+    """
     try:
         from agent import auth
         targets = await auth.get_telegram_targets(auth_pool)
@@ -66,16 +88,18 @@ async def notify_operators(auth_pool, text: str) -> int:
         logger.exception("telegram: could not load recipients")
         return 0
     sent = 0
-    for token, chat_id in targets:
+    for token, chat_id, role, allowed in targets:
+        if not _may_hear_about(role, allowed, repo):
+            continue
         if await send_telegram(token, chat_id, text):
             sent += 1
     return sent
 
 
-def notify_operators_bg(auth_pool, text: str) -> None:
+def notify_operators_bg(auth_pool, text: str, repo: str | None = None) -> None:
     """Fire-and-forget wrapper for call sites inside request/stream handlers."""
     try:
-        task = asyncio.create_task(notify_operators(auth_pool, text))
+        task = asyncio.create_task(notify_operators(auth_pool, text, repo))
         task.add_done_callback(lambda t: t.exception())  # retrieve, never surface
     except Exception:  # noqa: BLE001
         logger.exception("telegram: could not schedule notification")

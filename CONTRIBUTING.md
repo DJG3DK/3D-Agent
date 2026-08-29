@@ -35,7 +35,8 @@ In rough order of value:
 git clone https://github.com/DJG3DK/3D-Agent.git
 cd 3D-Agent
 ./install.sh                       # see INSTALL.md
-.venv/bin/python -m pytest -q      # ~600 tests, seconds, no network needed
+.venv/bin/python -m pytest -q      # ~660 tests, seconds, no network needed
+.venv/bin/ruff check .             # lint (ruff.toml)
 ```
 
 Frontend:
@@ -90,7 +91,10 @@ worktree's `.git` is a file rather than a directory.
 - One concern per PR. A refactor bundled with a fix is hard to review and hard
   to revert.
 - Say what breaks if you're wrong. Reviewers calibrate on that.
-- Run the suites above before opening. CI is not going to catch it for you yet.
+- Run the suites above before opening. CI runs the same four (Python tests,
+  frontend typecheck/lint/build, Node service checks, shell + an installer
+  dry-run) on every pull request, all offline — no secrets, no database, no
+  model calls.
 - Small PRs get read the same week. Large ones may sit — open an issue first
   if you're planning something big, so you don't build the wrong thing.
 

@@ -31,7 +31,7 @@ def _read_memory(name: str, fallback: str) -> str:
 
 async def main() -> None:
     config = load_config()
-    async with open_checkpointer(config) as checkpointer, open_store(config) as store:
+    async with open_checkpointer(config), open_store(config) as store:
         await seed_org_memory(store, _read_memory("org", "org"))
         print("seeded org-memory")
         for project in PROJECTS:

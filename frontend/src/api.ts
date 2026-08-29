@@ -165,8 +165,14 @@ export async function confirm2FA(code: string): Promise<{ recovery_codes: string
   return res.json();
 }
 
-export async function disable2FA(): Promise<void> {
-  const res = await apiFetch(`${API_BASE}/auth/2fa/disable`, { method: "POST" });
+// Requires the current password: removing a second factor is precisely what a
+// stolen session would want to do, so the session alone must not authorise it.
+export async function disable2FA(password: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/auth/2fa/disable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `disable2FA failed: ${res.status}`);

@@ -9,18 +9,60 @@ import pytest
 from agent.tools import sandbox
 
 
-def test_node_modules_symlink_target_is_mounted(tmp_path):
-    # worktree with node_modules -> an out-of-tree "live" install
-    live = tmp_path / "live_node_modules"
-    (live / "eslint").mkdir(parents=True)
+def test_node_modules_symlink_into_the_live_checkout_is_mounted(tmp_path, monkeypatch):
+    """The legitimate case: a worktree whose node_modules symlinks into its own
+    project's LIVE checkout still gets that directory mounted read-only."""
+    live = tmp_path / "live"
+    (live / "node_modules" / "eslint").mkdir(parents=True)
     wt = tmp_path / "worktree"
     wt.mkdir()
-    os.symlink(live, wt / "node_modules")
+    os.symlink(live / "node_modules", wt / "node_modules")
+    monkeypatch.setattr("agent.config.PROJECTS",
+                        {"p": {"live": str(live), "sandbox": str(wt)}}, raising=False)
+
+    joined = " ".join(sandbox._node_modules_mounts(str(wt)))
+    assert str((live / "node_modules").resolve()) in joined
+    assert joined.endswith(":ro"), "live node_modules must be mounted read-only"
+
+
+@pytest.mark.parametrize("escape", ["/", "/root", "/etc", "/home"])
+def test_node_modules_symlink_cannot_mount_an_arbitrary_host_path(tmp_path, monkeypatch, escape):
+    """audit C2: the symlink lives in the agent-writable worktree, so its target
+    is an agent-chosen mount. Pointing it at a host path must NOT produce a
+    `-v <path>:<path>:ro` argument — that was read access to every other
+    project's .env, this agent's secrets and ~/.ssh."""
+    live = tmp_path / "live"
+    live.mkdir()
+    wt = tmp_path / "worktree"
+    wt.mkdir()
+    os.symlink(escape, wt / "node_modules")
+    monkeypatch.setattr("agent.config.PROJECTS",
+                        {"p": {"live": str(live), "sandbox": str(wt)}}, raising=False)
 
     mounts = sandbox._node_modules_mounts(str(wt))
-    joined = " ".join(mounts)
-    assert str(live.resolve()) in joined
-    assert joined.endswith(":ro"), "live node_modules must be mounted read-only"
+    assert mounts == [], f"agent-chosen mount of {escape} was accepted: {mounts}"
+
+
+def test_unconfigured_workspace_mounts_nothing_outside_itself(tmp_path):
+    """No server-owned live path to compare against means fail closed."""
+    other = tmp_path / "other"
+    other.mkdir()
+    wt = tmp_path / "worktree"
+    wt.mkdir()
+    os.symlink(other, wt / "node_modules")
+    assert sandbox._node_modules_mounts(str(wt)) == []
+
+
+def test_mount_target_allowed_accepts_only_configured_roots(tmp_path):
+    roots = [str(tmp_path / "ws"), str(tmp_path / "live")]
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "live" / "sub").mkdir(parents=True)
+    assert sandbox._mount_target_allowed(str(tmp_path / "live" / "sub"), roots)
+    assert sandbox._mount_target_allowed(str(tmp_path / "ws"), roots)
+    assert not sandbox._mount_target_allowed("/root", roots)
+    assert not sandbox._mount_target_allowed(str(tmp_path / "elsewhere"), roots)
+    # a sibling whose name merely starts with an allowed root must not pass
+    assert not sandbox._mount_target_allowed(str(tmp_path / "ws-evil"), roots)
 
 
 def test_real_node_modules_needs_no_extra_mount(tmp_path):

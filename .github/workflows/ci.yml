@@ -1,0 +1,144 @@
+name: CI
+
+# The review's own verdict: no CI at all, despite a green suite, a clean
+# frontend build and a passing Node test — "the single highest-leverage
+# addition". It would have caught two of the findings it reported: pytest
+# failing to collect on a clean checkout (H4), and a script that died with
+# ModuleNotFoundError on every invocation (H5).
+#
+# Everything here runs offline. No Postgres service, no model calls, no
+# network: the suite is designed to need none of them, and CI that needs
+# secrets is CI that contributors cannot run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python — tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        # ruff config landed with the source's ~65 existing noqa codes, which
+        # had never been enforced by anything. The ruleset is what the code
+        # already satisfies; deferred rules are listed in ruff.toml.
+        run: |
+          pip install ruff
+          ruff check .
+
+      # No .env is created on purpose. conftest.py supplies placeholder values
+      # via setdefault, so this run also proves a fresh clone can run the suite
+      # — the exact thing that was broken (H4).
+      - name: pytest (no .env — a fresh-clone run)
+        run: python -m pytest -q
+
+      - name: Scripts import cleanly
+        # H5: probe_forced_tool_call.py was the only script missing the
+        # sys.path prelude and died with ModuleNotFoundError every time,
+        # including from the dashboard button. Compiling every script catches
+        # syntax errors; importing the module body catches the missing path.
+        run: |
+          python -m compileall -q scripts/ agent/
+          for f in scripts/*.py; do
+            python - "$f" <<'PY'
+          import ast, sys
+          src = open(sys.argv[1]).read()
+          tree = ast.parse(src)
+          # a script that touches `agent.` must set sys.path first
+          uses_agent = any(
+              isinstance(n, (ast.Import, ast.ImportFrom))
+              and any(getattr(a, "name", "") == "agent" or (getattr(n, "module", "") or "").startswith("agent")
+                      for a in (n.names if isinstance(n, ast.Import) else [n]))
+              for n in ast.walk(tree)
+          )
+          if uses_agent and "sys.path.insert" not in src:
+              raise SystemExit(f"{sys.argv[1]}: imports agent.* without the sys.path prelude")
+          PY
+          done
+
+  frontend:
+    name: Frontend — typecheck, lint, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit -p tsconfig.app.json
+      - run: npm run lint
+      - run: npm run build
+
+  services:
+    name: Node services — syntax and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Syntax-check every service file
+        # These have no dependencies and no build step, so `node --check` is
+        # the whole story — and it is what would have caught the temporal
+        # dead zone that crash-looped the reviewer on boot.
+        run: |
+          for f in services/*/*.js services/shared/*.js; do
+            [ -e "$f" ] || continue
+            node --check "$f"
+          done
+
+      - name: Shared project-config tests
+        run: node tests/test_projects_config_merge.js
+
+  shell:
+    name: Shell — installer and cron scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n every script
+        run: |
+          for f in install.sh scripts/*.sh; do
+            [ -e "$f" ] || continue
+            bash -n "$f"
+          done
+      - name: Installer dry-run reaches the end
+        # Exercises argument parsing, the prerequisite checks and the step
+        # ordering without writing anything.
+        run: ./install.sh --dry-run --yes
+        env:
+          PG_DSN: postgresql://placeholder@localhost:5432/placeholder
+          OPENROUTER_API_KEY: placeholder

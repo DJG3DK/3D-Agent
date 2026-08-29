@@ -8,6 +8,7 @@ opening a fresh connection per request would be wasteful and race-prone).
 import asyncio
 import json
 import logging
+import os
 import time
 import traceback
 import uuid
@@ -18,7 +19,7 @@ from typing import Literal
 logger = logging.getLogger("3d-agent")
 
 import httpx
-from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -150,7 +151,8 @@ async def _auto_resume_orphaned_tasks(startup_delay: float = 5.0) -> None:
                 logger.warning("auto-resume: reconnected orphaned task %s (%s) after restart", task_id, repo)
                 _notify_bg(task_alert(
                     "auto_resumed", repo, values.get("goal", ""), values.get("cost_so_far"),
-                    "The server restarted mid-run; the task reconnected automatically and is working again."))
+                    "The server restarted mid-run; the task reconnected automatically and is working again."),
+                    repo=repo)
             except Exception:  # noqa: BLE001 -- one task's failure must not strand the others
                 logger.exception("auto-resume: failed to reconnect task %s", task_id)
 
@@ -296,6 +298,7 @@ _CSP = (
 
 
 from starlette.responses import JSONResponse as _JSONResponse
+from datetime import UTC
 
 
 @app.middleware("http")
@@ -314,6 +317,36 @@ async def _body_size_limit(request, call_next):
                 )
         except ValueError:
             return _JSONResponse({"detail": "invalid Content-Length"}, status_code=400)
+    elif "chunked" in request.headers.get("transfer-encoding", "").lower():
+        # A chunked request carries no Content-Length, so the check above sees
+        # nothing and the body streams in unbounded -- one request can push this
+        # single-process app into swap or OOM.
+        #
+        # Buffer it ourselves up to the same ceiling and replay it downstream.
+        # An earlier attempt raised from inside a wrapped receive() instead;
+        # that breaks the ASGI contract -- the exception surfaces from anyio as
+        # "object _BodyTooLarge can't be used in 'await' expression" and takes
+        # 30 unrelated tests with it. Buffering keeps the contract intact, and
+        # the memory it costs is bounded by the cap, which is the whole point.
+        body = b""
+        while True:
+            message = await request.receive()
+            if message.get("type") == "http.disconnect":
+                return _JSONResponse({"detail": "client disconnected"}, status_code=400)
+            body += message.get("body", b"")
+            if len(body) > REQUEST_BODY_MAX_BYTES:
+                return _JSONResponse(
+                    {"detail": f"request body exceeds {REQUEST_BODY_MAX_BYTES // (1024*1024)}MB"},
+                    status_code=413,
+                )
+            if not message.get("more_body", False):
+                break
+
+        async def _replay() -> dict:
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        request._receive = _replay
+
     return await call_next(request)
 
 
@@ -546,10 +579,28 @@ async def confirm_2fa(req: Confirm2FARequest, user: User = Depends(auth.get_curr
     return {"recovery_codes": codes}
 
 
+class Disable2FARequest(BaseModel):
+    password: str = ""
+
+
 @app.post("/api/auth/2fa/disable")
-async def disable_2fa_endpoint(user: User = Depends(auth.get_current_user)):
+async def disable_2fa_endpoint(req: Disable2FARequest,
+                               user: User = Depends(require_full_auth)):
+    """Removing a second factor is exactly the action a stolen session would
+    want, so it is not something a session alone should authorise.
+
+    Two changes over the original: require_full_auth rather than
+    get_current_user (a half-authenticated session must not reach this at
+    all), and the current password, matching what /2fa/setup already demands
+    to RE-initialise. Enabling 2FA needs no password because the session
+    already proves identity and there is nothing yet to protect; disabling it
+    destroys a protection, which is the asymmetry.
+    """
     if user.role == "admin":
         raise HTTPException(403, "2FA cannot be disabled on the admin account")
+    row = await auth.get_user_by_id(app.state.auth_pool, user.id)
+    if not req.password or not auth.verify_password(req.password, row["password_hash"]):
+        raise HTTPException(403, "current password required to disable 2FA")
     await auth.disable_totp(app.state.auth_pool, user.id)
     return {"ok": True}
 
@@ -639,6 +690,14 @@ async def create_user_endpoint(req: CreateUserRequest, user: User = Depends(requ
     auth.require_admin(user)
     if req.role not in ("admin", "user"):
         raise HTTPException(400, "role must be 'admin' or 'user'")
+    # audit H7: can_access() treats allowed_repos=None as UNRESTRICTED for any
+    # role, and this field defaults to None -- so POST with {"role": "user"}
+    # and no repo list minted an account that could reach every project. The
+    # sibling PATCH endpoint already rejects this; the create path did not.
+    if req.role != "admin" and req.allowed_repos is None:
+        raise HTTPException(
+            400, "a non-admin user needs an explicit allowed_repos list "
+                 "(use [] for no access); omitting it would grant every repo")
     if req.allowed_repos:
         for r in req.allowed_repos:
             if r not in PROJECTS:
@@ -834,6 +893,12 @@ class CreateTaskRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     text: str
+
+
+# Ceiling on a single resume top-up. Not a policy about total spend --
+# just a bound on one request, so a typo or a hostile value cannot remove
+# the budget ceiling in one call.
+_MAX_BUDGET_TOPUP_USD = 100.0
 
 
 class ResumeTaskRequest(BaseModel):
@@ -1325,15 +1390,21 @@ def _fuller_log(buffered: list | None, durable: list | None) -> list:
 _last_task_alert: dict[str, tuple] = {}
 
 
-def _notify_bg(text: str) -> None:
+def _notify_bg(text: str, repo: str | None = None) -> None:
     """The one door alerts leave through: resolves the auth pool defensively
     so an alert can NEVER break the code path it decorates -- app.state has
     no auth_pool during unit tests and the earliest startup moments, and
-    accessing a missing State attribute raises."""
+    accessing a missing State attribute raises.
+
+    audit H1: `repo` scopes the fan-out. Alert bodies carry the repo name, a
+    goal excerpt and up to 1500 characters of failure detail, so a recipient
+    restricted to one project must not receive another's. repo=None means an
+    infrastructure alert (a service restart) and goes to admins only.
+    """
     pool = getattr(app.state, "auth_pool", None)
     if pool is None:
         return
-    notify_operators_bg(pool, text)
+    notify_operators_bg(pool, text, repo)
 
 
 def _alert_task_status(task_id: str, status: str, repo: str, goal: str, cost: float | None, detail: str | None) -> None:
@@ -1346,7 +1417,7 @@ def _alert_task_status(task_id: str, status: str, repo: str, goal: str, cost: fl
     if _last_task_alert.get(task_id) == key:
         return
     _last_task_alert[task_id] = key
-    _notify_bg(task_alert(status, repo, goal, cost, detail))
+    _notify_bg(task_alert(status, repo, goal, cost, detail), repo=repo)
 
 
 def _publish_planning(session_id: str, event: dict) -> None:
@@ -1604,7 +1675,8 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         logger.exception("planning turn failed for session %s", session_id)
         _t_alert = locals().get("tracker")
         _notify_bg(task_alert(
-            "planning_error", repo, text, _t_alert.total_cost if _t_alert is not None else None, str(e)[:400]))
+            "planning_error", repo, text, _t_alert.total_cost if _t_alert is not None else None, str(e)[:400]),
+            repo=repo)
         # The spend up to the failure is just as real as a cancelled turn's,
         # and this path banked NEITHER it nor the draft -- a turn that crashed
         # after save_plan lost the plan and under-reported the session's cost.
@@ -1708,7 +1780,7 @@ async def stream_planning_session(ws: WebSocket, session_id: str):
             # instead of silence. Clients ignore the "ping" type.
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=20)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await ws.send_json({"type": "ping"})
                 continue
             await ws.send_json(event)
@@ -1756,7 +1828,7 @@ async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_
     # neutral classification if it's slow.
     try:
         classification = await asyncio.wait_for(classify_task(goal, config), timeout=8)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("task classification exceeded 8s; starting with fallback classification")
         classification = TaskClassification(category="other", needs_tests=False)
     if req.attachments:
@@ -1870,7 +1942,7 @@ async def get_analytics(user: User = Depends(require_full_auth)):
     """
     auth.require_admin(user)
     import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     store = app.state.store
 
@@ -1907,7 +1979,7 @@ async def get_analytics(user: User = Depends(require_full_auth)):
     from datetime import timedelta
 
     daily: dict[str, dict] = {}
-    today = datetime.now(tz=timezone.utc).date()
+    today = datetime.now(tz=UTC).date()
     for offset in range(13, -1, -1):
         day = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
         daily[day] = {"date": day, "cost": 0.0, "tasks": 0}
@@ -1941,7 +2013,7 @@ async def get_analytics(user: User = Depends(require_full_auth)):
         ts = t.get("created_at")
         if not ts:
             continue
-        day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        day = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
         _bucket(day)["tasks"] += 1
         if t.get("task_id") not in episodes_by_task:
             _bucket(day)["cost"] += float(t.get("cost_so_far") or 0.0)
@@ -2143,8 +2215,8 @@ _TRACE_SUMMARY_MAX_RUNS = 3000
 # The model-usage section deliberately never looks earlier than when the
 # per-role model pins went live, so a prior era's routing history doesn't
 # pollute the current per-role breakdown.
-from datetime import datetime as _dt, timezone as _tz
-_MODEL_PINNING_CUTOVER = _dt(2026, 8, 20, 12, 45, tzinfo=_tz.utc)
+from datetime import datetime as _dt
+_MODEL_PINNING_CUTOVER = _dt(2026, 8, 20, 12, 45, tzinfo=UTC)
 
 
 def _classify_model_usage_role(metadata: dict, alias: str | None) -> str:
@@ -2225,7 +2297,7 @@ def _scan_langsmith_model_usage() -> list[dict]:
     response_metadata.model_name (the router's return_raw_model_name), not
     the router alias. Sync client -> runs via asyncio.to_thread.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import langsmith as ls
 
@@ -2241,7 +2313,7 @@ def _scan_langsmith_model_usage() -> list[dict]:
     # pool/classifier era used many different coordinator models, which
     # aren't relevant to the current pinned-role breakdown this section shows.
     start = max(
-        datetime.now(tz=timezone.utc) - timedelta(days=_MODEL_USAGE_WINDOW_DAYS),
+        datetime.now(tz=UTC) - timedelta(days=_MODEL_USAGE_WINDOW_DAYS),
         _MODEL_PINNING_CUTOVER,
     )
     usage: dict[str, dict] = {}
@@ -2359,7 +2431,7 @@ def _scan_langsmith_tool_reliability() -> dict:
     live task execution, and would dilute the real per-tool error rate.
     """
     from collections import defaultdict
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import langsmith as ls
 
@@ -2369,7 +2441,7 @@ def _scan_langsmith_tool_reliability() -> dict:
 
     client = ls.Client()
     project = __import__("os").environ.get("LANGSMITH_PROJECT", "3d-agent")
-    start = datetime.now(tz=timezone.utc) - timedelta(days=_TOOL_RELIABILITY_WINDOW_DAYS)
+    start = datetime.now(tz=UTC) - timedelta(days=_TOOL_RELIABILITY_WINDOW_DAYS)
 
     by_tool: dict[str, dict] = {}
     daily_errors: dict[str, int] = defaultdict(int)
@@ -2399,7 +2471,7 @@ def _scan_langsmith_tool_reliability() -> dict:
     # Zero-filled daily series over the same window, matching /api/analytics'
     # own daily-spend series convention -- a quiet day is a real, informative
     # zero, not a gap.
-    today = datetime.now(tz=timezone.utc).date()
+    today = datetime.now(tz=UTC).date()
     daily = [
         {"date": (today - timedelta(days=offset)).strftime("%Y-%m-%d"),
          "errors": daily_errors.get((today - timedelta(days=offset)).strftime("%Y-%m-%d"), 0)}
@@ -2451,7 +2523,7 @@ def _scan_langsmith_trace_summary() -> dict:
     LLM runs a second time here -- same underlying runs, no need to re-scan
     them just to get a different aggregate.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import langsmith as ls
 
@@ -2462,7 +2534,7 @@ def _scan_langsmith_trace_summary() -> dict:
 
     client = ls.Client()
     project = __import__("os").environ.get("LANGSMITH_PROJECT", "3d-agent")
-    start = datetime.now(tz=timezone.utc) - timedelta(days=_TRACE_SUMMARY_WINDOW_DAYS)
+    start = datetime.now(tz=UTC) - timedelta(days=_TRACE_SUMMARY_WINDOW_DAYS)
 
     trace_count = 0
     error_count = 0
@@ -2590,7 +2662,7 @@ async def stop_task(task_id: str, user: User = Depends(require_full_auth)):
         await asyncio.wait_for(asyncio.shield(task), timeout=30)
     except asyncio.CancelledError:
         pass
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("stop_task: teardown for %s still running after 30s; returning anyway", task_id)
     return {"ok": True}
 
@@ -2672,6 +2744,14 @@ async def resume_task(task_id: str, req: ResumeTaskRequest, user: User = Depends
         # investigation and likely land on the same premature conclusion.
         raise HTTPException(400, "resuming a done task requires a message telling it what to do next")
 
+    # A bare float let a negative value shrink the ceiling below what has
+    # already been spent (making the guard fire immediately and look like a
+    # crash) and let an enormous one defeat the budget entirely. Bound it to a
+    # sane top-up range; the field is a *delta*, not a new total.
+    if not (0 < req.additional_budget_usd <= _MAX_BUDGET_TOPUP_USD):
+        raise HTTPException(
+            400, f"additional_budget_usd must be greater than 0 and at most "
+                 f"${_MAX_BUDGET_TOPUP_USD:.2f}")
     new_budget = values["budget_usd"] + req.additional_budget_usd
     # max_iterations is set once at task creation (40) and, unlike
     # budget_usd, was never bumped on resume -- every work<->verify_and_ship
@@ -2965,7 +3045,7 @@ async def delete_task(task_id: str, repo: str, user: User = Depends(require_full
     # keeps real generations far below this bound.
     for generation in range(1, 10):
         await app.state.checkpointer.adelete_thread(f"{task_id}:work:g{generation}")
-    for q, ws in _subscribers.pop(task_id, []):
+    for _q, ws in _subscribers.pop(task_id, []):
         try:
             await ws.close(code=4000, reason="task deleted")
         except Exception:
@@ -3359,10 +3439,31 @@ async def restart_services(req: SaveEnvKeysRequest, user: User = Depends(require
         try:
             o, _ = await _a.wait_for(proc.communicate(), timeout=60)
             out[n] = "ok" if proc.returncode == 0 else (o or b"").decode()[-200:]
-        except _a.TimeoutError:
+        except TimeoutError:
             proc.kill()
             out[n] = "timed out"
     return {"restarted": out}
+
+
+def _tail_lines(path: Path, count: int, block: int = 64 * 1024) -> str:
+    """Last `count` lines without reading the whole file.
+
+    The consolidation log is appended to on every cron run and never rotated,
+    so a full read grows without bound -- and it happened on the event loop.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            end = fh.tell()
+            data = b""
+            while end > 0 and data.count(b"\n") <= count:
+                step = min(block, end)
+                end -= step
+                fh.seek(end)
+                data = fh.read(step) + data
+        return "\n".join(data.decode(errors="replace").splitlines()[-count:])
+    except OSError as e:
+        return f"(could not read {path}: {e})"
 
 
 @app.get("/api/consolidation/status")
@@ -3385,7 +3486,7 @@ async def consolidation_status(user: User = Depends(require_full_auth)):
     # parse are reported as `stale_error` rather than swallowed into a verdict.
     payload: dict = {"ran_at": None, "ok": None, "exit_code": None, "stale": False, "tail": ""}
     try:
-        payload.update(json.loads(marker.read_text()))
+        payload.update(json.loads(await asyncio.to_thread(marker.read_text)))
     except FileNotFoundError:
         pass
     except Exception as e:  # noqa: BLE001
@@ -3396,14 +3497,18 @@ async def consolidation_status(user: User = Depends(require_full_auth)):
     if payload.get("ran_at"):
         try:
             ran = _dt.fromisoformat(str(payload["ran_at"]).replace("Z", "+00:00"))
-            age_h = (_dt.now(_tz.utc) - ran).total_seconds() / 3600
+            age_h = (_dt.now(UTC) - ran).total_seconds() / 3600
             payload["age_hours"] = round(age_h, 1)
             payload["stale"] = age_h > 48
         except Exception as e:  # noqa: BLE001
             payload["stale_error"] = f"could not parse ran_at: {e}"[:200]
 
     try:
-        payload["tail"] = "\n".join(log.read_text(errors="replace").splitlines()[-40:])
+        # to_thread, and only the tail: this log is never rotated, so
+        # read_text() pulled the WHOLE file into memory on the event loop --
+        # every other request stalled behind it, and the cost grew with the
+        # file. _tail_lines seeks from the end instead.
+        payload["tail"] = await asyncio.to_thread(_tail_lines, log, 40)
     except Exception:
         pass
     return payload
@@ -3430,13 +3535,23 @@ async def probe_forced_tool_call(user: User = Depends(require_full_auth)):
     )
     try:
         out, _ = await _asyncio.wait_for(proc.communicate(), timeout=1500)
-    except _asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         raise HTTPException(status_code=504, detail="probe timed out")
 
+    if proc.returncode != 0:
+        # audit H5: this used to return HTTP 200 with the traceback tucked into
+        # `tail`, so a probe that never ran looked to the dashboard exactly
+        # like one that found nothing. A failed probe is an error.
+        tail = (out or b"").decode(errors="replace")[-1200:]
+        logger.error("forced-tool-call probe exited %s: %s", proc.returncode, tail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"probe failed (exit {proc.returncode}). Last output:\n{tail}")
+
     stats = model_config.forced_tool_call_stats()
     return {
-        "ok": proc.returncode == 0,
+        "ok": True,
         **stats,
         "catalog_size": len(await model_config.fetch_model_catalog()),
         "tail": (out or b"").decode(errors="replace")[-1200:],
@@ -3505,7 +3620,7 @@ async def stream_task(ws: WebSocket, task_id: str):
             # instead of silence. Clients ignore the "ping" type.
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=20)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await ws.send_json({"type": "ping"})
                 continue
             await ws.send_json(event)

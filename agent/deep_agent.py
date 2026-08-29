@@ -249,6 +249,10 @@ _DANGEROUS_COMMAND_PATTERNS = (
     _re.compile(r"\bfind\b.*-delete"),
 )
 
+# `ln -s`, `ln --symbolic`, and the same via env/xargs. Word-boundary anchored
+# so "align -symbolic" or a filename containing "ln -s" does not trip it.
+_SYMLINK_RE = _re.compile(r"(^|[;&|]\s*|\s)ln\s+(-[a-zA-Z]*s[a-zA-Z]*|--symbolic)\b")
+
 
 def _matches_dangerous(command: str) -> bool:
     norm = _normalize_command(command)
@@ -262,7 +266,18 @@ def _bash_needs_approval(req) -> bool:
     norm = _normalize_command(raw)
     if any(marker in norm for marker in _SENSITIVE_PATH_MARKERS):
         return True
+    if _bash_creates_a_symlink(norm):
+        return True
     return _matches_dangerous(raw)
+
+
+def _bash_creates_a_symlink(command: str) -> bool:
+    """audit C2/H2: `ln -s <anything> node_modules` inside the worktree decides
+    what the HOST bind-mounts into the next container. sandbox.py now refuses
+    targets outside the project's own paths, so this is defence in depth --
+    but a symlink whose target the agent chose is worth surfacing, and it
+    matched no marker before."""
+    return bool(_SYMLINK_RE.search(command))
 
 
 def _bash_is_destructive(req) -> bool:
@@ -280,9 +295,34 @@ def _bash_is_destructive(req) -> bool:
     return _matches_dangerous(str(req.tool_call["args"].get("command", "")))
 
 
+def _writes_a_git_dir(path: str) -> bool:
+    """A write that lands the worktree's `.git` pointer, or anything that looks
+    like a git dir or a hook.
+
+    audit H2: the sensitive-path list matches ".git/" WITH the slash, so it
+    caught `.git/hooks/pre-commit` but not the bare pointer FILE `.git` --
+    and rewriting that pointer is what re-aims every host-side git command at
+    an agent-controlled git dir (see agent/tools/git.py). Hooks are disabled
+    unconditionally there now, so this is the second lock rather than the
+    only one, but the write itself still deserves a prompt.
+    """
+    norm = path.replace("\\", "/").lower().rstrip("/")
+    base = norm.rsplit("/", 1)[-1]
+    if base == ".git":                      # the pointer file itself
+        return True
+    if "/hooks/" in norm or base == "hooks":  # any hooks directory
+        return True
+    # a bare git dir the agent is assembling under another name
+    return base in ("head", "config") and "/objects/" not in norm and (
+        norm.endswith("/head") and "/.git/" not in norm)
+
+
 def _file_op_needs_approval(req) -> bool:
-    path = str(req.tool_call["args"].get("path", "")).lower()
-    return any(marker in path for marker in _SENSITIVE_PATH_MARKERS)
+    args = req.tool_call["args"]
+    path = str(args.get("path", "")).lower()
+    if any(marker in path for marker in _SENSITIVE_PATH_MARKERS):
+        return True
+    return _writes_a_git_dir(path)
 
 
 def _describe_bash(tool_call, state, runtime) -> str:

@@ -520,7 +520,7 @@ export function Sidebar({
           Log out
         </button>
       </div>
-      <BalanceStrip />
+      <BalanceStrip isAdmin={user.role === "admin"} />
     </aside>
   );
 }

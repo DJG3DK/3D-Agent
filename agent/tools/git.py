@@ -1,10 +1,84 @@
+import os
 import re
 import asyncio
+
 from agent.tools.shell import run_shell
 
 
+class UntrustedGitDirError(Exception):
+    """The worktree's .git pointer no longer names the repo it should."""
+
+
+# Every git command this module runs executes ON THE HOST, with cwd set to a
+# worktree the agent can write to. Two consequences drive everything below.
+#
+# 1. HOOKS. A worktree's `.git` is a one-line pointer FILE, not a directory,
+#    and it sits inside the tree the agent writes to. Rewriting it re-points
+#    git at a git dir the agent controls -- hooks included -- so the host-side
+#    `git commit` would execute an agent-authored pre-commit hook as the
+#    server user (root, under the shipped pm2 config). Writing the pointer
+#    matched no approval marker either: the gate looked for ".git/" WITH the
+#    slash, and the pointer is the bare file ".git".
+#
+#    `core.hooksPath=/dev/null` is set on EVERY invocation rather than only on
+#    commit, because checkout, merge and rebase run hooks too, and it holds
+#    regardless of which git dir the pointer resolves to.
+#
+# 2. IDENTITY. Disabling hooks stops code execution but not misdirection: a
+#    rewritten pointer can still aim commits at a different repository. So
+#    when the workspace belongs to a configured project, the pointer is
+#    checked against that project's own git dir before anything runs.
+_GIT = "git -c core.hooksPath=/dev/null"
+
+
+def _trusted_git_dir_error(repo_root: str) -> str | None:
+    """Return a message if this workspace's .git pointer looks tampered with.
+
+    Returns None when the workspace is not a configured project sandbox (the
+    test fixtures and one-off checkouts), since there is no server-owned path
+    to compare against. Hook execution is already disabled unconditionally, so
+    this is the integrity half, not the code-execution half.
+    """
+    dotgit = os.path.join(repo_root, ".git")
+    if not os.path.isfile(dotgit):
+        return None  # a normal repo with a real .git directory
+    try:
+        from agent.config import PROJECTS
+    except Exception:  # noqa: BLE001 -- config unavailable (tests); nothing to compare
+        return None
+
+    live = None
+    real_root = os.path.realpath(repo_root)
+    for cfg in PROJECTS.values():
+        if os.path.realpath(cfg.get("sandbox", "")) == real_root:
+            live = cfg.get("live")
+            break
+    if not live:
+        return None
+
+    try:
+        pointer = open(dotgit).read().strip()
+    except OSError as e:
+        return f"unreadable .git pointer: {e}"
+    gitdir = pointer.removeprefix("gitdir:").strip()
+    expected = os.path.realpath(os.path.join(live, ".git"))
+    if not os.path.realpath(gitdir).startswith(expected + os.sep):
+        return (f"the workspace's .git pointer names {gitdir!r}, which is outside "
+                f"{expected!r}. Refusing to run git against it -- this is what a "
+                f"rewritten pointer looks like.")
+    return None
+
+
+async def _git(cmd: str, repo_root: str, timeout: int = 30) -> dict:
+    """Run one git command with hooks disabled and the pointer verified."""
+    problem = _trusted_git_dir_error(repo_root)
+    if problem is not None:
+        return {"ok": False, "output": f"refusing to run git: {problem}"}
+    return await run_shell(f"{_GIT} {cmd}", repo_root, timeout=timeout)
+
+
 async def git_status(repo_root: str) -> str:
-    r = await run_shell("git status --short", repo_root, timeout=30)
+    r = await _git("status --short", repo_root, timeout=30)
     return r["output"]
 
 
@@ -16,9 +90,9 @@ async def git_diff(repo_root: str, staged: bool = False) -> str:
     files show up in `git diff` normally without actually staging their
     content -- this is not intended as a real `git add`.
     """
-    await run_shell("git add -A -N", repo_root, timeout=30)
-    cmd = "git diff --staged" if staged else "git diff"
-    r = await run_shell(cmd, repo_root, timeout=30)
+    await _git("add -A -N", repo_root, timeout=30)
+    cmd = "diff --staged" if staged else "diff"
+    r = await _git(cmd, repo_root, timeout=30)
     return r["output"]
 
 
@@ -41,15 +115,15 @@ async def sync_workspace_to_base(repo_root: str, base_ref: str = "main") -> dict
     checkout, because `main` itself is checked out in the live worktree and
     git (correctly) refuses to check a branch out twice.
     """
-    status = await run_shell("git status --porcelain", repo_root, timeout=15)
+    status = await _git("status --porcelain", repo_root, timeout=15)
     if not status["ok"]:
         return {"ok": False, "synced": False, "reason": f"status failed: {status['output'][:200]}"}
     if status["output"].strip():
         return {"ok": True, "synced": False, "reason": "tree dirty -- workspace belongs to in-flight work"}
-    r = await run_shell(f"git checkout --detach {base_ref}", repo_root, timeout=30)
+    r = await _git(f"checkout --detach {base_ref}", repo_root, timeout=30)
     if not r["ok"]:
         return {"ok": False, "synced": False, "reason": r["output"][:300]}
-    sha = await run_shell("git rev-parse --short HEAD", repo_root, timeout=15)
+    sha = await _git("rev-parse --short HEAD", repo_root, timeout=15)
     return {"ok": True, "synced": True, "base": sha["output"].strip() if sha["ok"] else base_ref}
 
 
@@ -74,7 +148,7 @@ async def ensure_task_branch(repo_root: str, task_id: str, base_ref: str = "main
     safe = re.sub(r"[^A-Za-z0-9._-]", "-", str(task_id)).strip("-.") or "task"
     branch = f"agent/{safe}"
 
-    cur = await run_shell("git rev-parse --abbrev-ref HEAD", repo_root, timeout=15)
+    cur = await _git("rev-parse --abbrev-ref HEAD", repo_root, timeout=15)
     if cur["ok"] and cur["output"].strip() == branch:
         return {"ok": True, "branch": branch, "switched": False}
 
@@ -82,18 +156,18 @@ async def ensure_task_branch(repo_root: str, task_id: str, base_ref: str = "main
     # wherever the previous task left the workspace. Only safe when the tree is
     # clean -- if there is uncommitted work, branch from HEAD so it survives,
     # and say so rather than discarding it.
-    status = await run_shell("git status --porcelain", repo_root, timeout=15)
+    status = await _git("status --porcelain", repo_root, timeout=15)
     dirty = bool(status["ok"] and status["output"].strip())
 
     if dirty:
-        cmd = f"git checkout -B {branch}"
+        cmd = f"checkout -B {branch}"
     else:
-        cmd = f"git checkout -B {branch} {base_ref}"
+        cmd = f"checkout -B {branch} {base_ref}"
 
-    r = await run_shell(cmd, repo_root, timeout=30)
+    r = await _git(cmd, repo_root, timeout=30)
     if not r["ok"] and not dirty:
         # base_ref may not exist (unusual default branch name); fall back to HEAD.
-        r = await run_shell(f"git checkout -B {branch}", repo_root, timeout=30)
+        r = await _git(f"checkout -B {branch}", repo_root, timeout=30)
 
     return {
         "ok": r["ok"],
@@ -137,7 +211,7 @@ async def git_commit(repo_root: str, message: str, files: list[str] | None = Non
         # audit M-12: guard the blanket `git add -A`. Inspect what would be
         # staged and refuse obvious artifacts / a runaway file count, so the
         # agent cleans up rather than committing junk into the live repo.
-        status = await run_shell("git status --porcelain", repo_root, timeout=30)
+        status = await _git("status --porcelain", repo_root, timeout=30)
         if status["ok"]:
             pending = _porcelain_paths(status["output"])
             denied = [pth for pth in pending
@@ -154,8 +228,8 @@ async def git_commit(repo_root: str, message: str, files: list[str] | None = Non
                     f"refusing to commit {len(pending)} files at once (limit {_MAX_COMMIT_FILES}) -- "
                     "this usually means an un-ignored directory got created; clean it up or "
                     "pass an explicit file list.")}
-    add_cmd = f"git add {' '.join(files)}" if files else "git add -A"
-    add = await run_shell(add_cmd, repo_root, timeout=30)
+    add_cmd = f"add {' '.join(files)}" if files else "add -A"
+    add = await _git(add_cmd, repo_root, timeout=30)
     if not add["ok"]:
         return {"ok": False, "output": add["output"]}
     # Message via a temp file, not -m "...", so multi-line messages with
@@ -167,14 +241,14 @@ async def git_commit(repo_root: str, message: str, files: list[str] | None = Non
         f.write(message)
         msg_path = f.name
     try:
-        commit = await run_shell(f"git commit -F {msg_path}", repo_root, timeout=30)
+        commit = await _git(f"commit --no-verify -F {msg_path}", repo_root, timeout=30)
     finally:
         Path(msg_path).unlink(missing_ok=True)
     return {"ok": commit["ok"], "output": commit["output"]}
 
 
 async def current_sha(repo_root: str) -> str:
-    r = await run_shell("git rev-parse HEAD", repo_root, timeout=15)
+    r = await _git("rev-parse HEAD", repo_root, timeout=15)
     return r["output"].strip()
 
 

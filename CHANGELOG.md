@@ -67,6 +67,30 @@ controls are the product, not an afterthought:
 See [SECURITY.md](SECURITY.md) for the full threat model, including which
 capabilities are intended and which would be genuine vulnerabilities.
 
+### Hardening before release
+
+A full external review of the codebase ran before this tag; everything it
+found at critical or high severity is fixed here, with a regression test each.
+Two were serious enough to be worth naming:
+
+- **Host code execution via git hooks.** Every git command runs on the host
+  with its working directory inside the agent-writable worktree, and a
+  worktree's `.git` is a pointer *file* living in that same writable tree.
+  Rewriting it re-aimed git at an agent-controlled directory, hooks included,
+  so the post-build commit executed agent-authored code as the server user.
+  Hooks are now disabled on every invocation and the pointer is verified
+  against server-owned config.
+- **Sandbox mount escape.** The container's bind mounts were computed from
+  state read out of the worktree — a `node_modules` symlink and the `.git`
+  pointer — so the agent could choose what the host mounted into its own
+  container (`ln -s /home node_modules` produced `-v /home:/home:ro`). Mount
+  targets are now validated against the project's own paths.
+
+Also fixed: alerts that ignored per-user repo scoping, a fail-open in user
+creation, streams that dropped data on an unclean reconnect, three
+"documented but broken" issues that would have hit the first fresh install,
+and the absence of CI.
+
 ### Known limits
 
 - **Pre-1.0, and field-tested on exactly one machine.** Expect rough edges on a

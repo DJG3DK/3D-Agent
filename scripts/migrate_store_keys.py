@@ -20,6 +20,8 @@ Run: .venv/bin/python scripts/migrate_store_keys.py
 """
 
 import asyncio
+
+DRY_RUN = False
 import sys
 from pathlib import Path
 
@@ -40,7 +42,7 @@ async def main() -> None:
     config = load_config()
     async with open_store(config) as store:
         for namespace, route in NAMESPACES:
-            items = await store.asearch(namespace, limit=100)
+            items = await store.asearch(namespace, limit=10_000)
             for item in items:
                 if not item.key.startswith(route):
                     continue  # already stripped (or something else entirely) -- leave it
@@ -51,13 +53,33 @@ async def main() -> None:
                     print(f"{namespace}: migrated {item.key!r} -> {stripped!r}")
                 else:
                     print(f"{namespace}: kept newer {stripped!r}, dropping stale seed at {item.key!r}")
-                await store.adelete(namespace, item.key)
+                if DRY_RUN:
+                    print(f"  [dry-run] would delete {item.key!r}")
+                else:
+                    await store.adelete(namespace, item.key)
 
         print("\n=== post-migration state ===")
         for namespace, _route in NAMESPACES:
-            items = await store.asearch(namespace, limit=100)
+            items = await store.asearch(namespace, limit=10_000)
             for item in items:
                 print(f"{namespace}: {item.key!r} ({len(str(item.value))} chars)")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    # This DELETES store keys. It ran on import with no __main__ guard, so
+    # merely importing the module performed the migration -- and it offered no
+    # way to see what it would do first.
+    import argparse
+
+    _ap = argparse.ArgumentParser(description=__doc__)
+    _ap.add_argument("--dry-run", action="store_true",
+                     help="print what would change; delete nothing")
+    _ap.add_argument("--yes", action="store_true",
+                     help="skip the confirmation prompt")
+    _args = _ap.parse_args()
+    DRY_RUN = _args.dry_run
+    if not DRY_RUN and not _args.yes:
+        _answer = input("This deletes store keys. Proceed? [y/N] ").strip().lower()
+        if _answer not in ("y", "yes"):
+            raise SystemExit("aborted")
+    asyncio.run(main())

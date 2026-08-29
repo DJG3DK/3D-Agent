@@ -99,5 +99,6 @@ def test_both_agents_attach_the_meter_to_their_summarizer():
     import pathlib
     for f in ("agent/deep_agent.py", "agent/planning_chat.py"):
         src = pathlib.Path(f).read_text()
-        line = next(l for l in src.splitlines() if '"agent-summarizer"' in l and "llm_for_role" in l)
+        line = next(text for text in src.splitlines()
+                    if '"agent-summarizer"' in text and "llm_for_role" in text)
         assert "BudgetMeterCallback" in line, f"{f} builds an unmetered summarizer: {line.strip()}"

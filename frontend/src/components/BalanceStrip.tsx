@@ -3,15 +3,22 @@ import { getRouterBalance } from "../api";
 import type { RouterBalance } from "../types";
 import "./BalanceStrip.css";
 
-export function BalanceStrip() {
+/* Router credit balance. `isAdmin` is required because the endpoint behind it
+   is admin-only: polling it as a normal user produced a silent 403 every 30
+   seconds forever, filling the network log with failures that looked like an
+   outage. Non-admins render nothing. */
+export function BalanceStrip({ isAdmin }: { isAdmin: boolean }) {
   const [balance, setBalance] = useState<RouterBalance | null>(null);
 
   useEffect(() => {
+    if (!isAdmin) return;
     const load = () => getRouterBalance().then(setBalance).catch(() => {});
     load();
     const interval = setInterval(load, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isAdmin]);
+
+  if (!isAdmin) return null;
 
   if (!balance) return null;
   const pctUsed = balance.totalCredits > 0 ? (balance.totalUsage / balance.totalCredits) * 100 : 0;

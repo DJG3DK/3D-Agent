@@ -26,7 +26,6 @@ API) later is a drop-in replacement for just this one function.
 """
 
 import base64
-import os
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlparse
 
@@ -109,7 +108,6 @@ def _decode_bing_redirect(href: str) -> str:
 
 
 async def _run_web_search(query: str, num_results: int) -> str:
-    import asyncio
     from urllib.parse import quote_plus
 
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -124,7 +122,7 @@ async def _run_web_search(query: str, num_results: int) -> str:
                 wait_until="networkidle",
                 timeout=_NAV_TIMEOUT_MS,
             )
-        except (asyncio.TimeoutError, PlaywrightTimeoutError):
+        except (TimeoutError, PlaywrightTimeoutError):
             # audit M-28: Playwright raises its OWN TimeoutError, which is NOT a
             # subclass of asyncio.TimeoutError -- the old handler was a dead
             # branch and networkidle on a Bing page times out routinely. A
@@ -148,7 +146,6 @@ async def _run_web_search(query: str, num_results: int) -> str:
 
 
 async def _run_browse_page(url: str, want_screenshot: bool, question: str) -> str:
-    import asyncio
 
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -168,7 +165,7 @@ async def _run_browse_page(url: str, want_screenshot: bool, question: str) -> st
         await page.route("**/*", make_route_guard(lambda u, why: blocked.append(f"{u} ({why})")))
         try:
             await page.goto(url, wait_until="load", timeout=_NAV_TIMEOUT_MS)
-        except (asyncio.TimeoutError, PlaywrightTimeoutError):
+        except (TimeoutError, PlaywrightTimeoutError):
             # audit M-28: catch Playwright's own TimeoutError too (not an
             # asyncio.TimeoutError subclass), otherwise this was a dead branch.
             return f"ERROR: timed out loading {url!r} (over {_NAV_TIMEOUT_MS // 1000}s)"
