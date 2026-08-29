@@ -22,6 +22,7 @@ takes about 15 minutes, most of it waiting for dependencies.
 | **Docker** | Every command the agent runs happens inside a container. Without it, the first tool call of the first task fails |
 | **PostgreSQL 14+** | Conversation checkpoints, memory, users |
 | **An OpenRouter API key** | The only paid dependency — [openrouter.ai/keys](https://openrouter.ai/keys) |
+| **An SMTP account** *(optional)* | Only for password-reset codes. Skip it and reset via the database instead — see [§6a](#6a-email-smtp) |
 | **pm2** *(optional)* | To run it as a managed service rather than in a terminal |
 
 A small VPS is enough. The agent is not compute-heavy; the models run
@@ -173,7 +174,57 @@ Everything lives in `.env` (see `.env.example` for the full list).
 | `AGENT_PROJECT_ROOTS` | Colon-separated roots projects may be onboarded from |
 | `AGENT_SANDBOX_ROOT` | Where per-project worktrees are created |
 | `DEFAULT_BUDGET_USD` | Per-task spend ceiling |
-| `SMTP_*` | Optional; only used for password-reset email |
+| `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM` | Outbound mail for password-reset codes. Sending is optional — **the keys are not**. See [§6a](#6a-email-smtp) |
+
+### 6a. Email (SMTP)
+
+Email is used for exactly one thing: **password-reset codes**. It is not used
+for alerts (Telegram covers those), and not for the first admin password —
+that is printed once to the server log on first startup.
+
+**Dependency:** [`aiosmtplib`](https://pypi.org/project/aiosmtplib/), pinned in
+`requirements.txt` and installed by `install.sh`. There is no system package to
+install and no local mail server to run — the app talks SMTP directly to
+whatever provider you point it at.
+
+**The keys are required even if you never send email.** This trips people up,
+so to be explicit — `agent/config.py` reads all five with `os.environ[...]`:
+
+| `.env` state | Result at startup |
+|---|---|
+| Keys absent entirely | `KeyError: 'SMTP_HOST'` — the app will not start |
+| `SMTP_PORT=` (blank) | `ValueError: invalid literal for int() with base 10: ''` |
+| `SMTP_PORT=587`, the rest blank | Starts fine; email simply never sends |
+
+`install.sh` writes the third form for you. If you're editing `.env` by hand
+and don't want email, keep all five lines and leave everything except
+`SMTP_PORT` empty.
+
+**Provider requirements**
+
+- **STARTTLS on port 587.** The mailer calls `aiosmtplib.send(..., start_tls=True)`,
+  so implicit-TLS submission on port 465 will not work.
+- **Use an app password, not your account password.** Gmail, Outlook and most
+  providers reject the account password outright once 2FA is on.
+- **Proton Mail** needs one of two setups, depending on your plan. Business
+  plans can submit directly to `smtp.protonmail.ch:587` using an **SMTP token**
+  generated in the admin panel (not your login password). Individual plans have
+  no direct SMTP endpoint at all — you run **Proton Mail Bridge** on the same
+  host and point the app at Bridge's local listener instead (typically
+  `127.0.0.1`, port `1025`), which means Bridge has to be running for resets to
+  work.
+
+**Misconfiguration fails quietly, by design.** `POST /api/auth/forgot-password`
+always returns `{"ok": true}`, whether or not the address belongs to a real
+account — otherwise the response would tell an attacker which emails are
+registered. A broken SMTP config lands in the same bucket: the user sees a
+normal "check your email", and the real error goes to the server log. If a
+reset code never arrives, look there for `password reset email failed to send`.
+
+**Running without email at all** is fine, with one consequence: there is no
+self-service password reset. If you lock yourself out, recover on the host —
+delete the row from `agent_users` in Postgres and restart, and the app re-seeds
+an admin account and prints a fresh password to the log.
 
 **Files that are yours, not the project's** (all gitignored — they survive
 `git pull`):
@@ -237,6 +288,15 @@ isn't under `AGENT_PROJECT_ROOTS`. Widen it deliberately, or move the repo.
 **Checks never run for a project.** Detection found no `typecheck`/`lint`/
 `test` scripts, or the only test script was flagged as network-touching and
 left disabled. Check Settings → Projects.
+
+**The app won't start with a `KeyError` or `ValueError` about `SMTP_*`.** All
+five SMTP keys must be present in `.env` even when email is unused, and
+`SMTP_PORT` must be a number. See [§6a](#6a-email-smtp).
+
+**A password-reset code never arrives.** The endpoint returns success even when
+sending fails, deliberately — check the server log for `password reset email
+failed to send`. Usual causes: an account password where an app password or
+token is required, or port 465 instead of 587.
 
 ---
 

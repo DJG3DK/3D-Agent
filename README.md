@@ -496,7 +496,7 @@ All config is environment variables, loaded from `.env` (see `agent/config.py`).
 | `API_PORT` | Port `uvicorn` binds |
 | `AUTH_SECRET_KEY` | AES-GCM key encrypting TOTP 2FA secrets at rest (not sessions — those are opaque tokens). Must decode to 16/24/32 raw bytes: `python -c "import base64,secrets;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`. `openssl rand -hex 32` yields 48 bytes and will not work. Rotating it locks out every 2FA user permanently |
 | `ADMIN_EMAIL` | Address the first admin account is seeded with (defaults to `admin@example.com`) |
-| `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM` | Outbound mail for password-reset codes |
+| `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM` | Outbound mail for password-reset codes. Sending is optional, but all five keys must be present and `SMTP_PORT` must be numeric — see [INSTALL.md §6a](INSTALL.md#6a-email-smtp) |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional tracing |
 | `LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S` | Streaming chunk timeout |
 | `AGENT_PROJECT_ROOTS` | Colon-separated roots a project may be onboarded from (default `/home`). Onboarding grants an agent bash and write access to what it points at, so this is the boundary — the admin check is only *who may ask* |
