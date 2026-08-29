@@ -45,6 +45,10 @@ usage() {
                 ADMIN_EMAIL         first admin account (default admin@example.com)
                 SKIP_DOCKER=1       don't build the sandbox image
                 SKIP_FRONTEND=1     don't build the dashboard bundle
+                AGENT_DOMAIN        set up nginx + TLS for this domain
+                                    (empty or unset = skip; access over an
+                                     SSH tunnel instead)
+                LETSENCRYPT_EMAIL   address Let's Encrypt sends expiry warnings to
 EOF
 }
 
@@ -240,6 +244,8 @@ fi
 # --- 4. database ------------------------------------------------------------
 step "Database"
 
+API_PORT_VALUE=$(grep -E '^API_PORT=' .env 2>/dev/null | cut -d= -f2 || true)
+API_PORT_VALUE=${API_PORT_VALUE:-8100}
 DB_NAME=$(printf '%s' "${PG_DSN:-}" | sed -n 's|.*/\([^/?]*\)\(?.*\)\{0,1\}$|\1|p')
 if [ "$ENV_EXISTS" = "1" ]; then
     PG_DSN=$(grep -E '^LANGGRAPH_PG_DSN=' .env | cut -d= -f2-)
@@ -336,6 +342,133 @@ else
         ok "dashboard built to frontend/dist"
     else
         warn "dashboard build failed — run it yourself: cd frontend && npm ci && npm run build"
+    fi
+fi
+
+# --- 8. remote access -------------------------------------------------------
+step "Remote access"
+
+# The session cookie is issued with the Secure flag, which browsers only return
+# over HTTPS *or* to localhost. That makes the choice here binary and worth
+# stating plainly: a tunnel to 127.0.0.1 works, and anything else needs real
+# TLS. Plain HTTP on a LAN or VPN address silently fails -- the login POST
+# succeeds, the cookie is dropped, and the next request bounces back to the
+# login page with no error anywhere.
+say "  The dashboard binds 127.0.0.1:$API_PORT_VALUE and is not reachable from outside"
+say "  this host. Two supported ways in:"
+say ""
+say "    1. SSH tunnel (nothing to configure, nothing exposed):"
+say "         ssh -L 8100:127.0.0.1:8100 $(id -un)@$(hostname -f 2>/dev/null || hostname)"
+say "    2. A domain with HTTPS, set up below."
+say ""
+
+DOMAIN="${AGENT_DOMAIN:-}"
+if [ -z "$DOMAIN" ] && [ "$ASSUME_YES" != "1" ]; then
+    if confirm "Set up nginx + a Let's Encrypt certificate on a domain now?"; then
+        DOMAIN=$(ask "Domain (e.g. agent.example.com)")
+    fi
+fi
+
+if [ -z "$DOMAIN" ]; then
+    ok "skipped — use the SSH tunnel above (you can re-run this script later with AGENT_DOMAIN set)"
+elif [ "$DRY_RUN" = "1" ]; then
+    note "would install nginx+certbot, write a vhost for $DOMAIN, and request a certificate"
+else
+    LE_EMAIL="${LETSENCRYPT_EMAIL:-$ADMIN_EMAIL}"
+
+    # DNS first. Requesting a certificate for a domain that does not point here
+    # burns a Let's Encrypt rate-limit slot and fails with a message about
+    # challenge validation rather than about DNS.
+    RESOLVED=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -1)
+    MYIP=$(curl -s --max-time 10 https://api.ipify.org 2>/dev/null || echo "")
+    if [ -z "$RESOLVED" ]; then
+        warn "$DOMAIN does not resolve yet — add an A record pointing at this host first"
+        warn "skipping TLS setup; re-run with AGENT_DOMAIN=$DOMAIN once DNS is live"
+        DOMAIN=""
+    elif [ -n "$MYIP" ] && [ "$RESOLVED" != "$MYIP" ]; then
+        warn "$DOMAIN resolves to $RESOLVED but this host appears to be $MYIP"
+        if ! confirm "continue anyway?"; then DOMAIN=""; fi
+    else
+        ok "$DOMAIN resolves to $RESOLVED"
+    fi
+fi
+
+if [ -n "$DOMAIN" ] && [ "$DRY_RUN" != "1" ]; then
+    for pkg_cmd in nginx certbot; do
+        command -v "$pkg_cmd" >/dev/null 2>&1 || {
+            say "  installing $pkg_cmd…"
+            sudo apt-get install -y -qq nginx certbot python3-certbot-nginx >/dev/null 2>&1 \
+                || warn "could not install $pkg_cmd automatically — install it and re-run"
+        }
+    done
+
+    VHOST=/etc/nginx/sites-available/3d-agent
+    if [ -f "$VHOST" ]; then
+        ok "nginx vhost already exists at $VHOST — leaving it alone"
+    else
+        # Port 80 only at this stage, ON PURPOSE. A 443 block referencing
+        # certificate files that do not exist yet makes `nginx -t` fail
+        # outright, so the server cannot even reload to serve the ACME
+        # challenge. certbot --nginx adds the TLS block (and the redirect)
+        # after the certificate exists, copying this proxy config into it.
+        sudo tee "$VHOST" >/dev/null <<NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ { root /var/www/html; allow all; }
+
+    location / {
+        proxy_pass         http://127.0.0.1:$API_PORT_VALUE/;
+        proxy_http_version 1.1;
+
+        # The dashboard streams task and planning output over WebSockets.
+        # Without these the page loads fine and then never shows live output.
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection "upgrade";
+
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        # \$proxy_add_x_forwarded_for appends the real peer LAST, which is the
+        # hop the app's rate limiter reads. Do not replace this with a
+        # pass-through of the client's own header.
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+
+        # A planning turn or a long build step can run for many minutes with
+        # no bytes on the wire; nginx's 60s default would kill it mid-run.
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+    }
+}
+NGINX
+        sudo mkdir -p /var/www/html
+        sudo ln -sfn "$VHOST" /etc/nginx/sites-enabled/3d-agent
+        if sudo nginx -t >/dev/null 2>&1; then
+            sudo systemctl reload nginx && ok "nginx vhost installed for $DOMAIN"
+        else
+            warn "nginx config test failed — run 'sudo nginx -t' to see why"
+            sudo rm -f /etc/nginx/sites-enabled/3d-agent
+            DOMAIN=""
+        fi
+    fi
+fi
+
+if [ -n "$DOMAIN" ] && [ "$DRY_RUN" != "1" ]; then
+    if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+        ok "certificate for $DOMAIN already exists"
+    else
+        say "  requesting a certificate from Let's Encrypt…"
+        if sudo certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
+                -m "$LE_EMAIL" --redirect >/dev/null 2>&1; then
+            ok "certificate issued; nginx now serves https://$DOMAIN"
+            note "renewal is automatic — verify with: sudo certbot renew --dry-run"
+        else
+            warn "certbot failed. Common causes: port 80 not reachable from the"
+            warn "internet, or DNS not yet propagated. Re-run:"
+            note "sudo certbot --nginx -d $DOMAIN"
+        fi
     fi
 fi
 

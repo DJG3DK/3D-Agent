@@ -24,6 +24,7 @@ takes about 15 minutes, most of it waiting for dependencies.
 | **An OpenRouter API key** | The only paid dependency — [openrouter.ai/keys](https://openrouter.ai/keys) |
 | **An SMTP account** *(optional)* | Only for password-reset codes. Skip it and reset via the database instead — see [§6a](#6a-email-smtp) |
 | **pm2** *(optional)* | To run it as a managed service rather than in a terminal |
+| **nginx + certbot** *(optional)* | Only if you want browser access on a public domain — see [§3a](#3a-reaching-it-from-another-machine). An SSH tunnel needs neither |
 
 A small VPS is enough. The agent is not compute-heavy; the models run
 elsewhere.
@@ -86,6 +87,96 @@ Open **http://127.0.0.1:8100**.
 > table and restart to re-seed.
 
 Admin accounts are required to set up TOTP 2FA on first login.
+
+### 3a. Reaching it from another machine
+
+By default the agent binds **`127.0.0.1:8100`** and is not reachable from
+outside the host.
+
+**The session cookie is issued with the `Secure` flag**, which makes this
+choice binary rather than a matter of taste. Browsers only send a `Secure`
+cookie over HTTPS — with one exception: `localhost` and `127.0.0.1` count as
+trustworthy origins, so plain HTTP works there. Verified in Chromium:
+
+| How you reach it | Result |
+|---|---|
+| `http://127.0.0.1:8100` (SSH tunnel) | works — cookie accepted |
+| `https://your-domain` | works |
+| `http://<LAN or VPN address>:8100` | **broken** — cookie silently dropped |
+
+That last row is the trap. Logging in over a plain-HTTP LAN or Tailscale
+address *appears* to work: the request succeeds, the browser discards the
+cookie, and the next request bounces you back to the login page with no error
+in the UI or the log. Don't run it that way.
+
+So there are two supported options.
+
+**1. SSH tunnel — nothing to configure, nothing exposed.**
+
+```bash
+ssh -L 8100:127.0.0.1:8100 you@your-server
+```
+
+Then open `http://127.0.0.1:8100` on your own machine. No domain, no
+certificate, no open ports, and the console stays invisible to the internet.
+For a single operator this is the right answer.
+
+**2. A domain with HTTPS.** Needed for access from anywhere, from a phone, or
+for more than one person. `install.sh` sets it up:
+
+```bash
+AGENT_DOMAIN=agent.example.com ./install.sh
+```
+
+or answer the **Remote access** prompt when running interactively. It will:
+
+- check the domain resolves, and resolves *to this host* — asking for a
+  certificate for a domain pointing elsewhere burns a Let's Encrypt rate-limit
+  slot and fails with a confusing message about challenge validation;
+- install nginx and certbot if missing;
+- write `/etc/nginx/sites-available/3d-agent` with the settings this app needs
+  (below);
+- run `certbot --nginx`, which adds the TLS block, the HTTP→HTTPS redirect and
+  an automatic renewal timer.
+
+Re-running is safe — an existing vhost or certificate is left alone.
+
+**Prerequisites:** a domain with an **A record pointing at this host**, and
+ports **80 and 443** reachable. Port 80 must stay open after setup; renewals
+use it.
+
+#### What the proxy config has to get right
+
+Two settings are not optional, and both fail in ways that look like an
+application bug rather than a proxy problem:
+
+- **WebSocket upgrade headers.** The dashboard streams task and planning output
+  over WebSockets. Without `proxy_set_header Upgrade $http_upgrade;` and
+  `proxy_set_header Connection "upgrade";`, the page loads normally and then
+  never shows live output — which reads as "the agent is stuck".
+- **Long read/send timeouts (`1800s`).** A planning turn or a build step can run
+  for many minutes with no bytes crossing the connection. nginx's 60-second
+  default kills those mid-run, and the task dies with nothing explaining why.
+
+One more, for correctness: use
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. That variable
+appends the real peer **last**, which is the hop the app's rate limiter reads.
+A proxy that passes the client's own `X-Forwarded-For` through untouched lets a
+caller spoof past the login rate limit.
+
+#### If you publish it on a domain
+
+The app has its own login, TOTP 2FA for admins, and auth rate limiting — but it
+was built to sit behind something, not to *be* the perimeter. Add at least one
+of:
+
+- an nginx IP allowlist (`allow 203.0.113.4; deny all;`) if your address is
+  stable;
+- an identity proxy in front (Cloudflare Access, oauth2-proxy, `auth_basic`);
+- fail2ban watching the nginx access log.
+
+And keep `AGENT_PROJECT_ROOTS` narrow — see
+[§5](#5-read-this-before-onboarding-a-project).
 
 ---
 
@@ -281,6 +372,15 @@ doesn't decode to 16/24/32 raw bytes — see §6.
 
 **The dashboard is blank.** The bundle wasn't built:
 `cd frontend && npm ci && npm run build`, then restart the backend.
+
+**Behind a reverse proxy: the page loads but live output never appears.** The
+proxy is dropping the WebSocket upgrade. Add `proxy_set_header Upgrade
+$http_upgrade;` and `proxy_set_header Connection "upgrade";` — see
+[§3a](#3a-reaching-it-from-another-machine).
+
+**Behind a reverse proxy: long tasks die partway with no error.** The proxy's
+read timeout is cutting an idle-but-live connection. nginx defaults to 60s;
+this needs `proxy_read_timeout 1800s;`.
 
 **A project won't onboard: "outside the configured project roots."** Its path
 isn't under `AGENT_PROJECT_ROOTS`. Widen it deliberately, or move the repo.

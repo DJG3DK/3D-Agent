@@ -72,6 +72,10 @@ capabilities are intended and which would be genuine vulnerabilities.
 - **Pre-1.0, and field-tested on exactly one machine.** Expect rough edges on a
   different distro, Postgres version, or non-root install.
 - **Linux host required.** The sandbox is Docker; there is no Windows path.
+- **Remote access needs HTTPS or an SSH tunnel.** The session cookie is
+  `Secure`, so plain HTTP works only on `localhost`/`127.0.0.1`. A LAN or VPN
+  address over plain HTTP will drop the cookie and bounce you back to the login
+  page. `install.sh` can set up nginx + Let's Encrypt for a domain.
 - **Stack detection covers npm/pnpm/yarn and basic Python.** Go, Rust and Ruby
   projects onboard fine but arrive with no checks detected — you add commands by
   hand.

@@ -57,8 +57,9 @@ capabilities are intended and which would be real vulnerabilities.
 
 - **Never expose the dashboard directly to the internet.** It is an operator
   console. Put it behind a VPN, an SSH tunnel, or a reverse proxy with its own
-  authentication. The app has its own login and TOTP, but it is not designed
-  to be an internet-facing surface.
+  authentication — [INSTALL.md §3a](INSTALL.md#3a-reaching-it-from-another-machine)
+  covers all three. The app has its own login and TOTP, but it was designed to
+  sit behind something, not to be the perimeter.
 - **Keep `AGENT_PROJECT_ROOTS` narrow.** Onboarding grants an agent write
   access to whatever it points at.
 - **Treat the review gate as load-bearing.** `Final merge review` and the
