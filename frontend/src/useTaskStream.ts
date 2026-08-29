@@ -140,6 +140,19 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
       return false;
     }
 
+    // audit H6: every reconnect path used to call connect() directly, so only
+    // the FIRST connection ever fetched a snapshot. A network blip or a backend
+    // restart therefore dropped whatever the socket missed while it was down --
+    // permanently, since nothing re-read it afterwards. The graceful
+    // closed-frame path re-hydrated; the three unclean paths did not, which is
+    // exactly backwards: an unclean drop is when a gap is most likely.
+    async function reconnect() {
+      if (cancelled || closedIntentionally.current) return;
+      await hydrate();
+      if (cancelled || closedIntentionally.current) return;
+      connect();
+    }
+
     async function hydrateAndConnect() {
       if (isNewTask) {
         setState({ ...EMPTY_STATE, status: "connecting" });
@@ -306,7 +319,7 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
           getMe()
             .then(() => {
               if (cancelled || closedIntentionally.current) return;
-              retryTimer = setTimeout(connect, retryDelay);
+              retryTimer = setTimeout(reconnect, retryDelay);
               retryDelay = Math.min(retryDelay * 2, 15000);
             })
             .catch((err) => {
@@ -315,12 +328,12 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
               // error means the API is unreachable too, so back off and retry.
               if (err instanceof AuthError) return;
               if (cancelled || closedIntentionally.current) return;
-              retryTimer = setTimeout(connect, retryDelay);
+              retryTimer = setTimeout(reconnect, retryDelay);
               retryDelay = Math.min(retryDelay * 2, 15000);
             });
           return;
         }
-        retryTimer = setTimeout(connect, retryDelay);
+        retryTimer = setTimeout(reconnect, retryDelay);
         retryDelay = Math.min(retryDelay * 2, 15000);
       };
     }

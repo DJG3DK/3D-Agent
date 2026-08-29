@@ -379,15 +379,25 @@ async def update_telegram_chat_only(pool: AsyncConnectionPool, user_id: int, cha
         )
 
 
-async def get_telegram_targets(pool: AsyncConnectionPool) -> list[tuple[str, str]]:
-    """Every configured (bot_token, chat_id) pair -- alert fan-out reads this."""
+async def get_telegram_targets(pool: AsyncConnectionPool) -> list[tuple[str, str, str, list[str] | None]]:
+    """Every configured Telegram recipient, WITH the scope it may hear about.
+
+    audit H1: this used to return only (token, chat_id), so the fan-out sent
+    every alert to everyone who had saved a bot token -- and task alerts embed
+    the repo name, a goal excerpt and up to 1500 characters of escalation or
+    exception detail. A user restricted to one repo received a live feed of
+    every other project. The role and allowed_repos come back so the caller
+    can filter; see notify.notify_operators.
+    """
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT telegram_bot_token, telegram_chat_id FROM agent_users "
+            "SELECT telegram_bot_token, telegram_chat_id, role, allowed_repos "
+            "FROM agent_users "
             "WHERE telegram_bot_token IS NOT NULL AND telegram_chat_id IS NOT NULL"
         )
         rows = await cur.fetchall()
-    return [(r["telegram_bot_token"], r["telegram_chat_id"]) for r in rows]
+    return [(r["telegram_bot_token"], r["telegram_chat_id"], r["role"], r["allowed_repos"])
+            for r in rows]
 
 
 async def update_require_merge_review(pool: AsyncConnectionPool, user_id: int, require_merge_review: bool) -> None:

@@ -150,7 +150,8 @@ async def _auto_resume_orphaned_tasks(startup_delay: float = 5.0) -> None:
                 logger.warning("auto-resume: reconnected orphaned task %s (%s) after restart", task_id, repo)
                 _notify_bg(task_alert(
                     "auto_resumed", repo, values.get("goal", ""), values.get("cost_so_far"),
-                    "The server restarted mid-run; the task reconnected automatically and is working again."))
+                    "The server restarted mid-run; the task reconnected automatically and is working again."),
+                    repo=repo)
             except Exception:  # noqa: BLE001 -- one task's failure must not strand the others
                 logger.exception("auto-resume: failed to reconnect task %s", task_id)
 
@@ -639,6 +640,14 @@ async def create_user_endpoint(req: CreateUserRequest, user: User = Depends(requ
     auth.require_admin(user)
     if req.role not in ("admin", "user"):
         raise HTTPException(400, "role must be 'admin' or 'user'")
+    # audit H7: can_access() treats allowed_repos=None as UNRESTRICTED for any
+    # role, and this field defaults to None -- so POST with {"role": "user"}
+    # and no repo list minted an account that could reach every project. The
+    # sibling PATCH endpoint already rejects this; the create path did not.
+    if req.role != "admin" and req.allowed_repos is None:
+        raise HTTPException(
+            400, "a non-admin user needs an explicit allowed_repos list "
+                 "(use [] for no access); omitting it would grant every repo")
     if req.allowed_repos:
         for r in req.allowed_repos:
             if r not in PROJECTS:
@@ -1325,15 +1334,21 @@ def _fuller_log(buffered: list | None, durable: list | None) -> list:
 _last_task_alert: dict[str, tuple] = {}
 
 
-def _notify_bg(text: str) -> None:
+def _notify_bg(text: str, repo: str | None = None) -> None:
     """The one door alerts leave through: resolves the auth pool defensively
     so an alert can NEVER break the code path it decorates -- app.state has
     no auth_pool during unit tests and the earliest startup moments, and
-    accessing a missing State attribute raises."""
+    accessing a missing State attribute raises.
+
+    audit H1: `repo` scopes the fan-out. Alert bodies carry the repo name, a
+    goal excerpt and up to 1500 characters of failure detail, so a recipient
+    restricted to one project must not receive another's. repo=None means an
+    infrastructure alert (a service restart) and goes to admins only.
+    """
     pool = getattr(app.state, "auth_pool", None)
     if pool is None:
         return
-    notify_operators_bg(pool, text)
+    notify_operators_bg(pool, text, repo)
 
 
 def _alert_task_status(task_id: str, status: str, repo: str, goal: str, cost: float | None, detail: str | None) -> None:
@@ -1346,7 +1361,7 @@ def _alert_task_status(task_id: str, status: str, repo: str, goal: str, cost: fl
     if _last_task_alert.get(task_id) == key:
         return
     _last_task_alert[task_id] = key
-    _notify_bg(task_alert(status, repo, goal, cost, detail))
+    _notify_bg(task_alert(status, repo, goal, cost, detail), repo=repo)
 
 
 def _publish_planning(session_id: str, event: dict) -> None:
@@ -1604,7 +1619,8 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         logger.exception("planning turn failed for session %s", session_id)
         _t_alert = locals().get("tracker")
         _notify_bg(task_alert(
-            "planning_error", repo, text, _t_alert.total_cost if _t_alert is not None else None, str(e)[:400]))
+            "planning_error", repo, text, _t_alert.total_cost if _t_alert is not None else None, str(e)[:400]),
+            repo=repo)
         # The spend up to the failure is just as real as a cancelled turn's,
         # and this path banked NEITHER it nor the draft -- a turn that crashed
         # after save_plan lost the plan and under-reported the session's cost.

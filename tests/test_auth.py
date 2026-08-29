@@ -175,3 +175,22 @@ def test_matched_totp_step_returns_none_for_a_code_outside_the_window():
     # pick any 6-digit string that isn't one of the three in-window codes
     bogus = next(f"{n:06d}" for n in range(1000000) if f"{n:06d}" not in valid)
     assert _matched_totp_step(totp, bogus) is None
+
+
+# --- audit H7: fail-open user creation --------------------------------------
+
+def test_can_access_treats_none_as_unrestricted_for_any_role():
+    """The behaviour the create endpoint has to defend against: allowed_repos
+    of None means EVERY repo, regardless of role. That is intentional for
+    admins and a fail-open for anyone else."""
+    from agent.auth import User
+    unrestricted = User(id=1, email="u@x", role="user", allowed_repos=None,
+                        totp_enabled=False, must_change_password=False,
+                        auto_approve_commands=False, require_merge_review=True)
+    assert unrestricted.can_access("any-repo-at-all") is True
+
+    scoped = User(id=2, email="s@x", role="user", allowed_repos=["one"],
+                  totp_enabled=False, must_change_password=False,
+                  auto_approve_commands=False, require_merge_review=True)
+    assert scoped.can_access("one") is True
+    assert scoped.can_access("two") is False

@@ -143,10 +143,14 @@ export function usePlanningStream(sessionId: string | null) {
         await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** attempt, 8000)));
         if (deliberateClose.current) return; // session switched/unmounted while waiting
         try {
-          await connect();
-          // Fill whatever the dead socket missed from the checkpointed log,
-          // and learn whether the turn finished while we were away.
+          // Snapshot FIRST, then open the socket. Connecting first meant live
+          // events could arrive before the snapshot landed, and the snapshot
+          // (older, but usually longer) then replaced them wholesale. The
+          // length guard below stops the log from shrinking, but ordering the
+          // fetch first removes the race instead of surviving it -- and it
+          // matches useTaskStream's hydrate-then-connect order.
           const { log, running, meta } = await getPlanningSession(sessionId);
+          await connect();
           setState((s) => ({
             ...s,
             log: log.length >= s.log.length ? log : s.log,
