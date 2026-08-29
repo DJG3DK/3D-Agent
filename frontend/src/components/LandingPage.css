@@ -325,6 +325,19 @@
   height: auto;
 }
 
+/* Section lead: the one shot that illustrates the blurb above it rather than
+   carrying copy of its own, so the caption sits under the frame instead of
+   beside it. */
+.lp-lead { margin: var(--s7) 0 0; }
+
+.lp-lead figcaption {
+  max-width: var(--lp-measure);
+  margin-top: var(--s4);
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  line-height: 1.65;
+}
+
 /* ── How it works ─────────────────────────────────────────────────────── */
 
 .lp-stages {

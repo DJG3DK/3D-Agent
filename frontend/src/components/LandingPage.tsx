@@ -1,4 +1,5 @@
 import logoUrl from "../assets/3d-agent-logo.png";
+import shotDashboard from "../assets/shots/dashboard.webp";
 import shotModelRoles from "../assets/shots/modelspage1.webp";
 import shotProbes from "../assets/shots/modelspage2.webp";
 import shotRoles from "../assets/shots/modelspage4.webp";
@@ -246,6 +247,24 @@ export function LandingPage({ onSignIn }: Props) {
             WebSockets, with a REST snapshot on every reconnect &mdash; so a page opened mid-task
             shows real history instead of starting blank.
           </p>
+          <figure className="lp-lead">
+            <div className="lp-shot">
+              <div className="lp-chrome" aria-hidden="true">
+                <span /> <span /> <span />
+              </div>
+              <img
+                src={shotDashboard}
+                alt="The dashboard — planning sessions and build tasks grouped by category in the sidebar, with the credit balance below"
+              />
+            </div>
+            <figcaption>
+              Planning sessions and build tasks sit together in the sidebar, each grouped by the
+              same six-way category the classifier assigns, with search and a per-repo filter
+              across both. Running tasks get their own always-visible group, so a refresh mid-task
+              never buries the thing you are watching. Remaining router credit sits at the bottom
+              and turns red under 15%, so running dry is something you see coming.
+            </figcaption>
+          </figure>
           <div className="lp-features">
             {FEATURES.map((f, i) => (
               <article key={f.title} className={`lp-feature${i % 2 ? " is-flipped" : ""}`}>
