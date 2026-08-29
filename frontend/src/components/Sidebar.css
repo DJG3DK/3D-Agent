@@ -448,3 +448,15 @@
   border-color: var(--accent, #6c8cff);
   background: color-mix(in srgb, var(--accent, #6c8cff) 14%, transparent);
 }
+
+/* "In progress" heading above sessions that have no saved plan yet. Not
+   collapsible and not clickable, unlike the category headings below it —
+   this is a status label, not a group you fold away, so it must not look
+   like something you can interact with. */
+.sidebar-section-head--plain {
+  cursor: default;
+  padding-left: 8px;
+}
+.sidebar-section-head--plain:hover {
+  background: none;
+}

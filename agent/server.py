@@ -1643,13 +1643,25 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
             }
             if not meta.get("title"):
                 meta["title"] = text[:60]
-                # Classified once, on the first real message -- same fixed
-                # taxonomy/classifier as a build task (agent/classify.py),
-                # reused as-is rather than a separate planning-specific one,
-                # so the sidebar can group planning sessions by category the
-                # same way it already groups tasks (see Sidebar.tsx) instead
-                # of one flat, ever-growing list under a single "Planning"
-                # bucket.
+            # Categorised when the session first has a SAVED PLAN, not on its
+            # first message.
+            #
+            # Categorising early made the sidebar move the session mid-read:
+            # the operator sent a message, the reply came back ending in a
+            # question, and at that same moment the session jumped out of the
+            # ungrouped list into a category group -- landing next to an older
+            # session on the same subject that already had a plan. The screen
+            # flicked, the question went unread, and the neighbouring "Build
+            # now" button read as "my plan is ready" (operator report,
+            # 2026-08-29). Nothing was actually mis-saved; the movement itself
+            # was the misinformation.
+            #
+            # Tying the move to the plan makes it mean something: a session
+            # settles into a category exactly when it becomes buildable, so
+            # movement in the sidebar is a signal rather than noise. It also
+            # stops paying the classifier for sessions that never produce a
+            # plan. Same fixed taxonomy as a build task (agent/classify.py).
+            if effective_plan and not meta.get("category"):
                 classification = await classify_task(text, config)
                 meta["category"] = classification.category
             await app.state.store.aput(("planning", repo), session_id, meta)
