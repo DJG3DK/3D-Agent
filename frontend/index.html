@@ -18,6 +18,16 @@
     <meta property="og:site_name" content="3D-Agent" />
     <meta property="og:title" content="3D-Agent — autonomous coding agent" />
     <meta property="og:description" content="Takes a plain-English goal, plans the work, writes the code, re-runs the project's real test suite, and ships it. Nothing merges on the agent's say-so: a second model reviews every diff in an isolated worktree first." />
+    <!-- og:image was missing until now, so the card rendered as a
+         summary_large_image with no image — a blank slab. The URL carries the
+         /v2/ prefix because nginx 302s the site root into /v2/, and a crawler
+         following a redirect for the image is not guaranteed to keep it. -->
+    <meta property="og:url" content="https://agent.3dcryptobots.com/v2/" />
+    <meta property="og:image" content="https://agent.3dcryptobots.com/v2/og-preview.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="3D-Agent — autonomous coding agent. Plan, Build, Verify, Review gate, Ship." />
+    <meta name="twitter:image" content="https://agent.3dcryptobots.com/v2/og-preview.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="3D-Agent — autonomous coding agent" />
     <meta name="twitter:description" content="Plans, writes, tests and ships code to real repos — with an independent review gate before anything merges." />
