@@ -43,7 +43,60 @@ async def run_check(repo_root: str, script: str, timeout: int, extra_env: dict |
     # and this also removes the container's reach to the cloud metadata service
     # and host-bridge services during the check phase.
     result = await run_shell_sandboxed(f"npm run {script}", repo_root, timeout=timeout, extra_env=extra_env, network="none")
-    return {"ran": True, "ok": result["ok"], "output": result["output"][-4000:]}
+    output = result["output"][-4000:]
+    if not result["ok"]:
+        output = _annotate_offline_failure(output)
+    return {"ran": True, "ok": result["ok"], "output": output}
+
+
+# Signatures of "this failed because the sandbox has no network", not because
+# the code is wrong. `--network none` above is deliberate, so these failures
+# are expected for any test that reaches the internet -- but the raw message
+# is a bare `getaddrinfo EAI_AGAIN example.com`, which reads like a code
+# regression. Observed live (2026-08-29): a test suite reported 703/704 with
+# the single failure being a DNS lookup, and both the agent and the operator
+# had to work out for themselves that the sandbox was the cause.
+#
+# Note this ANNOTATES, never suppresses: the check still fails. Hiding it
+# would let a genuinely network-dependent test pass review and then fail in
+# CI, which is worse than a confusing message.
+_OFFLINE_SIGNATURES = (
+    "EAI_AGAIN",
+    "ENOTFOUND",
+    "getaddrinfo",
+    "Network is unreachable",
+    "ECONNREFUSED",
+    "Temporary failure in name resolution",
+    "Could not resolve host",
+)
+
+_OFFLINE_NOTE = """
+--------------------------------------------------------------------
+NOTE FROM THE CHECK RUNNER: this output contains a network/DNS error.
+
+The check suite runs in a container with NO NETWORK (`--network none`),
+deliberately -- it executes agent-authored test code, so it gets no
+egress. Dependencies are already installed in the workspace, so checks
+that only compile and run local code are unaffected.
+
+So a failure like `getaddrinfo EAI_AGAIN <host>` is almost certainly
+the sandbox, not the change under review. Confirm by checking whether
+the same test fails on an unmodified checkout.
+
+If a test genuinely needs the network, it does not belong in the review
+suite: mock at the layer that performs the request. A common miss is
+mocking `global.fetch` when the code calls a wrapper that resolves DNS
+first (an SSRF guard, for instance) -- the lookup throws before fetch
+is ever reached.
+--------------------------------------------------------------------
+"""
+
+
+def _annotate_offline_failure(output: str) -> str:
+    """Prepend an explanation when a check failed on a network error."""
+    if any(sig in output for sig in _OFFLINE_SIGNATURES):
+        return _OFFLINE_NOTE + output
+    return output
 
 
 async def run_typecheck(repo_root: str) -> dict:
