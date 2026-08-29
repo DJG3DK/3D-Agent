@@ -23,10 +23,13 @@ change to use this instead.
 """
 
 import asyncio
+import logging
 import os
 import uuid
 
 from agent.tools.shell import ShellTimeout
+
+logger = logging.getLogger("3d-agent")
 
 SANDBOX_IMAGE = "3d-agent-sandbox:latest"  # built from docker/agent-sandbox/Dockerfile
 SANDBOX_MEMORY_LIMIT = "2g"
@@ -56,6 +59,46 @@ async def _kill_container(name: str) -> None:
         pass
 
 
+def _mount_allow_roots(cwd: str) -> list[str]:
+    """Host paths a bind mount for this workspace may point at.
+
+    Both mount computations below read state OUT of the worktree -- a
+    node_modules symlink, and the .git pointer file -- and the worktree is
+    bind-mounted read-write for the agent. Left unchecked that lets the agent
+    choose what the host mounts into its own container: `ln -s /home
+    <ws>/node_modules` yields `-v /home:/home:ro`, and a rewritten .git
+    pointer yields `-v /root:/root:ro`. That is read access to every other
+    project's .env, this agent's own secrets and ~/.ssh -- exactly what the
+    module docstring claims to prevent.
+
+    So a target is only accepted if it resolves under the workspace itself or
+    under the LIVE checkout of the project this workspace belongs to, both of
+    which come from server-owned config rather than from the worktree.
+
+    An unconfigured workspace (a test fixture, a one-off checkout) gets the
+    workspace alone -- fail closed, since there is no trusted second path to
+    compare against.
+    """
+    roots = [os.path.realpath(cwd)]
+    try:
+        from agent.config import PROJECTS
+    except Exception:  # noqa: BLE001 -- config unavailable; workspace-only
+        return roots
+    real_cwd = os.path.realpath(cwd)
+    for cfg in PROJECTS.values():
+        if os.path.realpath(cfg.get("sandbox", "")) == real_cwd:
+            live = cfg.get("live")
+            if live:
+                roots.append(os.path.realpath(live))
+            break
+    return roots
+
+
+def _mount_target_allowed(target: str, allow_roots: list[str]) -> bool:
+    real = os.path.realpath(target)
+    return any(real == r or real.startswith(r + os.sep) for r in allow_roots)
+
+
 def _node_modules_mounts(cwd: str) -> list[str]:
     """audit C-2: some project worktrees symlink their `node_modules` (and, in a
     monorepo, nested ones) to the LIVE checkout's node_modules OUTSIDE the
@@ -72,6 +115,7 @@ def _node_modules_mounts(cwd: str) -> list[str]:
     mounts: list[str] = []
     seen: set[str] = set()
     real_cwd = os.path.realpath(cwd)
+    allow_roots = _mount_allow_roots(cwd)
     for root, dirs, _files in os.walk(cwd):
         # don't descend into the store internals; one level of nesting is enough
         # for the monorepo app/package node_modules layout.
@@ -86,6 +130,14 @@ def _node_modules_mounts(cwd: str) -> list[str]:
                 if target and target not in seen \
                         and os.path.isdir(target) \
                         and not target.startswith(real_cwd + os.sep):
+                    # audit C2: the symlink is agent-writable, so its target is
+                    # an agent-chosen mount unless it is checked against
+                    # server-owned paths.
+                    if not _mount_target_allowed(target, allow_roots):
+                        logger.warning(
+                            "refusing to mount %s for %s: outside this project's "
+                            "workspace and live checkout", target, cwd)
+                        continue
                     seen.add(target)
                     mounts += ["-v", f"{target}:{target}:ro"]
             # never walk into a node_modules tree
@@ -145,8 +197,17 @@ async def run_shell_sandboxed(
             marker = f"{os.sep}worktrees{os.sep}"
             if marker in gitdir:
                 main_git = gitdir[: gitdir.index(marker)]
-                if os.path.isdir(main_git):
+                # audit C2: this path comes from a file inside the worktree,
+                # which the agent can rewrite -- `gitdir: /root/x` would mount
+                # /root read-only into the container. Same allow-root check the
+                # node_modules mounts get.
+                if os.path.isdir(main_git) and _mount_target_allowed(
+                        main_git, _mount_allow_roots(cwd)):
                     git_mount_args = ["-v", f"{main_git}:{main_git}:ro"]
+                elif os.path.isdir(main_git):
+                    logger.warning(
+                        "refusing to mount git dir %s for %s: outside this "
+                        "project's workspace and live checkout", main_git, cwd)
         except OSError:
             pass  # unreadable pointer file: run without git rather than not at all
 
