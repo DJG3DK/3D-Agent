@@ -342,14 +342,13 @@ export function LandingPage({ onSignIn }: Props) {
             Linux &middot; Python 3.12+ &middot; Node 20+ &middot; Docker &middot; PostgreSQL 14+
             &middot; an OpenRouter API key
           </p>
+          {/* One action here, and it is the repo. Sign-in lives in the nav,
+              which is sticky and therefore always within reach anyway. */}
           <div className="lp-cta">
             <a className="lp-btn lp-btn-primary" href={REPO} target="_blank" rel="noopener noreferrer">
               <GitHubMark />
               View the source
             </a>
-            <button className="lp-btn lp-btn-quiet" onClick={onSignIn}>
-              Sign in to this console
-            </button>
           </div>
         </section>
       </main>
