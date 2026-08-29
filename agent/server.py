@@ -24,6 +24,7 @@ from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Resp
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from email.utils import parsedate_to_datetime as _parsedate
 from psycopg import OperationalError as PgOperationalError
 from pydantic import BaseModel, Field
 
@@ -3805,11 +3806,46 @@ class _ImmutableAssets(StaticFiles):
         return response
 
 
+def _not_modified(request: Request, response: FileResponse) -> bool:
+    """Answer a conditional request the way StaticFiles does.
+
+    FileResponse sets etag and last-modified but never checks the request
+    against them, so `no-cache` below would mean re-sending the whole file on
+    every load rather than the 304 the browser is asking for. ETag wins over
+    Last-Modified when both are present, per RFC 9110.
+    """
+    etag = response.headers.get("etag")
+    if_none_match = request.headers.get("if-none-match")
+    if etag and if_none_match:
+        candidate = etag.strip('"')
+        for token in if_none_match.split(","):
+            token = token.strip()
+            if token == "*":
+                return True
+            # W/ marks a weak validator; the tag itself is what compares.
+            if token.removeprefix("W/").strip('"') == candidate:
+                return True
+        return False
+
+    modified_since = request.headers.get("if-modified-since")
+    last_modified = response.headers.get("last-modified")
+    if modified_since and last_modified:
+        try:
+            return _parsedate(last_modified) <= _parsedate(modified_since)
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 if FRONTEND_DIST.is_dir():
     app.mount("/assets", _ImmutableAssets(directory=FRONTEND_DIST / "assets"), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def spa_fallback(full_path: str):
+    # HEAD as well as GET: FastAPI's @app.get registers exactly the methods
+    # named, unlike Starlette's plain Route, which folds HEAD in for free. A
+    # bare @app.get therefore 405s every HEAD -- including the one a link-
+    # preview crawler sends to size an og:image before fetching it.
+    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
+    async def spa_fallback(full_path: str, request: Request):
         # Real files at the dist root — favicons, the apple-touch icon — are
         # served as themselves. Before this, ONLY /assets was mounted and every
         # other path fell through to index.html, so the favicon <link>s fetched
@@ -3823,9 +3859,25 @@ if FRONTEND_DIST.is_dir():
                 and candidate.is_relative_to(FRONTEND_DIST.resolve())
                 and candidate.parent == FRONTEND_DIST.resolve()
             ):
-                # Stable names (not content-hashed), so a day, not a year —
-                # same split the trading bot's nginx uses for its own icons.
-                return FileResponse(candidate, headers={"cache-control": "public, max-age=86400"})
+                # Stable names, so freshness has to come from revalidation
+                # rather than a lifetime: FileResponse already sends etag and
+                # last-modified, and a max-age here would be exactly how long a
+                # replaced icon or og:image outlives its deploy. Replacing the
+                # brand art on the trading bot on 2026-08-29 hit precisely that
+                # -- correct bytes on disk, a day of stale ones in every cache.
+                # stat_result up front: FileResponse only sets etag and
+                # last-modified when it is given one, otherwise it stats
+                # lazily inside __call__ -- and the conditional check below
+                # would then be comparing against headers that do not exist
+                # yet, so every revalidation came back 200 with the full body.
+                response = FileResponse(
+                    candidate,
+                    headers={"cache-control": "public, no-cache"},
+                    stat_result=candidate.stat(),
+                )
+                if _not_modified(request, response):
+                    return Response(status_code=304, headers=dict(response.headers))
+                return response
         return FileResponse(
             FRONTEND_DIST / "index.html",
             headers={"cache-control": "no-store, must-revalidate"},

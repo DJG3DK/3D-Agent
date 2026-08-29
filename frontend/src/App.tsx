@@ -1,6 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createTask, getMe, listPlanningSessions, listRepos, listTasks, logout, setAuthFailureHandler, uploadFiles } from "./api";
 import { ChangePasswordPage } from "./components/ChangePasswordPage";
+import { LandingPage } from "./components/LandingPage";
 import { LoginPage } from "./components/LoginPage";
 import { ModelConfigPanel } from "./components/ModelConfigPanel";
 import { ConsolidationStatusPanel } from "./components/ConsolidationStatusPanel";
@@ -234,10 +235,21 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
 export default function App() {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [checked, setChecked] = useState(false);
+  // Signed-out visitors get the landing page; the login form is one click
+  // away. An expired session is the exception -- see the 401 handler below.
+  const [showLogin, setShowLogin] = useState(false);
+  // Whether this browser has held a session at any point this page-load. The
+  // opening getMe() 401s for every signed-out visitor, and that is not a
+  // session expiring -- without this, arriving logged out sent everyone
+  // straight past the landing page to the login form.
+  const hadSession = useRef(false);
 
   useEffect(() => {
     getMe()
-      .then(setUser)
+      .then((me) => {
+        hadSession.current = true;
+        setUser(me);
+      })
       .catch(() => setUser(null))
       .finally(() => setChecked(true));
   }, []);
@@ -246,7 +258,13 @@ export default function App() {
   // cookie) clears the user here, dropping the app straight back to the login
   // screen instead of degrading into stale data and opaque "... failed: 401".
   useEffect(() => {
-    setAuthFailureHandler(() => setUser(null));
+    // Straight to the login form, not the landing page: someone whose cookie
+    // just expired mid-session is trying to get back in, and bouncing them to
+    // a product pitch reads as being logged out of the wrong site.
+    setAuthFailureHandler(() => {
+      setUser(null);
+      if (hadSession.current) setShowLogin(true);
+    });
     return () => setAuthFailureHandler(null);
   }, []);
 
@@ -269,7 +287,11 @@ export default function App() {
       </div>
     );
   }
-  if (!user) return <LoginPage onLoggedIn={setUser} />;
+  if (!user) {
+    return showLogin
+      ? <LoginPage onLoggedIn={setUser} onBack={() => setShowLogin(false)} />
+      : <LandingPage onSignIn={() => setShowLogin(true)} />;
+  }
   if (user.must_change_password) {
     return <ChangePasswordPage onDone={() => setUser({ ...user, must_change_password: false })} />;
   }

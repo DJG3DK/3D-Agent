@@ -1,0 +1,564 @@
+/* ============================================================================
+   Landing page — the public face in front of the login.
+   ----------------------------------------------------------------------------
+   Everything here is built from the tokens in theme.css, so the page reads as
+   the same product as the console behind it rather than a separate marketing
+   site. Two deliberate departures from console density: the type scale is
+   larger (a console is scanned, a landing page is read), and the measure is
+   capped at ~62ch so body copy never runs the full width of a desktop.
+   ========================================================================== */
+
+.landing {
+  --lp-max: 1120px;
+  --lp-measure: 62ch;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  /* Ambient light, same three-glow treatment the console uses at body level —
+     it is what makes the dark ground read as lit rather than merely dark. */
+  background-image:
+    radial-gradient(46% 38% at 12% 4%, rgba(143, 131, 255, 0.18), transparent 70%),
+    radial-gradient(38% 30% at 88% 10%, rgba(61, 219, 217, 0.10), transparent 70%),
+    radial-gradient(50% 32% at 70% 96%, rgba(240, 180, 41, 0.06), transparent 72%);
+  background-attachment: fixed;
+  overflow-x: hidden;
+}
+
+.landing :is(h1, h2, h3) {
+  margin: 0;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+/* No blanket `.landing p { margin: 0 }` here: one class plus one type
+   outranks a single class, so it silently beat every .lp-* margin below and
+   collapsed the whole page's vertical rhythm. Each rule owns its own margin. */
+
+/* ── Nav ──────────────────────────────────────────────────────────────── */
+
+.lp-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* Full-bleed: the blurred bar has to reach both edges of the viewport, or it
+     reads as a floating slab with cut ends. Only the row inside is constrained. */
+  padding-top: var(--safe-t);
+  /* The blur is what keeps the sticky bar legible over a scrolling screenshot;
+     the fallback background is opaque enough to work without it. */
+  background: rgba(13, 17, 36, 0.82);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid transparent;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .lp-nav { background: rgba(13, 17, 36, 0.97); }
+}
+
+.lp-nav-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--s5);
+  max-width: var(--lp-max);
+  margin: 0 auto;
+  padding: var(--s4) var(--s5);
+}
+
+.lp-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-weight: 650;
+  font-size: var(--fs-lg);
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.lp-brand img {
+  display: block;
+  height: 26px;
+  width: auto;  /* 774x270 lockup — a square box squashed it into a smear */
+}
+
+.lp-foot-brand img { height: 22px; width: auto; }
+
+.lp-nav-links {
+  display: flex;
+  gap: var(--s5);
+  margin-left: auto;
+  font-size: var(--fs-base);
+}
+
+.lp-nav-links a {
+  color: var(--text-dim);
+  text-decoration: none;
+  transition: color var(--t-fast);
+}
+
+.lp-nav-links a:hover { color: var(--text); }
+
+.lp-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-left: var(--s5);
+}
+
+.lp-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s3);
+  height: 36px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  text-decoration: none;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.lp-ghost:hover { color: var(--text); background: var(--surface); }
+
+.lp-signin {
+  height: 36px;
+  padding: 0 var(--s5);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #14102e;
+  font: inherit;
+  font-size: var(--fs-base);
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), transform var(--t-fast);
+}
+
+.lp-signin:hover { background: var(--accent-hover); }
+.lp-signin:active { transform: translateY(1px); }
+
+/* ── Layout primitives ────────────────────────────────────────────────── */
+
+.landing main { max-width: var(--lp-max); margin: 0 auto; padding: 0 var(--s5); }
+
+.lp-section {
+  padding: clamp(56px, 9vw, 104px) 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.lp-h2 {
+  font-size: clamp(24px, 3.4vw, 34px);
+  font-weight: 680;
+  line-height: 1.15;
+}
+
+.lp-sub {
+  max-width: var(--lp-measure);
+  margin: var(--s4) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-lg);
+  line-height: 1.65;
+}
+
+.lp-sub code {
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-soft);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--text);
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+
+.lp-hero { padding: clamp(48px, 8vw, 88px) 0 clamp(40px, 6vw, 64px); }
+
+.lp-eyebrow {
+  margin: 0;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lp-hero h1 {
+  margin-top: var(--s4);
+  font-size: clamp(34px, 6.2vw, 60px);
+  font-weight: 700;
+  line-height: 1.08;
+}
+
+.lp-lede {
+  max-width: 60ch;
+  margin: var(--s5) 0 0;
+  color: var(--text-dim);
+  font-size: clamp(16px, 1.9vw, 19px);
+  line-height: 1.6;
+}
+
+.lp-lede em { color: var(--text); font-style: italic; }
+
+.lp-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  margin-top: var(--s7);
+}
+
+.lp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  min-height: var(--tap);
+  padding: 0 var(--s6);
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: var(--fs-lg);
+  font-weight: 620;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), transform var(--t-fast);
+}
+
+.lp-btn:active { transform: translateY(1px); }
+
+.lp-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent-dim);
+  color: #14102e;
+  box-shadow: 0 6px 24px var(--accent-glow);
+}
+
+.lp-btn-primary:hover { background: var(--accent-hover); }
+
+.lp-btn-quiet {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.lp-btn-quiet:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+
+/* ── Pipeline strip ───────────────────────────────────────────────────── */
+
+.lp-pipeline {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--s2);
+  margin: var(--s8) 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+
+.lp-pipeline li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s4) var(--s4) var(--s4) var(--s5);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--surface), var(--surface-sunken));
+}
+
+/* The gate is the only stage that can send work backwards, so it is the only
+   one given colour. Accent here is state, not decoration. */
+.lp-pipeline li.is-gate {
+  border-color: var(--accent-dim);
+  background: linear-gradient(180deg, var(--surface-raised), var(--surface));
+  box-shadow: 0 0 0 1px var(--accent-glow), 0 8px 26px rgba(120, 110, 255, 0.10);
+}
+
+.lp-pipe-index {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.lp-pipeline li.is-gate .lp-pipe-index { color: var(--accent); }
+
+.lp-pipe-label { font-weight: 640; font-size: var(--fs-lg); }
+
+.lp-pipe-note {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* ── Screenshot frames ────────────────────────────────────────────────── */
+
+.lp-shot {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-sunken);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+}
+
+.lp-shot-hero { margin-top: var(--s8); }
+
+.lp-chrome {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px var(--s4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.lp-chrome span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.lp-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* ── How it works ─────────────────────────────────────────────────────── */
+
+.lp-stages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--s4);
+  margin-top: var(--s7);
+}
+
+.lp-stage {
+  padding: var(--s6);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.lp-kicker {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.lp-stage h3 {
+  margin-top: var(--s4);
+  font-size: var(--fs-xl);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.lp-stage p {
+  margin: var(--s3) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  line-height: 1.65;
+}
+
+.lp-pullquote {
+  max-width: 40ch;
+  margin: var(--s8) auto 0;
+  padding-left: var(--s5);
+  border-left: 2px solid var(--accent);
+  color: var(--text);
+  font-size: clamp(18px, 2.6vw, 26px);
+  font-weight: 600;
+  line-height: 1.4;
+  text-wrap: balance;
+}
+
+.lp-pullquote em { color: var(--accent); font-style: italic; }
+
+/* ── Feature rows ─────────────────────────────────────────────────────── */
+
+.lp-features {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(48px, 7vw, 84px);
+  margin-top: var(--s8);
+}
+
+.lp-feature {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(24px, 4vw, 52px);
+}
+
+.lp-feature.is-flipped .lp-shot { order: 2; }
+
+.lp-feature-copy h3 {
+  font-size: clamp(19px, 2.3vw, 24px);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.lp-feature-copy p {
+  margin: var(--s4) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-lg);
+  line-height: 1.65;
+}
+
+/* ── Planning ─────────────────────────────────────────────────────────── */
+
+.lp-planning {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: clamp(28px, 5vw, 64px);
+  align-items: start;
+}
+
+.lp-planning-copy .lp-sub + .lp-sub { margin-top: var(--s5); }
+
+.lp-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  margin: var(--s2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lp-facts li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--s5);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.lp-facts strong { font-size: var(--fs-lg); font-weight: 640; }
+
+.lp-facts span {
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────── */
+
+.lp-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s4);
+  margin-top: var(--s7);
+}
+
+.lp-control {
+  padding: var(--s5);
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid var(--accent-dim);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.lp-control h3 { font-size: var(--fs-lg); font-weight: 640; }
+
+.lp-control p {
+  margin: var(--s2) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+}
+
+/* ── Close ────────────────────────────────────────────────────────────── */
+
+.lp-close { text-align: center; }
+.lp-close .lp-sub { margin-inline: auto; }
+.lp-close .lp-cta { justify-content: center; }
+
+.lp-reqs {
+  margin: var(--s5) 0 0;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+
+.lp-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s4) var(--s6);
+  max-width: var(--lp-max);
+  margin: 0 auto;
+  padding: var(--s7) var(--s5);
+  padding-bottom: calc(var(--s7) + var(--safe-b));
+  border-top: 1px solid var(--border-soft);
+}
+
+.lp-foot-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-weight: 640;
+}
+
+.lp-foot p {
+  margin: 0;
+  flex: 1 1 320px;
+  color: var(--text-faint);
+  font-size: var(--fs-md);
+  line-height: 1.6;
+}
+
+.lp-foot a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  text-decoration: none;
+}
+
+.lp-foot a:hover { color: var(--text); }
+
+/* ── Responsive ───────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .lp-feature,
+  .lp-planning { grid-template-columns: 1fr; }
+  .lp-feature.is-flipped .lp-shot { order: 0; }
+  .lp-pipeline { grid-template-columns: repeat(2, 1fr); }
+  /* Ship is the odd one out at two columns; letting it span reads as an
+     endpoint rather than a half-empty cell. */
+  .lp-pipeline li:last-child { grid-column: 1 / -1; }
+}
+
+@media (max-width: 640px) {
+  /* The section anchors are the first thing to go: the sign-in button and the
+     GitHub link are the two things this bar exists for. */
+  .lp-nav-links { display: none; }
+  /* 36px is fine under a mouse; a thumb gets the design system's 44px floor. */
+  .lp-signin,
+  .lp-ghost { height: var(--tap); }
+  .lp-nav-actions { margin-left: auto; }
+  .lp-ghost span { display: none; }
+  .lp-ghost { padding: 0 var(--s3); }
+  .lp-pipeline { grid-template-columns: 1fr; }
+  .lp-pipeline li:last-child { grid-column: auto; }
+  /* The hard break is tuned for the desktop measure; at phone width it strands
+     "work." on a line of its own. Drop it and let text-wrap: balance decide. */
+  .lp-hero h1 br { display: none; }
+  .lp-cta .lp-btn { flex: 1 1 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing * { transition: none !important; }
+}
