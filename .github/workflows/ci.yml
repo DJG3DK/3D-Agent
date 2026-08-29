@@ -41,6 +41,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Lint (ruff)
+        # ruff config landed with the source's ~65 existing noqa codes, which
+        # had never been enforced by anything. The ruleset is what the code
+        # already satisfies; deferred rules are listed in ruff.toml.
+        run: |
+          pip install ruff
+          ruff check .
+
       # No .env is created on purpose. conftest.py supplies placeholder values
       # via setdefault, so this run also proves a fresh clone can run the suite
       # — the exact thing that was broken (H4).

@@ -1,32 +1,29 @@
-# React + TypeScript + Vite
+# 3D-Agent dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The React/Vite frontend for [3D-Agent](../README.md). It is not a standalone
+app: `agent/server.py` serves the built bundle from `dist/` itself, so there is
+no separate frontend process in production.
 
-Currently, two official plugins are available:
+## Working on it
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm ci
+npm run dev        # dev server against a backend on :8100
+npm run build      # production bundle -> dist/
+npx tsc --noEmit -p tsconfig.app.json
+npm run lint
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+A frontend change reaches a deployment by rebuilding `dist/` and restarting the
+backend — see [INSTALL.md](../INSTALL.md).
+
+## Layout
+
+- `src/components/` — views and panels; each has its own CSS file beside it.
+- `src/api.ts` — every call to the backend, and the types they return.
+- `src/useTaskStream.ts` / `src/usePlanningStream.ts` — the two WebSocket
+  streams. Both hydrate from a snapshot before connecting and re-hydrate on
+  reconnect; a socket that reconnects without re-reading the snapshot silently
+  loses whatever arrived while it was down.
+- `src/theme.css` — colour tokens. Contrast ratios are documented inline and
+  are meant to stay at or above 4.5:1.

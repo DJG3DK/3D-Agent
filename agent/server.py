@@ -19,7 +19,7 @@ from typing import Literal
 logger = logging.getLogger("3d-agent")
 
 import httpx
-from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -298,6 +298,7 @@ _CSP = (
 
 
 from starlette.responses import JSONResponse as _JSONResponse
+from datetime import UTC
 
 
 @app.middleware("http")
@@ -1779,7 +1780,7 @@ async def stream_planning_session(ws: WebSocket, session_id: str):
             # instead of silence. Clients ignore the "ping" type.
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=20)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await ws.send_json({"type": "ping"})
                 continue
             await ws.send_json(event)
@@ -1827,7 +1828,7 @@ async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_
     # neutral classification if it's slow.
     try:
         classification = await asyncio.wait_for(classify_task(goal, config), timeout=8)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("task classification exceeded 8s; starting with fallback classification")
         classification = TaskClassification(category="other", needs_tests=False)
     if req.attachments:
@@ -1941,7 +1942,7 @@ async def get_analytics(user: User = Depends(require_full_auth)):
     """
     auth.require_admin(user)
     import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     store = app.state.store
 
@@ -1978,7 +1979,7 @@ async def get_analytics(user: User = Depends(require_full_auth)):
     from datetime import timedelta
 
     daily: dict[str, dict] = {}
-    today = datetime.now(tz=timezone.utc).date()
+    today = datetime.now(tz=UTC).date()
     for offset in range(13, -1, -1):
         day = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
         daily[day] = {"date": day, "cost": 0.0, "tasks": 0}
@@ -2012,7 +2013,7 @@ async def get_analytics(user: User = Depends(require_full_auth)):
         ts = t.get("created_at")
         if not ts:
             continue
-        day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        day = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
         _bucket(day)["tasks"] += 1
         if t.get("task_id") not in episodes_by_task:
             _bucket(day)["cost"] += float(t.get("cost_so_far") or 0.0)
@@ -2214,8 +2215,8 @@ _TRACE_SUMMARY_MAX_RUNS = 3000
 # The model-usage section deliberately never looks earlier than when the
 # per-role model pins went live, so a prior era's routing history doesn't
 # pollute the current per-role breakdown.
-from datetime import datetime as _dt, timezone as _tz
-_MODEL_PINNING_CUTOVER = _dt(2026, 8, 20, 12, 45, tzinfo=_tz.utc)
+from datetime import datetime as _dt
+_MODEL_PINNING_CUTOVER = _dt(2026, 8, 20, 12, 45, tzinfo=UTC)
 
 
 def _classify_model_usage_role(metadata: dict, alias: str | None) -> str:
@@ -2296,7 +2297,7 @@ def _scan_langsmith_model_usage() -> list[dict]:
     response_metadata.model_name (the router's return_raw_model_name), not
     the router alias. Sync client -> runs via asyncio.to_thread.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import langsmith as ls
 
@@ -2312,7 +2313,7 @@ def _scan_langsmith_model_usage() -> list[dict]:
     # pool/classifier era used many different coordinator models, which
     # aren't relevant to the current pinned-role breakdown this section shows.
     start = max(
-        datetime.now(tz=timezone.utc) - timedelta(days=_MODEL_USAGE_WINDOW_DAYS),
+        datetime.now(tz=UTC) - timedelta(days=_MODEL_USAGE_WINDOW_DAYS),
         _MODEL_PINNING_CUTOVER,
     )
     usage: dict[str, dict] = {}
@@ -2430,7 +2431,7 @@ def _scan_langsmith_tool_reliability() -> dict:
     live task execution, and would dilute the real per-tool error rate.
     """
     from collections import defaultdict
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import langsmith as ls
 
@@ -2440,7 +2441,7 @@ def _scan_langsmith_tool_reliability() -> dict:
 
     client = ls.Client()
     project = __import__("os").environ.get("LANGSMITH_PROJECT", "3d-agent")
-    start = datetime.now(tz=timezone.utc) - timedelta(days=_TOOL_RELIABILITY_WINDOW_DAYS)
+    start = datetime.now(tz=UTC) - timedelta(days=_TOOL_RELIABILITY_WINDOW_DAYS)
 
     by_tool: dict[str, dict] = {}
     daily_errors: dict[str, int] = defaultdict(int)
@@ -2470,7 +2471,7 @@ def _scan_langsmith_tool_reliability() -> dict:
     # Zero-filled daily series over the same window, matching /api/analytics'
     # own daily-spend series convention -- a quiet day is a real, informative
     # zero, not a gap.
-    today = datetime.now(tz=timezone.utc).date()
+    today = datetime.now(tz=UTC).date()
     daily = [
         {"date": (today - timedelta(days=offset)).strftime("%Y-%m-%d"),
          "errors": daily_errors.get((today - timedelta(days=offset)).strftime("%Y-%m-%d"), 0)}
@@ -2522,7 +2523,7 @@ def _scan_langsmith_trace_summary() -> dict:
     LLM runs a second time here -- same underlying runs, no need to re-scan
     them just to get a different aggregate.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import langsmith as ls
 
@@ -2533,7 +2534,7 @@ def _scan_langsmith_trace_summary() -> dict:
 
     client = ls.Client()
     project = __import__("os").environ.get("LANGSMITH_PROJECT", "3d-agent")
-    start = datetime.now(tz=timezone.utc) - timedelta(days=_TRACE_SUMMARY_WINDOW_DAYS)
+    start = datetime.now(tz=UTC) - timedelta(days=_TRACE_SUMMARY_WINDOW_DAYS)
 
     trace_count = 0
     error_count = 0
@@ -2661,7 +2662,7 @@ async def stop_task(task_id: str, user: User = Depends(require_full_auth)):
         await asyncio.wait_for(asyncio.shield(task), timeout=30)
     except asyncio.CancelledError:
         pass
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("stop_task: teardown for %s still running after 30s; returning anyway", task_id)
     return {"ok": True}
 
@@ -3044,7 +3045,7 @@ async def delete_task(task_id: str, repo: str, user: User = Depends(require_full
     # keeps real generations far below this bound.
     for generation in range(1, 10):
         await app.state.checkpointer.adelete_thread(f"{task_id}:work:g{generation}")
-    for q, ws in _subscribers.pop(task_id, []):
+    for _q, ws in _subscribers.pop(task_id, []):
         try:
             await ws.close(code=4000, reason="task deleted")
         except Exception:
@@ -3438,7 +3439,7 @@ async def restart_services(req: SaveEnvKeysRequest, user: User = Depends(require
         try:
             o, _ = await _a.wait_for(proc.communicate(), timeout=60)
             out[n] = "ok" if proc.returncode == 0 else (o or b"").decode()[-200:]
-        except _a.TimeoutError:
+        except TimeoutError:
             proc.kill()
             out[n] = "timed out"
     return {"restarted": out}
@@ -3496,7 +3497,7 @@ async def consolidation_status(user: User = Depends(require_full_auth)):
     if payload.get("ran_at"):
         try:
             ran = _dt.fromisoformat(str(payload["ran_at"]).replace("Z", "+00:00"))
-            age_h = (_dt.now(_tz.utc) - ran).total_seconds() / 3600
+            age_h = (_dt.now(UTC) - ran).total_seconds() / 3600
             payload["age_hours"] = round(age_h, 1)
             payload["stale"] = age_h > 48
         except Exception as e:  # noqa: BLE001
@@ -3534,7 +3535,7 @@ async def probe_forced_tool_call(user: User = Depends(require_full_auth)):
     )
     try:
         out, _ = await _asyncio.wait_for(proc.communicate(), timeout=1500)
-    except _asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         raise HTTPException(status_code=504, detail="probe timed out")
 
@@ -3619,7 +3620,7 @@ async def stream_task(ws: WebSocket, task_id: str):
             # instead of silence. Clients ignore the "ping" type.
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=20)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await ws.send_json({"type": "ping"})
                 continue
             await ws.send_json(event)

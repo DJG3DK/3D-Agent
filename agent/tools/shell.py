@@ -86,7 +86,7 @@ async def run_shell(
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _kill_process_group(proc)
         await proc.wait()
         raise ShellTimeout(cmd, timeout)

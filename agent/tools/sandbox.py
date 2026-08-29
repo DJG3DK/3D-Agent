@@ -245,7 +245,7 @@ async def run_shell_sandboxed(
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await _kill_container(container_name)
         await proc.wait()
         raise ShellTimeout(cmd, timeout)

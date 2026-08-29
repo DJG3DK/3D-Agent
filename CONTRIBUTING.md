@@ -35,7 +35,8 @@ In rough order of value:
 git clone https://github.com/DJG3DK/3D-Agent.git
 cd 3D-Agent
 ./install.sh                       # see INSTALL.md
-.venv/bin/python -m pytest -q      # ~600 tests, seconds, no network needed
+.venv/bin/python -m pytest -q      # ~660 tests, seconds, no network needed
+.venv/bin/ruff check .             # lint (ruff.toml)
 ```
 
 Frontend:

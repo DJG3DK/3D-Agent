@@ -537,7 +537,7 @@ async def _review_and_deploy(state: AgentState, repo: str, sha: str) -> dict:
     # instead of stranding a real commit.
     try:
         await trigger_check(repo)
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         import asyncio as _asyncio
         await _asyncio.sleep(3)
         try:

@@ -159,7 +159,8 @@ def make_agent_tools(
 
     @tool
     @tool_errors_to_text
-    async def bash(command: str, timeout: int = 120) -> str:  # noqa: bash timeout clamped below (audit H-18)
+    # The timeout argument is clamped below; see audit H-18.
+    async def bash(command: str, timeout: int = 120) -> str:
         """Run a shell command. Working directory is /workspace, which IS the
         repo root -- `pwd` shows /workspace, paths there map 1:1 to what
         `read`/`write`/`edit` expect (e.g. /workspace/src/App.tsx here ==

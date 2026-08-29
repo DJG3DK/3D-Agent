@@ -56,7 +56,7 @@ does, never a reduced set.
 """
 
 import logging
-import math
+import os
 import time
 
 from langchain.agents.middleware import ModelCallLimitMiddleware, SummarizationMiddleware, ToolCallLimitMiddleware
@@ -107,7 +107,9 @@ logger = logging.getLogger("3d-agent")
 # a genuinely hard investigation (the deepest useful sessions have landed
 # $1-2 with caching), tight enough that a runaway marathon is interrupted
 # while it is a surprise, not a bill.
-PLANNING_TURN_BUDGET_USD = 4.0
+# Documented as configurable but hardcoded until now, so the documentation was
+# simply wrong. Read from the environment with the same default.
+PLANNING_TURN_BUDGET_USD = float(os.environ.get("PLANNING_TURN_BUDGET_USD", "4.0"))
 
 _HARD_KEYWORDS = (
     "super hard", "extremely difficult", "think as hard as you can",
