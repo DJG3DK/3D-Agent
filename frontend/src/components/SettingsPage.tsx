@@ -243,16 +243,17 @@ export function SettingsPage({ user, onUserChanged }: Props) {
         </>
       )}
 
-      <h3 className="settings-section-label">Notifications</h3>
+      {/* Two compact cards that each half-filled a row of their own: paired
+          into one row instead. Both carry their own heading, so the section
+          label does not have to name them individually. */}
+      <h3 className="settings-section-label">Notifications &amp; projects</h3>
       <div className="settings-grid">
         <TelegramCard />
+        {/* Admin only, and gated server-side too — require_admin on both the
+            read and the write. The client gate is convenience, not the
+            boundary. */}
+        {user.role === "admin" && <ProjectsPanel />}
       </div>
-
-      {/* Admin only, and gated server-side too — require_admin on both the
-          read and the write. The client gate is convenience, not the
-          boundary. The panel renders its own section label + one card per
-          credential group. */}
-      {user.role === "admin" && <ProjectsPanel />}
 
       {user.role === "admin" && <ApiKeysPanel />}
 

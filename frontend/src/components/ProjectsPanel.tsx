@@ -147,10 +147,10 @@ export function ProjectsPanel() {
 
   const blocked = !!report?.blockers.length;
 
+  // Renders a bare card, not its own section: the settings page pairs it with
+  // Telegram in one row, and a panel that brought its own heading and grid
+  // could only ever stack full-width.
   return (
-    <>
-      <h3 className="settings-section-label">Projects</h3>
-      <div className="settings-grid">
         <section className="settings-card wiz-card">
           <div className="settings-card-head">
             <Icon name="gitBranch" />
@@ -290,7 +290,5 @@ export function ProjectsPanel() {
             </div>
           )}
         </section>
-      </div>
-    </>
   );
 }
