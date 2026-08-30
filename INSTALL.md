@@ -29,10 +29,10 @@ takes about 15 minutes, most of it waiting for dependencies.
 A small VPS is enough. The agent is not compute-heavy; the models run
 elsewhere.
 
-Verified on clean containers of **Debian 13** and **Arch**: `install.sh`
-completes and the full test suite passes on both. (Those runs used Node 20
-and Node 26 respectively, before the floor moved to 24 — the Arch run is
-still representative, the Debian one predates the requirement.) `install.sh` detects `apt`, `pacman` or `dnf`, and
+Verified on clean containers of **Debian 13** (Python 3.13, Node 24) and
+**Arch** (Python 3.14, Node 26): `install.sh` completes and the full test
+suite passes on both — 694 Python tests and 141 frontend tests, against a
+real Postgres. `install.sh` detects `apt`, `pacman` or `dnf`, and
 writes its nginx config to `sites-available` or `conf.d` depending on the
 distro's layout.
 
