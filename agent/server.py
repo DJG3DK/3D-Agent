@@ -1487,6 +1487,55 @@ def _alert_task_status(task_id: str, status: str, repo: str, goal: str, cost: fl
     _notify_bg(task_alert(status, repo, goal, cost, detail), repo=repo)
 
 
+# A planning turn is bounded by SILENCE, not by duration.
+#
+# It used to be `wait_for(..., timeout=1800)`: a flat 30-minute ceiling on the
+# whole turn. That measures the wrong thing. A turn that is reading files and
+# calling tools is working, and the hard questions -- the ones worth asking --
+# are exactly the ones that take longest. On 2026-08-30 a live turn was killed
+# at 30 minutes while actively streaming; it had cost $2.50 and produced no
+# saved plan, so the operator got nothing for the half hour.
+#
+# What actually indicates a fault is no output at all: the model call hung, the
+# provider stopped responding, a tool never returned. Every log entry and cost
+# event this turn emits is a heartbeat, so the watchdog below fires only when
+# those stop. Duration is unbounded on purpose -- the BUDGET is the ceiling
+# that stops work, and it is the only one that should.
+PLANNING_STALL_TIMEOUT_S = float(os.environ.get("PLANNING_STALL_TIMEOUT_S", 1200))
+_STALL_POLL_S = 15.0
+
+
+class PlanningStalled(Exception):
+    """No output from a planning turn for PLANNING_STALL_TIMEOUT_S."""
+
+
+async def _await_with_stall_watchdog(task: "asyncio.Task", heartbeat: dict, stall_s: float):
+    """Await `task`, cancelling it only if `heartbeat['at']` stops advancing.
+
+    Raises PlanningStalled -- deliberately NOT CancelledError, so the caller's
+    cancellation handler keeps meaning "the operator pressed Stop" and this
+    lands in the error path that banks cost and the partial draft.
+    """
+    # Poll faster than the window rather than on a fixed tick: the interval
+    # is the worst-case delay between going silent and noticing, so it should
+    # scale with the window instead of being a constant that happens to suit
+    # one value of it.
+    poll = max(0.05, min(_STALL_POLL_S, stall_s / 4))
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=poll)
+        if done:
+            return task.result()
+        idle = time.monotonic() - heartbeat["at"]
+        if idle >= stall_s:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            raise PlanningStalled(
+                f"no output for {int(idle // 60)}m — the turn produced "
+                f"{heartbeat['events']} events, then went silent"
+            )
+
+
 def _publish_planning(session_id: str, event: dict) -> None:
     if event.get("type") == "log_entry" and event.get("entry"):
         _live_log_append(_live_planning_log, session_id, [event["entry"]])
@@ -1676,8 +1725,11 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         # idleness from tasks + router quiet, and a >90s gap inside one long
         # model call read as idle -- a restart landed mid-plan (the incident
         # that also exposed the difficulty flip above). Cleared on every
-        # ending path; the timestamp lets a reader ignore a marker staler
-        # than the 1800s turn ceiling (a hard-killed process can't clear it).
+        # ending path; the timestamp lets a reader judge a marker that a
+        # hard-killed process could not clear. There is no longer a turn
+        # ceiling to compare against (see PLANNING_STALL_TIMEOUT_S) -- a turn
+        # is bounded by silence and by budget, not by elapsed time, so treat
+        # a marker as stale on the same stall basis rather than a fixed age.
         if meta_item:
             await app.state.store.aput(("planning", repo), session_id, {
                 **meta_item.value, "difficulty": difficulty,
@@ -1713,19 +1765,29 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
             "kind": "user", "summary": text[:200], "detail": text[:4000],
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }])
-        plan_markdown = await asyncio.wait_for(
+        # Every published event doubles as the watchdog's heartbeat.
+        _heartbeat = {"at": time.monotonic(), "events": 0}
+
+        def _publish_and_beat(ev):
+            _heartbeat["at"] = time.monotonic()
+            _heartbeat["events"] += 1
+            # cost events arrive pre-shaped ({"type": "cost", ...}); log
+            # entries need wrapping -- route on the shape.
+            _publish_planning(
+                session_id,
+                ev if isinstance(ev, dict) and ev.get("type") == "cost"
+                else {"type": "log_entry", "entry": ev},
+            )
+
+        _turn_task = asyncio.create_task(
             run_planning_turn(
                 agent, plan_ref, thread_config, message_text,
-                # cost events arrive pre-shaped ({"type": "cost", ...}); log
-                # entries need wrapping -- route on the shape.
-                lambda ev: _publish_planning(
-                    session_id,
-                    ev if isinstance(ev, dict) and ev.get("type") == "cost"
-                    else {"type": "log_entry", "entry": ev},
-                ),
+                _publish_and_beat,
                 tracker=tracker,
-            ),
-            timeout=1800,
+            )
+        )
+        plan_markdown = await _await_with_stall_watchdog(
+            _turn_task, _heartbeat, PLANNING_STALL_TIMEOUT_S
         )
         # PRESERVE, never clobber. `plan_markdown` is only what THIS turn's
         # save_plan call produced, and the system prompt deliberately does not
