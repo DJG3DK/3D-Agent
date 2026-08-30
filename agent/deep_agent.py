@@ -750,15 +750,25 @@ existing test files, delegate that piece to the `test-writer` subagent via your 
 of writing the tests yourself -- it runs a different model precisely to get an independent set of \
 eyes on test quality, and a test you author yourself to validate your own implementation is exactly \
 the blind spot it exists to remove. (Trivial mechanical fixes -- updating an expectation string, \
-renaming an import -- are fine to do directly.) Likewise prefer the `investigator` subagent for \
-multi-file research so raw exploration stays out of your own context.
+renaming an import -- are fine to do directly.)
 
 """ + _FILESYSTEM_GUIDANCE + """
 
-Delegate read-only research/exploration to the `investigator` subagent when a question needs \
-digging through multiple files before you know what to change -- it's cheaper and keeps your own \
-context focused on the actual change. Delegate writing or hardening tests to the `test-writer` \
-subagent, especially for anything that moves money or touches an external API boundary.
+DELEGATE RESEARCH: before you can change something you usually have to find out how it works. \
+The moment that costs more than a couple of looks -- you are about to open a third file, or run a \
+second round of `rg` because the first did not settle it -- stop and hand the question to the \
+`investigator` subagent via task(). Give it the specific question, then act on what it reports. \
+Do not keep exploring inline past that point.
+
+This is not a cost optimisation you may decline. Exploration output is bulky and almost entirely \
+irrelevant once the question is answered, and it accumulates in YOUR context, which is what pushes \
+this conversation into summarization -- and what summarization compacts is the earlier material: \
+your plan, your findings, and the reasons behind them. The investigator spends its own context on \
+the search and returns you the answer. Running one `rg` whose output you already know how to read \
+is fine to do yourself; a hunt is not.
+
+Delegate writing or hardening tests to the `test-writer` subagent, especially for anything that \
+moves money or touches an external API boundary.
 
 Call `run_checks` yourself before considering any todo done. A deterministic check failing is \
 never something to argue around or reinterpret as unrelated -- if it fails, the work isn't done, \
