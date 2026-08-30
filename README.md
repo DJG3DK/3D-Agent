@@ -421,7 +421,7 @@ files, creates the database, builds the sandbox image and the dashboard, and is 
 project, since that step decides which of your test commands an unattended agent is allowed to
 run.
 
-What you need on the box: **Python 3.12+, Node 20+, Docker, Postgres, pm2** (optional) — and an
+What you need on the box: **Python 3.12+, Node 24+, Docker, Postgres, pm2** (optional) — and an
 OpenRouter API key, which is the only paid dependency.
 
 <details>

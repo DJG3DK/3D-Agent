@@ -18,7 +18,7 @@ takes about 15 minutes, most of it waiting for dependencies.
 |---|---|
 | **Linux host** you control | The agent runs shell commands and manages git worktrees on this box |
 | **Python 3.12+** | The agent itself |
-| **Node 20+** | The dashboard build and the two review services |
+| **Node 24+** | The dashboard build and the two review services |
 | **Docker** | Every command the agent runs happens inside a container. Without it, the first tool call of the first task fails |
 | **PostgreSQL 14+** | Conversation checkpoints, memory, users. **Required** — without it the agent retries its connection pool forever and never starts serving. On Arch/CachyOS you must also `initdb` before first start; Debian/Ubuntu do that for you |
 | **An OpenRouter API key** | The only paid dependency — [openrouter.ai/keys](https://openrouter.ai/keys) |
@@ -29,9 +29,10 @@ takes about 15 minutes, most of it waiting for dependencies.
 A small VPS is enough. The agent is not compute-heavy; the models run
 elsewhere.
 
-Verified on clean containers of **Debian 13** (Python 3.13, Node 20) and
-**Arch** (Python 3.14, Node 26): `install.sh` completes and the full test
-suite passes on both. `install.sh` detects `apt`, `pacman` or `dnf`, and
+Verified on clean containers of **Debian 13** and **Arch**: `install.sh`
+completes and the full test suite passes on both. (Those runs used Node 20
+and Node 26 respectively, before the floor moved to 24 — the Arch run is
+still representative, the Debian one predates the requirement.) `install.sh` detects `apt`, `pacman` or `dnf`, and
 writes its nginx config to `sites-available` or `conf.d` depending on the
 distro's layout.
 

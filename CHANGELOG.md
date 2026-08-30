@@ -112,7 +112,7 @@ and the absence of CI.
 
 ### Requirements
 
-Linux, Python 3.12+, Node 20+, Docker, PostgreSQL 14+, and an OpenRouter API key
+Linux, Python 3.12+, Node 24+, Docker, PostgreSQL 14+, and an OpenRouter API key
 (the only paid dependency). pm2 optional.
 
 ### License
