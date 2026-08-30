@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getEnvConfig, saveEnvConfig, restartServices, type EnvKey } from "../api";
 import { Icon } from "./Icon";
+import { useSettingsSave } from "./SettingsSaveBar";
 import "./ApiKeysPanel.css";
 
 /* Editing the credentials this deployment runs on.
@@ -19,7 +20,6 @@ export function ApiKeysPanel() {
   const [keys, setKeys] = useState<EnvKey[] | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [reveal, setReveal] = useState<Record<string, boolean>>({});
-  const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingRestart, setPendingRestart] = useState<string[]>([]);
@@ -37,21 +37,20 @@ export function ApiKeysPanel() {
 
   const dirty = Object.entries(edits).filter(([, v]) => v.trim() !== "");
 
+  // No Save button of its own: the page's single sticky bar collects pending
+  // edits from every panel and commits them. Errors propagate so the bar
+  // reports them next to the button that caused them.
   async function handleSave() {
     if (!dirty.length) return;
-    setSaving(true); setError(null); setSavedNote(null);
-    try {
-      const r = await saveEnvConfig(Object.fromEntries(dirty));
-      setEdits({});
-      setPendingRestart(r.restart_required);
-      setSavedNote(`Updated ${r.updated.join(", ")}.`);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "save failed");
-    } finally {
-      setSaving(false);
-    }
+    setError(null); setSavedNote(null);
+    const r = await saveEnvConfig(Object.fromEntries(dirty));
+    setEdits({});
+    setPendingRestart(r.restart_required);
+    setSavedNote(`Updated ${r.updated.join(", ")}.`);
+    await load();
   }
+
+  useSettingsSave("api-keys", dirty.length, handleSave, () => setEdits({}));
 
   async function handleRestart() {
     setRestarting(true);
@@ -147,12 +146,6 @@ export function ApiKeysPanel() {
           </button>
         </div>
       )}
-
-      <div className="akey-actions">
-        <button className="btn btn--primary" disabled={!dirty.length || saving} onClick={handleSave}>
-          {saving ? "Saving…" : dirty.length ? `Save ${dirty.length} change${dirty.length > 1 ? "s" : ""}` : "Save changes"}
-        </button>
-      </div>
     </>
   );
 }

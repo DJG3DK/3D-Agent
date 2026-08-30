@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { RuntimeLimitsPanel } from "./RuntimeLimitsPanel";
+import { SettingsSaveBar, SettingsSaveProvider } from "./SettingsSaveBar";
 import { changePassword, setAutoApprove, setMergeReview, getTelegramSettings, setTelegramSettings, sendTelegramTest } from "../api";
 import type { CurrentUser } from "../types";
 import "./SettingsPage.css";
@@ -79,6 +80,7 @@ export function SettingsPage({ user, onUserChanged }: Props) {
   }
 
   return (
+    <SettingsSaveProvider>
     <div className="settings-page">
       <h1 className="settings-title">Settings</h1>
       <p className="settings-account">
@@ -253,10 +255,12 @@ export function SettingsPage({ user, onUserChanged }: Props) {
       {user.role === "admin" && <ProjectsPanel />}
 
       {user.role === "admin" && <ApiKeysPanel />}
-    
 
-      
+      {/* One save control for the whole page, pinned bottom-right. It shows
+          itself only when a panel above reports a pending edit. */}
+      <SettingsSaveBar />
     </div>
+    </SettingsSaveProvider>
   );
 }
 

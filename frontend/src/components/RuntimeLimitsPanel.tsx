@@ -1,21 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { getRuntimeSettings, saveRuntimeSettings, type RuntimeKnob } from "../api";
+import { useSettingsSave } from "./SettingsSaveBar";
 import "./RuntimeLimitsPanel.css";
 
 /* The dials that decide how hard the agent tries before it gives up.
  *
- * One card per group in the page's own auto-fit grid, so the cards tile
- * instead of stacking and the section is as tall as the tallest card rather
- * than the sum of every knob.
+ * One card per group, dropped straight into the page's own auto-fit grid so
+ * the cards tile three-up instead of stacking, and the section is as tall as
+ * the tallest card rather than the sum of every knob.
  *
- * Saving is ONE sticky bar, not a button per card. Per-card buttons meant
- * five controls that were disabled almost all of the time, and an edit in a
- * card you had scrolled past was easy to leave unsaved. A single bar that
- * appears only when something is dirty says exactly how many changes are
- * pending and cannot be scrolled away from.
+ * There is no Save button here: the panel reports its pending edits to the
+ * page's single sticky bar (see SettingsSaveBar) and that commits them.
  *
  * Help text is a tooltip on the label and the input rather than a paragraph
- * per row: fourteen inline explanations were a wall, and the label plus the
+ * per row -- fourteen inline explanations were a wall, and the label plus the
  * unit hint already carries the meaning at a glance.
  */
 
@@ -33,8 +31,6 @@ export function RuntimeLimitsPanel() {
   const [knobs, setKnobs] = useState<Record<string, RuntimeKnob> | null>(null);
   const [values, setValues] = useState<Record<string, number>>({});
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [justSaved, setJustSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -70,22 +66,17 @@ export function RuntimeLimitsPanel() {
   }, [edits, values, knobs]);
 
   async function save() {
-    setSaving(true);
-    setError(null);
-    try {
-      const payload: Record<string, number> = {};
-      for (const name of dirty) payload[name] = Number(edits[name]);
-      const res = await saveRuntimeSettings(payload);
-      setValues(res.values);
-      setEdits({});
-      setJustSaved(true);
-      window.setTimeout(() => setJustSaved(false), 4000);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "save failed");
-    } finally {
-      setSaving(false);
-    }
+    const payload: Record<string, number> = {};
+    for (const name of dirty) payload[name] = Number(edits[name]);
+    // Errors deliberately propagate: the save bar owns reporting them, so a
+    // failure is shown next to the button that caused it rather than in a
+    // card the operator may have scrolled past.
+    const res = await saveRuntimeSettings(payload);
+    setValues(res.values);
+    setEdits({});
   }
+
+  useSettingsSave("runtime-limits", dirty.length, save, () => setEdits({}));
 
   if (error && !knobs) {
     return (
@@ -148,30 +139,6 @@ export function RuntimeLimitsPanel() {
           </div>
         </section>
       ))}
-
-      {(dirty.length > 0 || error || justSaved) && (
-        <div className="rl-savebar" role="status">
-          {error ? (
-            <span className="rl-savebar-error">{error}</span>
-          ) : justSaved && dirty.length === 0 ? (
-            <span className="rl-savebar-ok">Saved — applies from the next run.</span>
-          ) : (
-            <>
-              <span className="rl-savebar-count">
-                {dirty.length} unsaved change{dirty.length === 1 ? "" : "s"}
-              </span>
-              <button className="rl-savebar-discard" onClick={() => setEdits({})} disabled={saving}>
-                Discard
-              </button>
-            </>
-          )}
-          {dirty.length > 0 && (
-            <button className="btn btn-primary" onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
-            </button>
-          )}
-        </div>
-      )}
     </>
   );
 }

@@ -1,0 +1,49 @@
+/* The settings page's single save control. Bottom right, which is the one
+   corner of this page that is reliably empty. */
+.savebar {
+  position: fixed;
+  right: calc(var(--s6) + var(--safe-r));
+  bottom: calc(var(--s6) + var(--safe-b));
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--fs-md);
+  animation: savebar-in 140ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes savebar-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .savebar { animation: none; } }
+
+.savebar-count { color: var(--text); font-weight: 600; }
+.savebar-ok { color: var(--green); }
+.savebar-error { color: var(--red); max-width: 42ch; }
+
+.savebar-discard {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+.savebar-discard:hover { color: var(--text); background: var(--surface-hover); }
+
+/* On a phone the bottom-right corner belongs to the tab bar: go full width
+   above it instead of floating on top of it. */
+@media (max-width: 640px) {
+  .savebar {
+    left: calc(var(--s4) + var(--safe-l));
+    right: calc(var(--s4) + var(--safe-r));
+    bottom: calc(72px + var(--safe-b));
+    justify-content: space-between;
+  }
+}

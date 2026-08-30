@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiKeysPanel } from "./ApiKeysPanel";
+import { SettingsSaveBar, SettingsSaveProvider } from "./SettingsSaveBar";
 import { DeployKeyCard } from "./DeployKeyCard";
 import type { EnvKey } from "../api";
 
@@ -24,6 +25,17 @@ vi.mock("../api", async (importOriginal) => {
     restartServices: vi.fn(async () => {}),
   };
 });
+
+/* The panel has no Save button of its own any more -- the settings page owns a
+   single sticky bar and every panel feeds it. Rendering the pair together is
+   what a user actually gets. */
+const renderPanel = () =>
+  render(
+    <SettingsSaveProvider>
+      <ApiKeysPanel />
+      <SettingsSaveBar />
+    </SettingsSaveProvider>,
+  );
 
 const envKey = (over: Partial<EnvKey> = {}): EnvKey =>
   ({
@@ -50,7 +62,7 @@ describe("ApiKeysPanel — a secret's real value never reaches the browser", () 
     // Placeholder, not value: a prefilled mask would be written back as the
     // real secret the first time the form was saved.
     getEnvConfig.mockResolvedValue({ keys: [envKey({ display: "…a1b2" })] });
-    render(<ApiKeysPanel />);
+    renderPanel();
     const input = (await screen.findByLabelText("OpenRouter API key")) as HTMLInputElement;
     expect(input.placeholder).toMatch(/…a1b2/);
     expect(input.value).toBe("");
@@ -58,14 +70,14 @@ describe("ApiKeysPanel — a secret's real value never reaches the browser", () 
 
   it("says outright that a blank field keeps the existing value", async () => {
     getEnvConfig.mockResolvedValue({ keys: [envKey()] });
-    render(<ApiKeysPanel />);
+    renderPanel();
     const input = (await screen.findByLabelText("OpenRouter API key")) as HTMLInputElement;
     expect(input.placeholder).toMatch(/blank keeps it/i);
   });
 
   it("renders a secret as a password field until revealed", async () => {
     getEnvConfig.mockResolvedValue({ keys: [envKey({ secret: true })] });
-    render(<ApiKeysPanel />);
+    renderPanel();
     const input = (await screen.findByLabelText("OpenRouter API key")) as HTMLInputElement;
     expect(input.type).toBe("password");
     await userEvent.click(screen.getByRole("button", { name: /show what you typed/i }));
@@ -74,7 +86,7 @@ describe("ApiKeysPanel — a secret's real value never reaches the browser", () 
 
   it("marks an unset key as not set", async () => {
     getEnvConfig.mockResolvedValue({ keys: [envKey({ is_set: false, display: "" })] });
-    render(<ApiKeysPanel />);
+    renderPanel();
     expect(await screen.findByText("not set")).toBeInTheDocument();
   });
 
@@ -83,7 +95,7 @@ describe("ApiKeysPanel — a secret's real value never reaches the browser", () 
       keys: [envKey({ key: "A" }), envKey({ key: "B" })],
     });
     saveEnvConfig.mockResolvedValue({ restart_required: [] });
-    render(<ApiKeysPanel />);
+    renderPanel();
     await screen.findAllByLabelText("OpenRouter API key");
 
     const first = document.querySelector("input") as HTMLInputElement;
@@ -101,7 +113,7 @@ describe("ApiKeysPanel — a secret's real value never reaches the browser", () 
     // never be a side effect of saving a form.
     getEnvConfig.mockResolvedValue({ keys: [envKey()] });
     saveEnvConfig.mockResolvedValue({ restart_required: ["llm-router"] });
-    render(<ApiKeysPanel />);
+    renderPanel();
     await screen.findByLabelText("OpenRouter API key");
 
     await userEvent.type(document.querySelector("input") as HTMLInputElement, "x");
@@ -114,7 +126,7 @@ describe("ApiKeysPanel — a secret's real value never reaches the browser", () 
   it("reports a save failure instead of implying success", async () => {
     getEnvConfig.mockResolvedValue({ keys: [envKey()] });
     saveEnvConfig.mockRejectedValue(new Error("write failed"));
-    render(<ApiKeysPanel />);
+    renderPanel();
     await screen.findByLabelText("OpenRouter API key");
     await userEvent.type(document.querySelector("input") as HTMLInputElement, "x");
     await userEvent.click(screen.getByRole("button", { name: /save/i }));

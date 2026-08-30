@@ -41,7 +41,6 @@
 }
 .akey-restart span { flex: 1; min-width: 220px; color: var(--text-dim); }
 .akey-restart strong { color: var(--amber); }
-.akey-actions { margin-top: var(--s4); }
 
 @media (max-width: 768px) {
   .akey-help { max-width: none; }
