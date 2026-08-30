@@ -257,7 +257,17 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
       };
 
       ws.onmessage = (ev) => {
-        const event: StreamEvent = JSON.parse(ev.data);
+        // A frame that does not parse drops just that frame. Unguarded, the
+        // throw escapes into the event loop as a bare SyntaxError with no
+        // indication of which socket produced it -- the stream survives
+        // either way, but the log line should say what actually happened.
+        let event: StreamEvent;
+        try {
+          event = JSON.parse(ev.data);
+        } catch {
+          console.error("task stream: discarding unparseable frame");
+          return;
+        }
         if (event.type === "ping") return; // server heartbeat, not content
         if (event.type === "closed") {
           closedIntentionally.current = true;
