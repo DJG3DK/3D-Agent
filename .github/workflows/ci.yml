@@ -80,7 +80,7 @@ jobs:
           done
 
   frontend:
-    name: Frontend — typecheck, lint, build
+    name: Frontend — typecheck, lint, test, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -98,6 +98,10 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit -p tsconfig.app.json
       - run: npm run lint
+      # Before the build: a failing test should stop the run at the cheapest
+      # point that can explain why, and a build that succeeds on broken
+      # behaviour is not evidence of anything.
+      - run: npm test
       - run: npm run build
 
   services:

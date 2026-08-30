@@ -1,0 +1,137 @@
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { user } from "./test/fixtures";
+
+// The gate order in App is: loading -> landing/login -> forced password
+// change -> forced TOTP enrolment -> the app. Each branch is a real state an
+// operator can land in, and getting the order wrong locks someone out.
+
+const getMe = vi.fn();
+const listTasks = vi.fn(async () => []);
+const listPlanningSessions = vi.fn(async () => []);
+const listRepos = vi.fn(async () => ["3d-bot"]);
+const logout = vi.fn(async () => {});
+let authFailureHandler: (() => void) | null = null;
+
+// Spread the real module and override only what this file drives. Listing
+// exports by hand meant any newly-added API function broke every test here
+// with "No X export is defined on the mock" -- a failure about the mock, not
+// about the app.
+vi.mock("./api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./api")>();
+  return {
+    ...actual,
+    getMe: () => getMe(),
+    listTasks: () => listTasks(),
+    listPlanningSessions: () => listPlanningSessions(),
+    listRepos: () => listRepos(),
+    logout: () => logout(),
+    setAuthFailureHandler: (fn: (() => void) | null) => {
+      authFailureHandler = fn;
+    },
+  };
+});
+
+import App from "./App";
+
+beforeEach(() => {
+  authFailureHandler = null;
+  getMe.mockReset();
+  // Anything this file does not explicitly stub still reaches the real
+  // wrapper, so give it a benign response rather than an unhandled rejection.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" })),
+  );
+});
+
+describe("App — signed out", () => {
+  it("shows the landing page, not the login form", async () => {
+    // Regression: the opening getMe() 401s for every signed-out visitor, and
+    // that fired the session-expiry handler, sending them straight past the
+    // landing page to the login form.
+    getMe.mockRejectedValue(new Error("401"));
+    render(<App />);
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent(
+      /autonomous coding agent/i,
+    );
+    expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument();
+  });
+
+  it("reaches the login form via Sign in, and back again", async () => {
+    getMe.mockRejectedValue(new Error("401"));
+    render(<App />);
+    await screen.findByRole("heading", { level: 1 });
+
+    await userEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /back to overview/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        /autonomous coding agent/i,
+      ),
+    );
+  });
+
+  it("offers the source link on the landing page but not on the login card", async () => {
+    getMe.mockRejectedValue(new Error("401"));
+    render(<App />);
+    await screen.findByRole("heading", { level: 1 });
+    expect(screen.getAllByRole("link", { name: /github|view the source/i }).length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await screen.findByRole("heading", { name: /sign in/i });
+    expect(screen.queryByRole("link", { name: /github/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("App — session expiry", () => {
+  it("goes straight to the login form, skipping the landing page", async () => {
+    // Someone whose cookie just expired is trying to get back in; a product
+    // pitch reads as being logged out of the wrong site.
+    getMe.mockResolvedValue(user());
+    render(<App />);
+    await waitFor(() => expect(authFailureHandler).toBeTypeOf("function"));
+
+    // Invoking the handler directly is a state update from outside React's
+    // event system, so it needs wrapping the way a real 401 would not.
+    await act(async () => authFailureHandler!());
+    expect(await screen.findByRole("heading", { name: /sign in/i })).toBeInTheDocument();
+  });
+});
+
+describe("App — forced flows, in order", () => {
+  it("demands a password change before anything else", async () => {
+    getMe.mockResolvedValue(user({ must_change_password: true, require_totp_setup: true }));
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: /change|password/i })).toBeInTheDocument();
+  });
+
+  it("demands TOTP enrolment once the password is settled", async () => {
+    getMe.mockResolvedValue(user({ must_change_password: false, require_totp_setup: true }));
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: /two-factor|authenticator|2fa/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the console for a fully set-up user", async () => {
+    getMe.mockResolvedValue(user());
+    render(<App />);
+    expect(await screen.findByRole("button", { name: /new plan/i })).toBeInTheDocument();
+  });
+});
+
+describe("App — initial load", () => {
+  it("shows a loading state rather than flashing the landing page", async () => {
+    // A slow auth check must be distinguishable from a crashed render.
+    let settle: (v: unknown) => void = () => {};
+    getMe.mockReturnValue(new Promise((r) => (settle = r)));
+    render(<App />);
+    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    settle(user());
+    await waitFor(() => expect(screen.queryByText(/loading/i)).not.toBeInTheDocument());
+  });
+});

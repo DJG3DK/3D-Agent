@@ -20,7 +20,18 @@ export function BalanceStrip({ isAdmin }: { isAdmin: boolean }) {
 
   if (!isAdmin) return null;
 
-  if (!balance) return null;
+  // Presence is not enough. `.catch(() => {})` above swallows a failed
+  // request, but a 200 carrying an unexpected body (a proxy error page, a
+  // changed field name) passes a bare `!balance` check and then throws on
+  // .toFixed below -- and this renders inside the Sidebar, so the
+  // ErrorBoundary turns that into a blank console for what is only a
+  // decorative strip. Validate the shape, and render nothing if it is wrong.
+  const usable =
+    balance !== null &&
+    [balance.totalCredits, balance.totalUsage, balance.remaining].every(
+      (n) => typeof n === "number" && Number.isFinite(n),
+    );
+  if (!usable) return null;
   const pctUsed = balance.totalCredits > 0 ? (balance.totalUsage / balance.totalCredits) * 100 : 0;
   const low = balance.remaining < balance.totalCredits * 0.15;
 
