@@ -1,5 +1,97 @@
 # Changelog
 
+## v0.2.0 — landing page, a frontend test suite, Node 24 (pre-release)
+
+**2026-08-30**
+
+Thirteen commits on top of v0.1.0. The headline is that the login screen
+is no longer the front door, and the frontend is no longer untested.
+
+### A public landing page
+
+Anyone arriving from a shared link used to hit a password box for a
+console they cannot enter. There is now a real page in front of it —
+the pipeline, the review gate, the console, the controls the model cannot
+override — built from the README's own copy, so the two cannot drift into
+telling different stories. Sign-in moved to the top right; the link to the
+source moved the other way, off the login card and onto the page where
+someone who *cannot* sign in actually has somewhere to go.
+
+The eight screenshots are the ones already in `docs/`, re-encoded to WebP:
+2.4MB of PNG becomes 268KB, content-hashed by Vite so they inherit the
+immutable cache year.
+
+The page is indexable now (`noindex` dated from when this URL was nothing
+but a password box), with a `meta description` and a `canonical` — the SPA
+fallback answers 200 with the same shell for every path, so without one a
+crawler can index an unbounded set of URLs that are all the same page.
+
+### The frontend has tests
+
+There was no test framework at all: every behaviour was guarded by nothing
+but a typecheck. Adds vitest + Testing Library + jsdom, wired into CI
+*ahead* of the build. **141 tests.** Branch coverage is 73% against 45% of
+statements, and that gap is deliberate — the decision logic is covered;
+the rest is chart and form markup where a test asserts little beyond
+"React rendered".
+
+Coverage is reported, not enforced. A threshold that fails CI on an
+unrelated refactor teaches people to delete tests.
+
+### Node 24
+
+Node 20 left maintenance in April 2026, and its EOL had started to cost
+something concrete: the test toolchain had to be pinned back a major
+version each to keep supporting it. CI, the installer's prerequisite check
+and the documented requirement all move to **24** together — CI testing
+one version while the docs tell people to install another verifies
+nothing.
+
+**This is the one upgrade note.** If you are on Node 20, `install.sh` will
+now refuse until you upgrade. Nothing else in this release requires action.
+
+Re-verified end to end on the new floor: Debian 13 (Python 3.13.5, Node
+24.20.0) against a real postgres:16 — `install.sh` completes, then 694
+Python tests and 141 frontend tests pass in that same container.
+
+### Fixes
+
+- **Sidebar categories could not be collapsed while a task was running.**
+  Expansion was `manuallyExpanded.has(cat) || searching || selectedCategory
+  === cat`, a shape that can only ever *add* expansion — so clicking the
+  header did nothing, with no indication why. Underneath it,
+  `selectedCategory` resolved the category of a *running* task, which is
+  filtered out of the category lists and shown in the Running group
+  instead: selecting one opened a category it is not a member of.
+- **A signed-out visitor was sent past the landing page to the login
+  form**, because the opening `getMe()` 401 fired the session-expiry
+  handler. An expired session still goes straight to the form.
+- **BalanceStrip crashed on a 200 with an unexpected body.** `!balance`
+  passed for `{}`, then `.toFixed` threw — and it renders inside the
+  Sidebar, so the ErrorBoundary blanked the whole console over a
+  decorative credit strip.
+- **`HEAD` returned 405 on every file at the dist root.** FastAPI's
+  `@app.get` registers exactly the methods named, unlike Starlette's plain
+  `Route`, which folds `HEAD` in — so a crawler sizing an `og:image`
+  before fetching it got a 405.
+- **Those files were served with `max-age=86400` and no way to
+  revalidate.** They are `no-cache` now, with conditional requests
+  answered properly: `FileResponse` sets etag and last-modified but never
+  checks them, and only populates them when handed a `stat_result`, so
+  both had to be wired up for a revalidation to cost a 304 rather than the
+  whole file.
+- A malformed WebSocket frame threw a bare `SyntaxError` out of
+  `onmessage`. The stream survived either way, but the log said nothing
+  about which socket produced it.
+- The agent dashboard had `og:title` and `og:description` but no
+  `og:image`, so its link preview was a `summary_large_image` with nothing
+  to show.
+
+### Requirements
+
+Linux, Python 3.12+, **Node 24+**, Docker, PostgreSQL 14+, and an
+OpenRouter API key. pm2 optional.
+
 ## v0.1.0 — first public release (pre-release)
 
 **2026-08-29**
@@ -112,7 +204,7 @@ and the absence of CI.
 
 ### Requirements
 
-Linux, Python 3.12+, Node 24+, Docker, PostgreSQL 14+, and an OpenRouter API key
+Linux, Python 3.12+, Node 20+, Docker, PostgreSQL 14+, and an OpenRouter API key
 (the only paid dependency). pm2 optional.
 
 ### License
