@@ -69,12 +69,10 @@ from agent.message_text import content_text
 from agent.config import Config, PROJECTS
 from agent.deep_agent import (
     MEMORY_PATH,
-    MODEL_CALL_RUN_LIMIT,
     ORG_MEMORY_PATH,
     SUMMARIZATION_KEEP,
     SUMMARIZATION_TRIGGER,
     SUMMARIZATION_TRIM_TOKENS,
-    TOOL_CALL_RUN_LIMIT,
     build_memory_backend,
     llm_for_role,
     load_skills_summary,
@@ -109,7 +107,9 @@ logger = logging.getLogger("3d-agent")
 # while it is a surprise, not a bill.
 # Documented as configurable but hardcoded until now, so the documentation was
 # simply wrong. Read from the environment with the same default.
-PLANNING_TURN_BUDGET_USD = float(os.environ.get("PLANNING_TURN_BUDGET_USD", "4.0"))
+# Operator-tunable at runtime (Settings -> Runtime limits). Read at use, not
+# at import, so a change lands on the next turn without a restart.
+from agent import runtime_settings as _rs
 
 _HARD_KEYWORDS = (
     "super hard", "extremely difficult", "think as hard as you can",
@@ -298,7 +298,7 @@ async def build_planning_agent(
     # so nothing is lost -- the operator decides whether another turn's
     # allowance is worth it with a one-line "continue".
     tracker = BudgetTracker(
-        budget_usd=starting_cost + PLANNING_TURN_BUDGET_USD,
+        budget_usd=starting_cost + _rs.value("planning_turn_budget_usd"),
         starting_cost=starting_cost,
     )
     skills_summary = await load_skills_summary(repo, store)
@@ -363,8 +363,8 @@ async def build_planning_agent(
                 # disable it the same way the coordinator already does.
                 trim_tokens_to_summarize=SUMMARIZATION_TRIM_TOKENS,
             ),
-            ModelCallLimitMiddleware(run_limit=MODEL_CALL_RUN_LIMIT, exit_behavior="error"),
-            ToolCallLimitMiddleware(run_limit=TOOL_CALL_RUN_LIMIT, exit_behavior="error"),
+            ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
+            ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
         ],
         # Real memory backend (not the plain StateBackend fallback) -- gives
         # deepagents' own native write_file/edit_file tools somewhere real to

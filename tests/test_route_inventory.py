@@ -145,6 +145,10 @@ EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{u
     ('GET', '/api/projects/{name}/deploy-key', 'require_full_auth'),
     ('GET', '/api/repos', 'require_full_auth'),
     ('GET', '/api/router-balance', 'require_full_auth'),
+    # Admin-only inside the handler via auth.require_admin, the same shape the
+    # users routes use -- the dependency is require_full_auth, the role check
+    # lives in the body.
+    ('GET', '/api/settings/runtime', 'require_full_auth'),
     ('GET', '/api/stats', 'require_full_auth'),
     ('GET', '/api/tasks', 'require_full_auth'),
     ('GET', '/api/tasks/{task_id}', 'require_full_auth'),
@@ -179,6 +183,7 @@ EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{u
     ('POST', '/api/projects/{name}/deploy-key', 'require_full_auth'),
     ('POST', '/api/projects/{name}/deploy-key/generate', 'require_full_auth'),
     ('POST', '/api/projects/{name}/deploy-key/test', 'require_full_auth'),
+    ('POST', '/api/settings/runtime', 'require_full_auth'),
     ('POST', '/api/tasks', 'require_full_auth'),
     ('POST', '/api/tasks/{task_id}/approve', 'require_full_auth'),
     ('POST', '/api/tasks/{task_id}/merge-decision', 'require_full_auth'),

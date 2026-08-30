@@ -196,5 +196,10 @@ async def test_planning_turns_have_a_real_dollar_ceiling(build_args, monkeypatch
     _capture(monkeypatch, pc)
     _, _, tracker = await pc.build_planning_agent(cfg, repo, cp, store, starting_cost=1.25)
     assert math.isfinite(tracker.budget_usd), "planning budget is still infinite"
-    assert tracker.budget_usd == 1.25 + pc.PLANNING_TURN_BUDGET_USD
+    # The ceiling is operator-tunable now (Settings -> Runtime limits), so
+    # assert against the live value rather than a constant -- the guard is
+    # that a ceiling EXISTS and is applied on top of prior spend, not that it
+    # happens to be $4.
+    from agent import runtime_settings as rs
+    assert tracker.budget_usd == 1.25 + rs.value("planning_turn_budget_usd")
     assert tracker.total_cost == 1.25

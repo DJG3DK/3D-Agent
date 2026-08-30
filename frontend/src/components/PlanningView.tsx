@@ -151,6 +151,33 @@ function BuildNowPanel({ onConfirm }: { onConfirm: (budgetUsd: number) => void }
   );
 }
 
+/* Why the last turn ended, read from the persisted session rather than the
+   live stream. A stream event only reaches whoever is watching at that
+   second; this is what an operator sees on returning to a session that
+   stopped, which was previously nothing at all. */
+function OutcomeBanner({ session }: { session: PlanningSessionMeta | null }) {
+  const outcome = session?.last_outcome;
+  if (!outcome || outcome === "completed") return null;
+  const tone = outcome === "stopped" ? "info" : outcome === "budget" ? "warn" : "bad";
+  const headline: Record<string, string> = {
+    stopped: "You stopped this turn.",
+    budget: "The per-turn budget ceiling was reached.",
+    stalled: "The turn was ended after going silent.",
+    error: "The turn failed.",
+  };
+  return (
+    <div className={`planning-outcome planning-outcome--${tone}`}>
+      <strong>{headline[outcome] ?? "The turn ended."}</strong>
+      {session?.last_outcome_detail ? <span> {session.last_outcome_detail}</span> : null}
+      {outcome !== "stopped" && (
+        <span className="planning-outcome-hint">
+          {" "}Everything it read is still in this session &mdash; ask it to continue rather than starting over.
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function PlanningView({ repos, session, onBuildNow, onSessionCreated }: Props) {
   const [starting, setStarting] = useState(false);
   const [text, setText] = useState("");
@@ -274,6 +301,7 @@ export function PlanningView({ repos, session, onBuildNow, onSessionCreated }: P
         <div className="planning-view-log" ref={logContainerRef}>
           <div className="chat-thread">
             {stream.hydrateError && <div className="hydrate-error">{stream.hydrateError}</div>}
+            {!stream.running && <OutcomeBanner session={session} />}
             {stream.log.length === 0 && !stream.running && (
               <div className="planning-empty-hint">
                 Tell it what you want to build, or ask it to research something first -- it can search the

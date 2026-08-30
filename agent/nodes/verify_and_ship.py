@@ -51,11 +51,13 @@ from agent.config import Config, PROJECTS
 from agent.deep_agent import EPISODES_ROUTE, episodes_namespace
 from agent.tools.checks import run_all_checks
 from agent.tools.git import current_sha, ensure_task_branch, git_commit, git_diff
+from agent import runtime_settings as _rs
 from agent.tools.review_gate import merge_and_deploy, trigger_check, wait_for_review
 from agent.tools.git import sha_in_repo
 from agent.outer_state import AgentState
 
-REVIEW_WAIT_TIMEOUT = 900
+# Duration lives in runtime_settings ("review_wait_timeout_s") so it can be
+# raised without a restart when a large diff needs longer than the default.
 # Minimum length for a final message to count as a genuine "no changes
 # needed" conclusion rather than a truncated, mid-thought response.
 MIN_CONCLUSION_CHARS = 120
@@ -545,7 +547,7 @@ async def _review_and_deploy(state: AgentState, repo: str, sha: str) -> dict:
         except Exception as e2:  # noqa: BLE001
             return {"committed_sha": sha, **_escalate(f"could not trigger review for {sha[:12]}: {e2}")}
     try:
-        review = await wait_for_review(repo, sha, timeout=REVIEW_WAIT_TIMEOUT)
+        review = await wait_for_review(repo, sha, timeout=_rs.as_int("review_wait_timeout_s"))
     except TimeoutError as e:
         return {"committed_sha": sha, **_escalate(str(e))}
 

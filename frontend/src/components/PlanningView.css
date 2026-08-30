@@ -278,3 +278,21 @@
 /* wrapper hosting the jump-to-bottom arrow over the scrolling log */
 .planning-view-log-wrap { position: relative; flex: 1; display: flex; min-height: 0; }
 .planning-view-log-wrap .planning-view-log { flex: 1; }
+
+/* Why the last turn ended. Tone carries the meaning: reaching a ceiling you
+   set is not a fault, going silent is. */
+.planning-outcome {
+  margin: var(--s3) 0;
+  padding: var(--s3) var(--s4);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.planning-outcome strong { color: var(--text); }
+.planning-outcome--info { border-left-color: var(--blue); }
+.planning-outcome--warn { border-left-color: var(--amber); }
+.planning-outcome--bad  { border-left-color: var(--red); }
+.planning-outcome-hint { color: var(--text-faint); }

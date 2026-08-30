@@ -804,3 +804,34 @@ export async function deleteDeployKey(project: string): Promise<DeployKeyStatus>
   if (!res.ok) throw new Error(await errText(res));
   return res.json();
 }
+
+// --- Runtime limits (admin) ------------------------------------------
+
+export interface RuntimeKnob {
+  label: string;
+  help: string;
+  unit: string;
+  default: number;
+  min: number;
+  max: number;
+  group: string;
+}
+
+export async function getRuntimeSettings(): Promise<{ knobs: Record<string, RuntimeKnob>; values: Record<string, number> }> {
+  const res = await apiFetch(`${API_BASE}/settings/runtime`);
+  if (!res.ok) throw new Error(`getRuntimeSettings failed: ${res.status}`);
+  return res.json();
+}
+
+export async function saveRuntimeSettings(values: Record<string, number>): Promise<{ values: Record<string, number> }> {
+  const res = await apiFetch(`${API_BASE}/settings/runtime`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ values }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `saveRuntimeSettings failed: ${res.status}`);
+  }
+  return res.json();
+}

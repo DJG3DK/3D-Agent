@@ -22,6 +22,7 @@ from deepagents.backends.utils import file_data_to_string
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 from agent.config import Config, PROJECTS
+from agent import runtime_settings as _rs
 from agent.middleware.hidden_tools import HiddenToolsMiddleware
 from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddleware, BudgetTracker
 from agent.middleware.model_pin import PlanCodeModelMiddleware
@@ -157,8 +158,12 @@ SUMMARIZATION_TRIM_TOKENS = None
 # work_node's existing generic `except Exception` handler -> a clear
 # escalation, not a silently-truncated response that could get misread as a
 # normal completion.
-MODEL_CALL_RUN_LIMIT = 200
-TOOL_CALL_RUN_LIMIT = 300
+# The numbers themselves now live in runtime_settings (Settings -> Runtime
+# limits) so they can be retuned without an edit and a restart; the reasoning
+# above is why they are shaped this way, and still applies. Read via
+# _rs.as_int("model_call_run_limit") / ("tool_call_run_limit") at the point of
+# use -- deliberately not re-declared here as constants, because a constant
+# that no longer drives anything is a trap for the next person to edit it.
 
 # Human-in-the-loop pre-execution approval gate. This system's only other
 # safety layers are the budget ceiling and the post-hoc review-service gate
@@ -925,8 +930,8 @@ async def build_deep_agent(
             # backend, so it can only error or mislead.
             HiddenToolsMiddleware("glob", "grep", "execute"),
             BudgetGuardMiddleware(tracker),
-            ModelCallLimitMiddleware(run_limit=MODEL_CALL_RUN_LIMIT, exit_behavior="error"),
-            ToolCallLimitMiddleware(run_limit=TOOL_CALL_RUN_LIMIT, exit_behavior="error"),
+            ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
+            ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
         ],
         "skills": [SKILLS_ROUTE],
         # investigator has the full `bash` tool despite its own "read-only"
@@ -959,8 +964,8 @@ async def build_deep_agent(
             # backend, so it can only error or mislead.
             HiddenToolsMiddleware("glob", "grep", "execute"),
             BudgetGuardMiddleware(tracker),
-            ModelCallLimitMiddleware(run_limit=MODEL_CALL_RUN_LIMIT, exit_behavior="error"),
-            ToolCallLimitMiddleware(run_limit=TOOL_CALL_RUN_LIMIT, exit_behavior="error"),
+            ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
+            ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
         ],
         "skills": [SKILLS_ROUTE],
         "interrupt_on": interrupt_on,
@@ -997,8 +1002,8 @@ async def build_deep_agent(
             # backend, so it can only error or mislead.
             HiddenToolsMiddleware("glob", "grep", "execute"),
             BudgetGuardMiddleware(tracker),
-            ModelCallLimitMiddleware(run_limit=MODEL_CALL_RUN_LIMIT, exit_behavior="error"),
-            ToolCallLimitMiddleware(run_limit=TOOL_CALL_RUN_LIMIT, exit_behavior="error"),
+            ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
+            ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
         ],
         "skills": [SKILLS_ROUTE],
         "interrupt_on": interrupt_on,
@@ -1041,8 +1046,8 @@ async def build_deep_agent(
             # Defense-in-depth backstop against a runaway loop -- see this
             # module's own comment on MODEL_CALL_RUN_LIMIT/TOOL_CALL_RUN_LIMIT
             # for why these are generous limits, not a normal-operation cap.
-            ModelCallLimitMiddleware(run_limit=MODEL_CALL_RUN_LIMIT, exit_behavior="error"),
-            ToolCallLimitMiddleware(run_limit=TOOL_CALL_RUN_LIMIT, exit_behavior="error"),
+            ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
+            ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
         ],
         subagents=[general_purpose, investigator, test_writer],
         interrupt_on=interrupt_on,

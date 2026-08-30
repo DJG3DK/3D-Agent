@@ -42,6 +42,8 @@ from agent.tools.model_rates import warm_rates
 from agent import model_config
 from agent.model_config import resolve_alias
 from agent.classify import classify_task, TaskClassification, TEST_REMINDER_NOTE
+from agent import runtime_settings
+from agent.middleware.budget_guard import BudgetExceededError
 from agent.planning_chat import build_planning_agent, classify_planning_difficulty, planning_thread_config, run_planning_turn, _translate_message as _translate_planning_message
 from agent import auth
 from agent.auth import SESSION_COOKIE_NAME, User, check_repo_access
@@ -204,6 +206,9 @@ async def lifespan(app: FastAPI):
         app.state.graph = build_outer_graph(config, checkpointer, store).compile(
             checkpointer=checkpointer, store=store
         )
+        # Stored runtime limits, before anything can build an agent with them.
+        await runtime_settings.load(app.state.store)
+
         # Pre-warm the model-usage cache in the background so the first
         # Analytics page load after a restart doesn't pay the cold
         # LangSmith scan inline (see get_model_usage's own docstring).
@@ -605,6 +610,33 @@ async def disable_2fa_endpoint(req: Disable2FARequest,
         raise HTTPException(403, "current password required to disable 2FA")
     await auth.disable_totp(app.state.auth_pool, user.id)
     return {"ok": True}
+
+
+class RuntimeSettingsRequest(BaseModel):
+    values: dict[str, float]
+
+
+@app.get("/api/settings/runtime")
+async def get_runtime_settings(user: User = Depends(require_full_auth)):
+    """Admin-only: these are deployment-wide, not per-user preferences. Ships
+    the spec alongside the values so the UI renders labels, help, units and
+    bounds from one source instead of duplicating them."""
+    return {"knobs": runtime_settings.KNOBS, "values": runtime_settings.all_values()}
+
+
+@app.post("/api/settings/runtime")
+async def set_runtime_settings(req: RuntimeSettingsRequest, user: User = Depends(require_full_auth)):
+    """Values are clamped to each knob's bounds rather than rejected, so a
+    fat-fingered zero becomes the minimum instead of an error the operator has
+    to decode. Unknown names ARE rejected -- a typo must not sit in the
+    database looking like configuration."""
+    auth.require_admin(user)
+    try:
+        values = await runtime_settings.save(app.state.store, req.values)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    logger.info("runtime settings updated by user %s: %s", user.id, sorted(req.values))
+    return {"ok": True, "values": values}
 
 
 class UpdateMergeReviewRequest(BaseModel):
@@ -1501,12 +1533,12 @@ def _alert_task_status(task_id: str, status: str, repo: str, goal: str, cost: fl
 # event this turn emits is a heartbeat, so the watchdog below fires only when
 # those stop. Duration is unbounded on purpose -- the BUDGET is the ceiling
 # that stops work, and it is the only one that should.
-PLANNING_STALL_TIMEOUT_S = float(os.environ.get("PLANNING_STALL_TIMEOUT_S", 1200))
+# Value lives in runtime_settings so it is adjustable without a restart.
 _STALL_POLL_S = 15.0
 
 
 class PlanningStalled(Exception):
-    """No output from a planning turn for PLANNING_STALL_TIMEOUT_S."""
+    """No output from a planning turn for the configured stall window."""
 
 
 async def _await_with_stall_watchdog(task: "asyncio.Task", heartbeat: dict, stall_s: float):
@@ -1657,7 +1689,15 @@ async def delete_planning_session(session_id: str, user: User = Depends(require_
     return {"ok": True}
 
 
-async def _bank_planning_turn(session_id: str, repo: str, plan_markdown: str | None, spent: float | None, text: str | None = None) -> None:
+async def _bank_planning_turn(
+    session_id: str,
+    repo: str,
+    plan_markdown: str | None,
+    spent: float | None,
+    text: str | None = None,
+    outcome: str | None = None,
+    outcome_detail: str | None = None,
+) -> None:
     """Persist whatever a turn earned before it ended -- used by the two
     abnormal exits (operator Stop, and an exception), which both used to
     throw work away that the session had genuinely already paid for.
@@ -1671,6 +1711,18 @@ async def _bank_planning_turn(session_id: str, repo: str, plan_markdown: str | N
     Same PRESERVE-never-clobber rule as the success path: a None plan leaves
     the stored one alone (a turn can add or replace a plan, never remove
     one), and cost is banked because the spend is real either way.
+
+    `outcome` is WHY the turn ended, persisted rather than only streamed.
+    Until now the reason existed solely as a live WebSocket event: an operator
+    who was not watching that exact second, or who refreshed, was left with a
+    stream that simply stopped. The Telegram alert was the only durable record
+    of the cause, which is not a reasonable thing to require. One of:
+
+        completed  the turn finished and returned a plan
+        stopped    the operator pressed Stop
+        stalled    no output for the configured stall window
+        budget     the per-turn dollar ceiling was reached
+        error      anything else, with the message in outcome_detail
 
     `text` seeds a missing title the same way the success path does. Titles
     used to be set only on success, so a session whose FIRST turn failed sat
@@ -1690,6 +1742,10 @@ async def _bank_planning_turn(session_id: str, repo: str, plan_markdown: str | N
             meta["cost_usd"] = spent
         if text and not meta.get("title"):
             meta["title"] = text[:60]
+        if outcome is not None:
+            meta["last_outcome"] = outcome
+            meta["last_outcome_detail"] = outcome_detail
+            meta["last_outcome_at"] = time.time()
         await app.state.store.aput(("planning", repo), session_id, meta)
     except Exception:  # noqa: BLE001 -- teardown must never raise over the failure it is cleaning up after
         logger.exception("failed to persist planning progress for session %s", session_id)
@@ -1787,7 +1843,7 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
             )
         )
         plan_markdown = await _await_with_stall_watchdog(
-            _turn_task, _heartbeat, PLANNING_STALL_TIMEOUT_S
+            _turn_task, _heartbeat, runtime_settings.value("planning_stall_timeout_s")
         )
         # PRESERVE, never clobber. `plan_markdown` is only what THIS turn's
         # save_plan call produced, and the system prompt deliberately does not
@@ -1829,6 +1885,9 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
                 classification = await classify_task(text, config)
                 meta["category"] = classification.category
             await app.state.store.aput(("planning", repo), session_id, meta)
+        await _bank_planning_turn(
+            session_id, repo, None, None, outcome="completed"
+        )
         _publish_planning(session_id, {"type": "turn_complete", "plan_markdown": effective_plan, "cost_usd": tracker.total_cost})
     except asyncio.CancelledError:
         # Operator pressed Stop, or the process is shutting down. The spend is
@@ -1844,7 +1903,9 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         # `plan_ref` is bound partway through the try, same as `tracker` -- a
         # cancel landing before build_planning_agent leaves both unbound.
         _ref = locals().get("plan_ref") or {}
-        await _bank_planning_turn(session_id, repo, _ref.get("markdown"), spent, text=text)
+        await _bank_planning_turn(
+            session_id, repo, _ref.get("markdown"), spent, text=text, outcome="stopped"
+        )
         _publish_planning(session_id, {"type": "stopped", "cost_usd": spent})
         raise
     except Exception as e:  # noqa: BLE001 -- must surface to the client, never die silently in the background
@@ -1858,12 +1919,26 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         # after save_plan lost the plan and under-reported the session's cost.
         _t = locals().get("tracker")
         _ref = locals().get("plan_ref") or {}
+        # Distinguish the three ways a turn can end badly. They mean very
+        # different things to an operator -- "the ceiling you set was reached"
+        # is not a fault, "it went silent" is, and "it raised" is a third
+        # thing again -- and lumping them under one red banner is what made
+        # the last stall unreadable without opening Telegram.
+        if isinstance(e, PlanningStalled):
+            _outcome = "stalled"
+        elif isinstance(e, BudgetExceededError):
+            _outcome = "budget"
+        else:
+            _outcome = "error"
         await _bank_planning_turn(
             session_id, repo, _ref.get("markdown"),
             _t.total_cost if _t is not None else None,
-            text=text,
+            text=text, outcome=_outcome, outcome_detail=str(e)[:500],
         )
-        _publish_planning(session_id, {"type": "error", "message": str(e)})
+        _publish_planning(
+            session_id,
+            {"type": "error", "outcome": _outcome, "message": str(e)},
+        )
     finally:
         _publish_planning(session_id, {"type": "closed"})
         _running_planning_turns.pop(session_id, None)
@@ -1993,7 +2068,7 @@ async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_
     if not goal:
         raise HTTPException(422, "goal must not be empty")
     task_id = str(uuid.uuid4())
-    budget = req.budget_usd or config.default_budget_usd
+    budget = req.budget_usd or runtime_settings.value("default_task_budget_usd")
     # Classified on the clean, operator-typed goal -- not the attachments
     # note appended below, which is boilerplate for the model, not signal
     # about what kind of task this is.

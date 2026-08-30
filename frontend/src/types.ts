@@ -335,6 +335,13 @@ export interface PlanningSessionMeta {
    * on the session's first real message. Absent on a session with no
    * messages yet, or one created before this classifier existed. */
   category?: string | null;
+  /** Why the last turn ended, persisted rather than only streamed. Before
+   *  this, the reason existed solely as a live WebSocket event: refresh, or
+   *  simply not be watching, and a turn that failed was indistinguishable
+   *  from one that stopped for no reason. Absent on sessions predating it. */
+  last_outcome?: "completed" | "stopped" | "stalled" | "budget" | "error" | null;
+  last_outcome_detail?: string | null;
+  last_outcome_at?: number | null;
 }
 
 export interface PlanningLogEntry {

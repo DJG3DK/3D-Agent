@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RuntimeLimitsPanel } from "./RuntimeLimitsPanel";
 import { changePassword, setAutoApprove, setMergeReview, getTelegramSettings, setTelegramSettings, sendTelegramTest } from "../api";
 import type { CurrentUser } from "../types";
 import "./SettingsPage.css";
@@ -225,6 +226,8 @@ export function SettingsPage({ user, onUserChanged }: Props) {
             </button>
           )}
         </section>
+
+        {user.role === "admin" && <RuntimeLimitsPanel />}
       </div>
 
       <h3 className="settings-section-label">Notifications</h3>
