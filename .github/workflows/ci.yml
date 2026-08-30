@@ -133,6 +133,15 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+
+      # The dry-run exercises install.sh's own prerequisite checks, which
+      # include a Node floor. Without pinning the version here the job tests
+      # whatever Node the runner image happens to ship -- which is how raising
+      # that floor to 24 broke this job while the code was correct.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: bash -n every script
         run: |
           for f in install.sh scripts/*.sh; do
