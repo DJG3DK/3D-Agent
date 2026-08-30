@@ -1,40 +1,45 @@
-/* Runtime limits. Deliberately quieter than the safety switches above it:
-   these change how hard the agent tries, not what it is permitted to do. */
-.rl-group { margin-top: var(--s5); }
-.rl-group-title {
-  margin: 0 0 var(--s2);
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
+/* Runtime limits.
+   Compact two-column rows -- label left, control right -- so four knobs fit a
+   card the same height as the switch cards beside them. The explanation lives
+   in the tooltip rather than inline: fourteen paragraphs made a wall, and the
+   label plus the unit hint already carries the meaning at a glance. */
+.rl-rows { display: flex; flex-direction: column; }
+
 .rl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
   padding: var(--s3) 0;
   border-top: 1px solid var(--border-soft);
 }
-.rl-row--changed { border-left: 2px solid var(--amber); padding-left: var(--s3); }
-.rl-head { display: flex; align-items: center; gap: var(--s3); }
-.rl-label { font-weight: 600; }
-.rl-badge {
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  background: var(--amber-bg);
-  color: var(--amber);
-  font-size: var(--fs-xs);
+.rl-row:first-child { border-top: none; }
+
+.rl-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-base);
+  cursor: help;
+  min-width: 0;
 }
-.rl-help {
-  margin: 4px 0 var(--s3);
-  color: var(--text-dim);
-  font-size: var(--fs-md);
-  line-height: 1.55;
-  max-width: 68ch;
+
+/* A quiet mark that this one is no longer at its shipped default. */
+.rl-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  flex: 0 0 auto;
 }
-.rl-input-row { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+
+.rl-control { display: flex; align-items: center; gap: var(--s2); flex: 0 0 auto; }
+
 .rl-input {
-  width: 8.5rem;
-  min-height: var(--tap);
-  padding: 0 var(--s3);
+  width: 5.5rem;
+  min-height: 34px;
+  padding: 0 var(--s2);
+  text-align: right;
   background: var(--surface-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -44,14 +49,20 @@
   font-family: var(--font-mono);
 }
 .rl-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-.rl-unit { color: var(--text-dim); font-family: var(--font-mono); }
-.rl-range { color: var(--text-faint); font-size: var(--fs-sm); }
-.rl-actions { display: flex; align-items: center; gap: var(--s4); margin-top: var(--s5); flex-wrap: wrap; }
-.rl-saved { color: var(--green); font-size: var(--fs-md); }
-.rl-human {
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
+
+.rl-meta {
+  min-width: 4.5rem;
+  color: var(--text-faint);
   font-family: var(--font-mono);
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  cursor: help;
 }
-.rl-label { cursor: help; }
+
+.rl-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-top: var(--s4);
+  flex-wrap: wrap;
+}
+.rl-saved { color: var(--green); font-size: var(--fs-sm); }

@@ -226,9 +226,20 @@ export function SettingsPage({ user, onUserChanged }: Props) {
             </button>
           )}
         </section>
-
-        {user.role === "admin" && <RuntimeLimitsPanel />}
       </div>
+
+      {user.role === "admin" && (
+        <>
+          <h3 className="settings-section-label">Runtime limits</h3>
+          <p className="settings-section-hint">
+            How hard the agent tries before giving up. Changes apply to the next turn or task &mdash;
+            anything already running keeps the limits it started with. Hover a label for what it does.
+          </p>
+          <div className="settings-grid">
+            <RuntimeLimitsPanel />
+          </div>
+        </>
+      )}
 
       <h3 className="settings-section-label">Notifications</h3>
       <div className="settings-grid">
