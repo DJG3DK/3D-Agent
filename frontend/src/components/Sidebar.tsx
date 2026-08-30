@@ -179,8 +179,13 @@ export function Sidebar({
   const [buildingOpen, setBuildingOpen] = useState(true);
   const [planningQuery, setPlanningQuery] = useState("");
   const [buildingQuery, setBuildingQuery] = useState("");
-  const [manuallyExpanded, setManuallyExpanded] = useState<Set<string>>(new Set());
-  const [planningManuallyExpanded, setPlanningManuallyExpanded] = useState<Set<string>>(new Set());
+  // Explicit user intent per category, not a set of "additionally expanded"
+  // ones. The old shape could only ever ADD expansion, so any auto-expand
+  // rule OR-ed alongside it could not be switched off -- clicking to collapse
+  // did nothing at all. An entry here always wins; absent means "no opinion
+  // yet, use the default".
+  const [categoryOverride, setCategoryOverride] = useState<Record<string, boolean>>({});
+  const [planningCategoryOverride, setPlanningCategoryOverride] = useState<Record<string, boolean>>({});
   const [archivedPlanningOpen, setArchivedPlanningOpen] = useState(false);
   // Project separation (operator request 2026-08-27): one filter, applied to
   // BOTH lists, rather than a second level of nesting inside the category
@@ -271,13 +276,10 @@ export function Sidebar({
     return groups;
   }, [filteredSessions.active]);
 
-  function togglePlanningCategory(cat: string) {
-    setPlanningManuallyExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat);
-      else next.add(cat);
-      return next;
-    });
+  // Takes what is currently on screen and inverts it, so one click always
+  // does the visible thing regardless of which default produced that state.
+  function togglePlanningCategory(cat: string, isExpanded: boolean) {
+    setPlanningCategoryOverride((prev) => ({ ...prev, [cat]: !isExpanded }));
   }
 
   // Running tasks get their own always-visible group instead of sitting
@@ -306,17 +308,19 @@ export function Sidebar({
     return groups;
   }, [tasks, buildingQuery, repoFilter]);
 
-  function toggleCategory(cat: string) {
-    setManuallyExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat);
-      else next.add(cat);
-      return next;
-    });
+  function toggleCategory(cat: string, isExpanded: boolean) {
+    setCategoryOverride((prev) => ({ ...prev, [cat]: !isExpanded }));
   }
 
   const searching = buildingQuery.trim().length > 0;
-  const selectedCategory = view === "task" && selectedTaskId ? categoryOf(tasks.find((t) => t.task_id === selectedTaskId) ?? ({} as TaskMeta)) : null;
+  // Deliberately null for a RUNNING task: running tasks are filtered out of
+  // byCategory and shown in the Running group instead, so opening "their"
+  // category revealed a list they are not even in -- and, before the override
+  // fix above, one that could not then be closed.
+  const selectedTaskMeta =
+    view === "task" && selectedTaskId ? tasks.find((t) => t.task_id === selectedTaskId) : undefined;
+  const selectedCategory =
+    selectedTaskMeta && selectedTaskMeta.status !== "running" ? categoryOf(selectedTaskMeta) : null;
 
   const planningSearching = planningQuery.trim().length > 0;
   const selectedPlanningCategory =
@@ -432,11 +436,12 @@ export function Sidebar({
                 {CATEGORY_ORDER.map((cat) => {
                   const items = planningByCategory[cat];
                   if (items.length === 0 && !planningSearching) return null;
-                  const expanded = planningManuallyExpanded.has(cat) || planningSearching || selectedPlanningCategory === cat;
+                  const expanded =
+                    planningSearching || (planningCategoryOverride[cat] ?? selectedPlanningCategory === cat);
                   return (
                     <div key={cat} className="sidebar-category">
-                      <div className="sidebar-category-head" role="button" tabIndex={0} onClick={() => togglePlanningCategory(cat)}
-                           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), togglePlanningCategory(cat))}>
+                      <div className="sidebar-category-head" role="button" tabIndex={0} onClick={() => togglePlanningCategory(cat, expanded)}
+                           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), togglePlanningCategory(cat, expanded))}>
                         <span className={`sidebar-chevron ${expanded ? "open" : ""}`}>▸</span>
                         <span className="sidebar-category-label">{CATEGORY_LABELS[cat] ?? cat}</span>
                         <span className="sidebar-section-count">{items.length}</span>
@@ -541,11 +546,15 @@ export function Sidebar({
                   // category collapses away entirely unless a search is
                   // active (searching shows the "0 matches" state instead).
                   if (items.length === 0 && !searching) return null;
-                  const expanded = manuallyExpanded.has(cat) || searching || selectedCategory === cat;
+                  // Search wins outright -- it is a transient view whose whole
+                  // job is to show matches. Otherwise the user's own choice
+                  // wins, falling back to "open the selected task's category"
+                  // only until they express one.
+                  const expanded = searching || (categoryOverride[cat] ?? selectedCategory === cat);
                   return (
                     <div key={cat} className="sidebar-category">
-                      <div className="sidebar-category-head" role="button" tabIndex={0} onClick={() => toggleCategory(cat)}
-                           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCategory(cat))}>
+                      <div className="sidebar-category-head" role="button" tabIndex={0} onClick={() => toggleCategory(cat, expanded)}
+                           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCategory(cat, expanded))}>
                         <span className={`sidebar-chevron ${expanded ? "open" : ""}`}>▸</span>
                         <span className="sidebar-category-label">{CATEGORY_LABELS[cat] ?? cat}</span>
                         <span className="sidebar-section-count">{items.length}</span>
