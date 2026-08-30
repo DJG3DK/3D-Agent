@@ -66,6 +66,12 @@ Python tests and 141 frontend tests pass in that same container.
 - **A signed-out visitor was sent past the landing page to the login
   form**, because the opening `getMe()` 401 fired the session-expiry
   handler. An expired session still goes straight to the form.
+- **The landing page's nav was declared sticky and never stuck.** The page
+  carried `overflow-x: hidden` to stop horizontal scroll; setting one axis
+  to `hidden` computes the other to `auto`, which makes the element a
+  scroll container — and a scroll-container ancestor silently disables
+  `position: sticky` on everything inside it. `overflow-x: clip` clips the
+  same overflow without establishing one.
 - **BalanceStrip crashed on a 200 with an unexpected body.** `!balance`
   passed for `{}`, then `.toFixed` threw — and it renders inside the
   Sidebar, so the ErrorBoundary blanked the whole console over a
