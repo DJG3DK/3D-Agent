@@ -48,3 +48,10 @@
 .rl-range { color: var(--text-faint); font-size: var(--fs-sm); }
 .rl-actions { display: flex; align-items: center; gap: var(--s4); margin-top: var(--s5); flex-wrap: wrap; }
 .rl-saved { color: var(--green); font-size: var(--fs-md); }
+.rl-human {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.rl-label { cursor: help; }

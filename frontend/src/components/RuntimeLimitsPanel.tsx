@@ -14,6 +14,17 @@ import "./RuntimeLimitsPanel.css";
  * spec rather than being duplicated here: one source, so a knob added on the
  * backend appears without a frontend change.
  */
+
+/** 1200 is not a legible number of seconds. Show what it means. */
+function humanise(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 90) return `${Math.round(seconds)} sec`;
+  const mins = seconds / 60;
+  if (mins < 90) return `${Number.isInteger(mins) ? mins : mins.toFixed(1)} min`;
+  const hours = mins / 60;
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hr`;
+}
+
 export function RuntimeLimitsPanel() {
   const [knobs, setKnobs] = useState<Record<string, RuntimeKnob> | null>(null);
   const [values, setValues] = useState<Record<string, number>>({});
@@ -89,7 +100,7 @@ export function RuntimeLimitsPanel() {
             return (
               <div key={name} className={`rl-row ${changed ? "rl-row--changed" : ""}`}>
                 <div className="rl-head">
-                  <label className="rl-label" htmlFor={`rl-${name}`}>{k.label}</label>
+                  <label className="rl-label" htmlFor={`rl-${name}`} title={k.help}>{k.label}</label>
                   {current !== k.default && (
                     <span className="rl-badge" title={`Default is ${k.default}${k.unit}`}>
                       changed from default
@@ -109,8 +120,17 @@ export function RuntimeLimitsPanel() {
                     onChange={(e) => setEdits((p) => ({ ...p, [name]: e.target.value }))}
                   />
                   <span className="rl-unit">{k.unit}</span>
-                  <span className="rl-range">
+                  {k.unit === "s" && (
+                    <span className="rl-human" title="What this value means in plain units">
+                      = {humanise(Number(shown))}
+                    </span>
+                  )}
+                  <span
+                    className="rl-range"
+                    title={`Allowed ${k.min}–${k.max}${k.unit}. Ships as ${k.default}${k.unit}.`}
+                  >
                     {k.min}–{k.max}, default {k.default}
+                    {k.unit === "s" ? ` (${humanise(k.default)})` : ""}
                   </span>
                 </div>
               </div>

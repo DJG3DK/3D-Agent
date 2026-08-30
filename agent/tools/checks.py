@@ -11,6 +11,7 @@ that gate.
 """
 
 import pathlib
+from agent import runtime_settings as _rs
 
 from agent.config import PROJECT_TEST_ENV
 from agent.tools.sandbox import run_shell_sandboxed
@@ -100,11 +101,11 @@ def _annotate_offline_failure(output: str) -> str:
 
 
 async def run_typecheck(repo_root: str) -> dict:
-    return await run_check(repo_root, "typecheck", timeout=180)
+    return await run_check(repo_root, "typecheck", timeout=_rs.as_int("check_typecheck_timeout_s"))
 
 
 async def run_lint(repo_root: str) -> dict:
-    return await run_check(repo_root, "lint", timeout=120)
+    return await run_check(repo_root, "lint", timeout=_rs.as_int("check_lint_timeout_s"))
 
 
 async def run_test(repo_root: str, repo_name: str) -> dict:
@@ -120,10 +121,10 @@ async def run_test(repo_root: str, repo_name: str) -> dict:
     # `test:review` is the repo's own statement of what is safe to run against
     # a detached checkout.
     env = PROJECT_TEST_ENV.get(repo_name)
-    review = await run_check(repo_root, "test:review", timeout=900, extra_env=env)
+    review = await run_check(repo_root, "test:review", timeout=_rs.as_int("check_review_test_timeout_s"), extra_env=env)
     if review["ran"]:
         return review
-    return await run_check(repo_root, "test", timeout=180, extra_env=env)
+    return await run_check(repo_root, "test", timeout=_rs.as_int("check_test_timeout_s"), extra_env=env)
 
 
 async def run_frontend_build(repo_root: str) -> dict:
@@ -150,7 +151,7 @@ async def run_frontend_build(repo_root: str) -> dict:
     if not has_build:
         return {"ran": False, "ok": True, "output": "no frontend build script -- skipped"}
     # audit C-2: sandboxed, same as the check suite above.
-    r = await run_shell_sandboxed("npm run --silent build", str(pathlib.Path(repo_root) / "frontend"), timeout=420, network="none")
+    r = await run_shell_sandboxed("npm run --silent build", str(pathlib.Path(repo_root) / "frontend"), timeout=_rs.as_int("frontend_build_timeout_s"), network="none")
     return {"ran": True, "ok": r["ok"], "output": r["output"][-4000:]}
 
 

@@ -305,7 +305,7 @@ async def build_planning_agent(
 
     planning_model_role = "agent-planning-chat-hard" if difficulty == "HARD" else "agent-planning-chat"
     agent = create_deep_agent(
-        model=llm_for_role(config, planning_model_role, reasoning_effort="high", timeout=450),
+        model=llm_for_role(config, planning_model_role, reasoning_effort="high", timeout=_rs.as_int("planning_model_call_timeout_s")),
         tools=[tool_by_name["describe_image"], *planning_tools],
         system_prompt=PLANNING_SYSTEM_PROMPT.format(
             repo=repo,

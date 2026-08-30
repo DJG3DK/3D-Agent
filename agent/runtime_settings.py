@@ -91,6 +91,103 @@ KNOBS: dict[str, dict] = {
         "env": None,
         "group": "Building",
     },
+    "model_call_timeout_s": {
+        "label": "Model call timeout",
+        "help": (
+            "How long a SINGLE call to a model may take before it is abandoned. This "
+            "is not the turn or task limit -- it protects against one hung request. "
+            "Planning's hard model asks for longer than this on its own, because high "
+            "reasoning effort genuinely needs it."
+        ),
+        "unit": "s",
+        "default": 180.0,
+        "min": 30.0,
+        "max": 1800.0,
+        "env": None,
+        "group": "Models",
+    },
+    "planning_model_call_timeout_s": {
+        "label": "Planning model call timeout",
+        "help": (
+            "The same per-call limit for planning's high-reasoning model, which thinks "
+            "for far longer per call than an interactive one. Too low and you get "
+            "spurious aborts on work that was progressing normally."
+        ),
+        "unit": "s",
+        "default": 450.0,
+        "min": 60.0,
+        "max": 3600.0,
+        "env": None,
+        "group": "Models",
+    },
+    "check_lint_timeout_s": {
+        "label": "Lint timeout",
+        "help": "Cap on the project's lint command inside the sandbox.",
+        "unit": "s",
+        "default": 120.0,
+        "min": 30.0,
+        "max": 3600.0,
+        "env": None,
+        "group": "Checks",
+    },
+    "check_typecheck_timeout_s": {
+        "label": "Typecheck timeout",
+        "help": "Cap on the project's typecheck command inside the sandbox.",
+        "unit": "s",
+        "default": 180.0,
+        "min": 30.0,
+        "max": 3600.0,
+        "env": None,
+        "group": "Checks",
+    },
+    "check_test_timeout_s": {
+        "label": "Test suite timeout",
+        "help": (
+            "Cap on the project's `npm test`. Raise this for a repo whose suite is "
+            "genuinely long -- a suite that chains dozens of files can exceed the "
+            "default, and an abort here reads to the agent as a failing test rather "
+            "than as running out of time."
+        ),
+        "unit": "s",
+        "default": 180.0,
+        "min": 60.0,
+        "max": 7200.0,
+        "env": None,
+        "group": "Checks",
+    },
+    "check_review_test_timeout_s": {
+        "label": "Review test suite timeout",
+        "help": "Cap on the fuller `test:review` suite the gate runs before a merge.",
+        "unit": "s",
+        "default": 900.0,
+        "min": 60.0,
+        "max": 7200.0,
+        "env": None,
+        "group": "Checks",
+    },
+    "frontend_build_timeout_s": {
+        "label": "Frontend build timeout",
+        "help": "Cap on the dashboard/frontend production build inside the sandbox.",
+        "unit": "s",
+        "default": 420.0,
+        "min": 60.0,
+        "max": 3600.0,
+        "env": None,
+        "group": "Checks",
+    },
+    "sandbox_command_timeout_s": {
+        "label": "Default shell command timeout",
+        "help": (
+            "Cap on one agent-issued shell command in the sandbox, where the call site "
+            "does not set its own. Installs and builds are the usual reason to raise it."
+        ),
+        "unit": "s",
+        "default": 120.0,
+        "min": 30.0,
+        "max": 3600.0,
+        "env": None,
+        "group": "Sandbox",
+    },
     "review_wait_timeout_s": {
         "label": "Review wait timeout",
         "help": (

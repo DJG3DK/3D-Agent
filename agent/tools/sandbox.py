@@ -23,6 +23,7 @@ change to use this instead.
 """
 
 import asyncio
+from agent import runtime_settings as _rs
 import logging
 import os
 import uuid
@@ -148,7 +149,9 @@ def _node_modules_mounts(cwd: str) -> list[str]:
 async def run_shell_sandboxed(
     cmd: str,
     cwd: str,
-    timeout: int = 120,
+    # None means "use the operator-set default"; an explicit value from the
+    # call site still wins, so the long-running checks keep their own caps.
+    timeout: int | None = None,
     extra_env: dict | None = None,
     network: str | None = None,
 ) -> dict:
@@ -244,11 +247,14 @@ async def run_shell_sandboxed(
         stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        _timeout = timeout if timeout is not None else _rs.as_int("sandbox_command_timeout_s")
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_timeout)
     except TimeoutError:
         await _kill_container(container_name)
         await proc.wait()
-        raise ShellTimeout(cmd, timeout)
+        # _timeout, not timeout: the latter is None when the caller took the
+        # operator default, which would report "timed out after None seconds".
+        raise ShellTimeout(cmd, _timeout)
     except asyncio.CancelledError:
         # Same reasoning as run_shell's own CancelledError handler: the
         # operator's Stop button cancels the asyncio task driving the whole

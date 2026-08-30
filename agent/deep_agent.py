@@ -435,7 +435,7 @@ def interrupt_on_for(auto_approve_commands: bool) -> dict:
     return INTERRUPT_ON_AUTO_APPROVE if auto_approve_commands else INTERRUPT_ON
 
 
-def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None = None, timeout: int = 180, callbacks: list | None = None) -> ChatOpenAI:
+def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None = None, timeout: int | None = None, callbacks: list | None = None) -> ChatOpenAI:
     # model_name is a bare LiteLLM profile alias, resolved entirely by the
     # proxy, not by anything in this process.
     #
@@ -476,7 +476,7 @@ def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None =
         base_url=config.litellm_base_url,
         api_key=config.litellm_api_key,
         temperature=0,
-        timeout=timeout,
+        timeout=timeout if timeout is not None else _rs.as_int("model_call_timeout_s"),
         stream_usage=True,
         reasoning_effort=reasoning_effort,
         # callbacks: how a model invoked OUTSIDE the graph's model node still
