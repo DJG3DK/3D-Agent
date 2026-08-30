@@ -42,7 +42,7 @@ KNOBS: dict[str, dict] = {
         "min": 0.25,
         "max": 100.0,
         "env": "PLANNING_TURN_BUDGET_USD",
-        "group": "Budgets",
+        "group": "Budgets & loop limits",
     },
     "planning_stall_timeout_s": {
         "label": "Planning stall timeout",
@@ -56,7 +56,7 @@ KNOBS: dict[str, dict] = {
         "min": 120.0,
         "max": 7200.0,
         "env": "PLANNING_STALL_TIMEOUT_S",
-        "group": "Loop limits",
+        "group": "Budgets & loop limits",
     },
     "default_task_budget_usd": {
         "label": "Default task budget",
@@ -66,7 +66,7 @@ KNOBS: dict[str, dict] = {
         "min": 0.25,
         "max": 100.0,
         "env": "DEFAULT_BUDGET_USD",
-        "group": "Budgets",
+        "group": "Budgets & loop limits",
     },
     "model_call_run_limit": {
         "label": "Model calls per run",
@@ -79,7 +79,7 @@ KNOBS: dict[str, dict] = {
         "min": 20.0,
         "max": 2000.0,
         "env": None,
-        "group": "Loop limits",
+        "group": "Budgets & loop limits",
     },
     "tool_call_run_limit": {
         "label": "Tool calls per run",
@@ -89,7 +89,7 @@ KNOBS: dict[str, dict] = {
         "min": 20.0,
         "max": 3000.0,
         "env": None,
-        "group": "Loop limits",
+        "group": "Budgets & loop limits",
     },
     "model_call_timeout_s": {
         "label": "Model call timeout",
@@ -104,7 +104,7 @@ KNOBS: dict[str, dict] = {
         "min": 30.0,
         "max": 1800.0,
         "env": None,
-        "group": "Model timeouts",
+        "group": "Model & sandbox timeouts",
     },
     "planning_model_call_timeout_s": {
         "label": "Planning model call timeout",
@@ -118,7 +118,7 @@ KNOBS: dict[str, dict] = {
         "min": 60.0,
         "max": 3600.0,
         "env": None,
-        "group": "Model timeouts",
+        "group": "Model & sandbox timeouts",
     },
     "check_lint_timeout_s": {
         "label": "Lint timeout",
@@ -173,7 +173,7 @@ KNOBS: dict[str, dict] = {
         "min": 60.0,
         "max": 3600.0,
         "env": None,
-        "group": "Build & review",
+        "group": "Check timeouts",
     },
     "sandbox_command_timeout_s": {
         "label": "Default shell command timeout",
@@ -186,7 +186,7 @@ KNOBS: dict[str, dict] = {
         "min": 30.0,
         "max": 3600.0,
         "env": None,
-        "group": "Build & review",
+        "group": "Model & sandbox timeouts",
     },
     "review_wait_timeout_s": {
         "label": "Review wait timeout",
@@ -200,7 +200,7 @@ KNOBS: dict[str, dict] = {
         "min": 120.0,
         "max": 7200.0,
         "env": None,
-        "group": "Build & review",
+        "group": "Model & sandbox timeouts",
     },
 }
 

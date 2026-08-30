@@ -235,7 +235,7 @@ export function SettingsPage({ user, onUserChanged }: Props) {
             How hard the agent tries before giving up. Changes apply to the next turn or task &mdash;
             anything already running keeps the limits it started with. Hover a label for what it does.
           </p>
-          <div className="settings-grid">
+          <div className="settings-grid settings-grid--wide">
             <RuntimeLimitsPanel />
           </div>
         </>

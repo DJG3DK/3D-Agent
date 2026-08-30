@@ -194,3 +194,26 @@
   align-items: start;
 }
 .settings-grid .settings-card { margin-bottom: 0; }
+
+/* Runtime limits get wider columns than the rest of the page: their rows are
+   label-plus-number, so a wider card fits MORE rows at the same height, and
+   three wide cards land in one row instead of two ragged ones. */
+.settings-grid--wide {
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+}
+
+/* Below the track minimum, collapse to one column explicitly.
+   min(420px, 100%) looks like the tidy fix and is not: the 100% resolves
+   against a container whose own width is content-driven here, so it is
+   circular, falls back to 420px, and the grid still demands two tracks --
+   measured as a 981px-wide document inside a 412px viewport. A media query
+   has no such ambiguity. */
+@media (max-width: 700px) {
+  .settings-grid--wide { grid-template-columns: 1fr; }
+}
+
+/* A grid item defaults to min-width:auto, i.e. it refuses to shrink below its
+   own min-content. With label-plus-number rows that floor was ~460px, so on a
+   phone the track could not collapse and the whole PAGE scrolled sideways.
+   Letting the item shrink is what allows the row content to wrap instead. */
+.settings-grid--wide > .settings-card { min-width: 0; }

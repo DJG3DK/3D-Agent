@@ -1,8 +1,8 @@
 /* Runtime limits.
-   Compact two-column rows -- label left, control right -- so four knobs fit a
-   card the same height as the switch cards beside them. The explanation lives
-   in the tooltip rather than inline: fourteen paragraphs made a wall, and the
-   label plus the unit hint already carries the meaning at a glance. */
+   Compact two-column rows -- label left, control right -- so a card of five
+   knobs is no taller than the switch cards elsewhere on the page. The
+   explanation is a tooltip rather than inline text: fourteen paragraphs made
+   a wall, and the label plus the unit hint carries the meaning at a glance. */
 .rl-rows { display: flex; flex-direction: column; }
 
 .rl-row {
@@ -14,31 +14,33 @@
   border-top: 1px solid var(--border-soft);
 }
 .rl-row:first-child { border-top: none; }
+.rl-row--dirty .rl-input { border-color: var(--amber); }
 
 .rl-label {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   font-size: var(--fs-base);
   cursor: help;
+  /* Shrinkable and wrappable: the label is the only elastic part of the row,
+     since the input and its unit hint are fixed. */
+  flex: 1 1 auto;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-/* A quiet mark that this one is no longer at its shipped default. */
-.rl-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--amber);
-  flex: 0 0 auto;
-}
+/* Quiet mark that this one is no longer at its shipped default. */
+.rl-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
 
 .rl-control { display: flex; align-items: center; gap: var(--s2); flex: 0 0 auto; }
 
 .rl-input {
-  width: 5.5rem;
+  /* Wide enough for four digits plus padding. The native spinner buttons are
+     removed: at this width they overlapped the digits, which is what made the
+     numbers unreadable -- and a spinner is useless for a value like 1200. */
+  width: 5.25rem;
   min-height: 34px;
-  padding: 0 var(--s2);
+  padding: 0 var(--s3);
   text-align: right;
   background: var(--surface-sunken);
   border: 1px solid var(--border);
@@ -47,22 +49,67 @@
   /* 16px floor: anything smaller makes mobile browsers zoom on focus. */
   font-size: 16px;
   font-family: var(--font-mono);
+  appearance: textfield;
+  -moz-appearance: textfield;
 }
+.rl-input::-webkit-outer-spin-button,
+.rl-input::-webkit-inner-spin-button { appearance: none; margin: 0; }
 .rl-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 
 .rl-meta {
-  min-width: 4.5rem;
+  min-width: 4.25rem;
   color: var(--text-faint);
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   cursor: help;
 }
 
-.rl-actions {
+/* One sticky bar rather than a button per card: an edit in a card you have
+   scrolled past is otherwise easy to leave unsaved, and five buttons that are
+   disabled almost always is five pieces of dead furniture. Bottom right,
+   which is the empty corner on this page. */
+.rl-savebar {
+  position: fixed;
+  right: calc(var(--s6) + var(--safe-r));
+  bottom: calc(var(--s6) + var(--safe-b));
+  z-index: 40;
   display: flex;
   align-items: center;
   gap: var(--s3);
-  margin-top: var(--s4);
-  flex-wrap: wrap;
+  padding: var(--s3) var(--s4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--fs-md);
+  animation: rl-savebar-in 140ms cubic-bezier(.4, 0, .2, 1);
 }
-.rl-saved { color: var(--green); font-size: var(--fs-sm); }
+@keyframes rl-savebar-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .rl-savebar { animation: none; } }
+
+.rl-savebar-count { color: var(--text); font-weight: 600; }
+.rl-savebar-ok { color: var(--green); }
+.rl-savebar-error { color: var(--red); max-width: 42ch; }
+.rl-savebar-discard {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+.rl-savebar-discard:hover { color: var(--text); background: var(--surface-hover); }
+
+/* On a phone the bottom bar is the tab bar's territory: go full width above it. */
+@media (max-width: 640px) {
+  .rl-savebar {
+    left: calc(var(--s4) + var(--safe-l));
+    right: calc(var(--s4) + var(--safe-r));
+    bottom: calc(72px + var(--safe-b));
+    justify-content: space-between;
+  }
+}
