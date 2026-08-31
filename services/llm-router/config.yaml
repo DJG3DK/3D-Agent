@@ -497,6 +497,46 @@ model_list:
       input_cost_per_token: 0.000002
       output_cost_per_token: 0.000012
 
+  # Agent_Email's mail triage (/home/agentEmail/agent/triage.py) — a SEPARATE
+  # application that happens to share this router. It is not part of 3d-agent
+  # and nothing of it lives in this repo; this entry exists so mail's model
+  # choice and mail's spend are decided here rather than hardcoded over there.
+  #
+  # Dedicated pin (2026-08-31): sender-level email categorisation. High volume,
+  # long context (a sender's sample subjects batched 25 at a time), and it
+  # drives MCP tools, so tool-calling has to be reliable — but the judgement
+  # itself is easy, so paying reasoning-tier prices for it is waste. It ran on
+  # gemini-3.1-pro-preview during the initial 9,467-message sweep ($2/$12 per
+  # M tokens); qwen3.8-flash does the same job at $0.15/$0.47 with the same 1M
+  # context and verified tool-call support. Operator pick, on cost.
+  # Agent_Email's in-app chat agent (/home/agentEmail/agent/chat.py). Same
+  # separate application as mail-triage below, different job, so a different
+  # dial: triage is high-volume and easy, chat is low-volume and hard.
+  #
+  # Dedicated pin (2026-08-31): conversational mail assistant driving the same
+  # 15 MCP tools. Operator shortlist was qwen3.8-max / glm-5.3 / grok-4.6;
+  # glm-5.3 picked on three counts — cheapest of the three ($1.40/$4.40 vs
+  # $2/$6 for both others), longest context by some way (1.31M, and thread
+  # dumps plus message bodies are what fills a mail agent's window), and the
+  # GLM family is already the trusted tool-caller in this config (glm-5.2 is
+  # the complexity router's last-resort default). Grok 4.6's 500K context was
+  # the deciding mark against it for this particular workload.
+  - model_name: mail-chat
+    litellm_params:
+      model: openrouter/z-ai/glm-5.3
+      extra_body: {"provider": {"require_parameters": true}}
+    model_info:
+      input_cost_per_token: 0.0000014
+      output_cost_per_token: 0.0000044
+
+  - model_name: mail-triage
+    litellm_params:
+      model: openrouter/qwen/qwen3.8-flash
+      extra_body: {"provider": {"require_parameters": true}}
+    model_info:
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.00000047
+
   - model_name: agent-classifier
     litellm_params:
       # Dedicated pin (2026-08-23): a single cheap, non-agentic call per task
@@ -570,25 +610,33 @@ model_list:
     litellm_params:
       # Optional public demo bot -- an unauthenticated, resume-style chat
       # endpoint with web search/browse but NO repo, database or memory
-      # access of any kind. Unused unless a deployment runs one. Pinned to a genuinely free model
-      # (z-ai/glm-5.2:free, 256K context) on purpose: this endpoint is
-      # unauthenticated, so its traffic is whatever the internet decides to
-      # send it. A paid model here would be funding strangers' chat sessions.
-      # Cost entries are 0 to match -- if this alias is ever repointed at a
-      # paid model, update them, or the dashboard's spend attribution will
-      # silently under-report this role.
-      # Switched from z-ai/glm-5.2:free to gpt-4o 2026-08-24: the free tier
-      # is a pool shared across all OpenRouter users and was returning 429
-      # persistently ("temporarily rate-limited upstream"), which made the
-      # demo unusable and untestable. Revisit before exposing it widely --
-      # gpt-4o at $2.50/$10.00 per M on an UNAUTHENTICATED endpoint is a real
-      # bill if it gets traffic. gpt-4o-mini is ~17x cheaper and ample for
-      # resume Q&A, and the free model behind a paid fallback is cheaper
-      # still; the demo server's own rate limits bound the downside
-      # either way.
+      # access of any kind. Unused unless a deployment runs one.
+      #
+      # This endpoint is unauthenticated, so its traffic is whatever the
+      # internet decides to send it, and the model must stay cheap:
+      # deepseek-v4-flash is ~$0.09/$0.18 per M. The demo server's own rate
+      # limits bound the downside. Do not repoint this at a premium model.
+      #
+      # NOTE ON THE COSTS BELOW: they are DeepInfra's. Provider fallbacks are
+      # on (see extra_body), so a request served by another provider may bill
+      # slightly differently and this role's spend attribution is approximate
+      # by design -- availability was judged worth more than exact accounting
+      # on a free demo.
+      #
+      # History, because it keeps mattering: z-ai/glm-5.2:free was abandoned
+      # 2026-08-24 (shared free pool, persistent 429s), then gpt-4o briefly,
+      # now deepseek-v4-flash. Every one of those transitions left this
+      # comment describing a model that was no longer pinned. If you repin,
+      # fix these lines in the same edit.
       model: openrouter/deepseek/deepseek-v4-flash
       api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"require_parameters": true, "only": ["DeepInfra"], "allow_fallbacks": false}}
+      # "order" PREFERS DeepInfra rather than requiring it, and fallbacks are
+      # on: if the pin is throttled or down, OpenRouter routes to whatever
+      # other provider serves this same model and works. Was
+      # only:[DeepInfra] + allow_fallbacks:false, which is why two 429s a
+      # minute apart on 2026-08-31 took the whole demo down -- one provider,
+      # no way around it, and no router-level fallback either (see below).
+      extra_body: {"provider": {"require_parameters": true, "order": ["DeepInfra"], "allow_fallbacks": true}}
     model_info:
       input_cost_per_token: 0.000000088606
       output_cost_per_token: 0.000000177212
@@ -751,6 +799,14 @@ router_settings:
     # can kill a work pass mid-task. Same remedy: fail over to the proven
     # tool-caller rather than dying on a provider hiccup.
     - agent-planner: ["deepseek-v4-pro"]
+    # The demo's last resort, after OpenRouter has already tried every
+    # provider serving deepseek-v4-flash (see that alias's extra_body). Only
+    # reached if the MODEL is unavailable everywhere, not merely one provider.
+    # gpt-4o-mini rather than the board's usual deepseek-v4-pro escape hatch:
+    # this endpoint is unauthenticated, so the fallback has to stay cheap too
+    # -- $0.15/M in against deepseek-v4-pro's $1.32/M -- and mini is a proven
+    # tool-caller, which the demo needs for web search/browse.
+    - agent-demo-chat: ["gpt-4o-mini"]
     # audit H-8: the review call had no router fallback, so a stall or a 429 on
     # the reviewer's provider pool blocked the review outright. Since C-3 makes a
     # failed review fail CLOSED (NEEDS_FIXES), that would block every merge on a
