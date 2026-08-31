@@ -63,6 +63,22 @@ _READ_INLINE_CAP_CHARS = 40_000
 # read is bounded far higher (same ceiling agent_tools.read uses).
 _READ_HARD_CAP_CHARS = 2_000_000
 
+# A single file may be read this many times in ONE planning turn before the
+# tool starts pushing back, and this many before it refuses outright.
+#
+# Session 0616917 (2026-08-31) read src/core/bot.js 129 times and
+# config/pairs.json 103 times in one turn, burning its whole $8 ceiling
+# without ever calling save_plan. The underlying cause was summarization
+# evicting what had just been read (see PLANNING_SUMMARIZATION_TRIGGER), and
+# that is fixed separately -- but a context window is a soft bound and a loop
+# that big should not be reachable at all. This is the hard one.
+#
+# 14 is deliberately generous: paging a 4,000-line file in 500-line windows
+# takes 8 reads, so a full legitimate page-through plus slack still fits. 129
+# does not.
+_READ_WARN_AT = 6
+_READ_CAP = 14
+
 
 @asynccontextmanager
 async def _browser_page(viewport=None):
@@ -227,6 +243,21 @@ def _own_space_redirect(path: str) -> str | None:
     return None
 
 
+def _reread_note(path: str, seen: int) -> str:
+    """Warn before the cap bites, and say what to do instead.
+
+    The model cannot see that its earlier reads were summarized away, so from
+    inside the loop each re-read looks like a first read. Naming the count is
+    the only signal it gets that it is going in circles."""
+    if seen < _READ_WARN_AT:
+        return ""
+    return (
+        f"\n\n[You have now read {path!r} {seen} times in this turn. Older tool results get "
+        f"summarized out of context; your own written text does not. Record what this file told "
+        f"you in your next reply instead of reading it again -- after {_READ_CAP} reads this tool "
+        f"stops returning it.]"
+    )
+
 def _project_root(repo: str, allowed_repos: list[str] | None = None) -> str:
     if repo not in PROJECTS:
         raise ValueError(f"unknown repo {repo!r} -- must be one of {list(PROJECTS)}")
@@ -259,6 +290,11 @@ def make_planning_tools(existing_plan: str | None = None, allowed_repos: list[st
     through a shared mutable reference, not a return value (tools return
     strings to the model, not structured data to the caller).
     """
+    # Per-TURN read ledger: make_planning_tools is called once per turn (see
+    # build_planning_agent), so this counts reads within a single turn and
+    # resets naturally on the next one.
+    read_counts: dict[tuple[str, str], int] = {}
+
     # Seeded with whatever the session already has saved. A planning agent is
     # rebuilt from scratch on EVERY turn, so a plan_ref that always started at
     # None meant the session's own draft was invisible to the turn that came
@@ -350,6 +386,21 @@ def make_planning_tools(existing_plan: str | None = None, allowed_repos: list[st
             repo_root = _project_root(repo, allowed_repos)
         except ValueError as e:
             return f"ERROR: {e}"
+        # Counted before the read, so a refusal costs nothing. Keyed on the
+        # file rather than the exact window: the loop this exists to stop
+        # paged through the same file with VARYING offsets, so a same-window
+        # check would not have caught it.
+        seen = read_counts[(repo, path)] = read_counts.get((repo, path), 0) + 1
+        if seen > _READ_CAP:
+            return (
+                f"ERROR: you have already read {path!r} in {repo!r} {seen - 1} times this turn. "
+                f"Re-reading it is not producing new information, and this tool will not return it "
+                f"again. If you are re-reading because earlier results dropped out of context, that "
+                f"will keep happening -- WRITE what you learned into your reply as you go, because "
+                f"your own written conclusions survive summarization and raw tool output does not. "
+                f"Answer with what you have, or read a file you have not read yet."
+            )
+
         try:
             content = read_file(repo_root, path, max_chars=_READ_HARD_CAP_CHARS)
         except PathEscapeError as e:
@@ -398,7 +449,7 @@ def make_planning_tools(existing_plan: str | None = None, allowed_repos: list[st
             footer = f"\n\n[lines {start + 1}-{start + len(slice_lines)} of {len(lines)}" + (
                 f"; {remaining} more after this]" if remaining > 0 else "]"
             )
-            return numbered + footer
+            return numbered + footer + _reread_note(path, seen)
 
         if len(content) > _READ_INLINE_CAP_CHARS:
             head = content[:_READ_INLINE_CAP_CHARS]
@@ -413,8 +464,8 @@ def make_planning_tools(existing_plan: str | None = None, allowed_repos: list[st
                 f"text -- to see the rest, call read_project_file with offset/limit, e.g. "
                 f"read_project_file(repo={repo!r}, path={path!r}, offset={shown}, limit=800). Use "
                 f"BIG windows; 50-100 line slices just loop.]"
-            )
-        return content
+            ) + _reread_note(path, seen)
+        return content + _reread_note(path, seen)
 
     @tool
     @tool_errors_to_text

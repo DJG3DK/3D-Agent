@@ -152,8 +152,23 @@ def test_the_preserved_window_never_starts_with_an_orphaned_tool_message():
         assert not isinstance(kept[0], ToolMessage)
 
 
-def test_both_agents_use_the_same_keep_setting():
-    """planning_chat and deep_agent share these constants deliberately -- the
-    thrash hit planning first but build tasks run the same middleware."""
+def test_planning_uses_its_own_deliberately_wider_window():
+    """These constants USED to be shared. They are not any more, and the split
+    is the point rather than an oversight.
+
+    Sharing them is what produced the 2026-08-31 loop: 80k trigger minus 30k
+    keep is 50k of headroom, a planning read is capped at 40k chars, so three
+    big reads refilled it. A build task edits a file at a time and is fine
+    there; planning has to hold every file a cross-cutting question spans, and
+    when it cannot it re-reads them forever (src/core/bot.js, 129 times, until
+    the budget guard stopped the turn).
+
+    So: planning must keep MORE than a build task, never less, and must go on
+    importing its own constants rather than quietly falling back to the shared
+    pair."""
     import agent.planning_chat as pc
-    assert pc.SUMMARIZATION_KEEP is SUMMARIZATION_KEEP
+
+    assert pc.PLANNING_SUMMARIZATION_KEEP[1] > SUMMARIZATION_KEEP[1]
+    assert not hasattr(pc, "SUMMARIZATION_KEEP"), (
+        "planning must not import the build-task keep again -- that is the regression"
+    )

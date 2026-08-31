@@ -1568,6 +1568,25 @@ async def _await_with_stall_watchdog(task: "asyncio.Task", heartbeat: dict, stal
             )
 
 
+# Live planning spend is mirrored into the Store as it accrues, the same way a
+# build task's is. Without it the session row holds cost_usd from the LAST
+# completed turn until this one banks, so any hydrate mid-turn -- a page
+# reload, a reconnect -- overwrote the live figure on screen with a stale 0.00
+# and left it there. Reported live 2026-08-31 on a turn that went on to spend
+# $8.11 while the dashboard read $0 the whole way.
+_PLANNING_COST_MIRROR_MIN_DELTA = 0.005
+
+
+async def _mirror_planning_cost(store, repo: str, session_id: str, cost: float) -> None:
+    """Display only. Budget enforcement reads the tracker, never this."""
+    try:
+        item = await store.aget(("planning", repo), session_id)
+        if item:
+            await store.aput(("planning", repo), session_id, {**item.value, "cost_usd": cost})
+    except Exception:  # noqa: BLE001 -- a display mirror must never break the turn
+        logger.exception("could not mirror planning cost for %s", session_id)
+
+
 def _publish_planning(session_id: str, event: dict) -> None:
     if event.get("type") == "log_entry" and event.get("entry"):
         _live_log_append(_live_planning_log, session_id, [event["entry"]])
@@ -1823,17 +1842,45 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         }])
         # Every published event doubles as the watchdog's heartbeat.
         _heartbeat = {"at": time.monotonic(), "events": 0}
+        # Live cost is mirrored into the Store as it accrues, the same way a
+        # build task's is (see the "cost" branch of run_task). Without it the
+        # session row holds cost_usd from the LAST completed turn until this
+        # one banks, so hydrating mid-turn -- any page reload, any reconnect --
+        # overwrote the live figure on screen with a stale 0.00 and left it
+        # there. Reported live 2026-08-31 on a turn that went on to spend
+        # $8.11 while the dashboard read $0 throughout.
+        _mirror = {"cost": starting_cost}
+        _mirror_tasks: set[asyncio.Task] = set()
 
         def _publish_and_beat(ev):
             _heartbeat["at"] = time.monotonic()
             _heartbeat["events"] += 1
             # cost events arrive pre-shaped ({"type": "cost", ...}); log
             # entries need wrapping -- route on the shape.
+            is_cost = isinstance(ev, dict) and ev.get("type") == "cost"
             _publish_planning(
                 session_id,
-                ev if isinstance(ev, dict) and ev.get("type") == "cost"
-                else {"type": "log_entry", "entry": ev},
+                ev if is_cost else {"type": "log_entry", "entry": ev},
             )
+            if not is_cost or not isinstance(ev.get("cost_usd"), (int, float)):
+                return
+            cost = float(ev["cost_usd"])
+            # Throttled HERE rather than inside the coroutine: the check is
+            # synchronous, so two cost events in the same tick cannot both
+            # decide to write.
+            if cost - _mirror["cost"] < _PLANNING_COST_MIRROR_MIN_DELTA:
+                return
+            _mirror["cost"] = cost
+            # Fire-and-forget: a store write must never block the stream, and
+            # a lost mirror costs freshness, not correctness -- the
+            # authoritative figure is still banked when the turn ends. The
+            # strong reference is required; asyncio holds only a weak one, so
+            # a bare create_task can be collected mid-flight.
+            _t = asyncio.create_task(
+                _mirror_planning_cost(app.state.store, repo, session_id, cost)
+            )
+            _mirror_tasks.add(_t)
+            _t.add_done_callback(_mirror_tasks.discard)
 
         _turn_task = asyncio.create_task(
             run_planning_turn(

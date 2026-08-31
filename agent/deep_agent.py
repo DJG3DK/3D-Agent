@@ -117,6 +117,33 @@ SUMMARIZATION_TRIGGER = [("tokens", 80_000), ("messages", 120)]  # OR semantics 
 # capped at 40k chars (~12k tokens) so they cannot breach it; agent_tools.read
 # offloads above READ_INLINE_CAP_CHARS for the same reason.
 SUMMARIZATION_KEEP = ("tokens", 30_000)
+
+# Planning gets a much larger window than a build task, because it is a
+# READ-heavy investigation loop rather than an edit loop, and the 80k/30k pair
+# above turned out to be actively harmful there.
+#
+# Measured on session 0616917 (2026-08-31), a HARD planning turn that ran
+# 1h52m and died on its $8 ceiling having produced NO plan at all:
+#
+#   123 model calls, 183 tool calls, 184 summarizations
+#   1,080 file reads across 99 DISTINCT files
+#   src/core/bot.js read 129 times, config/pairs.json 103, gridBot.js 69
+#
+# That is one summarization per ~1.5 model calls. The mechanism is the gap
+# between the two numbers, not either one alone: 80k trigger minus 30k keep is
+# 50k of headroom, and a planning read is capped at 40k chars (~12k tokens),
+# so THREE big reads refill it. The summarizer then drops the file contents,
+# the model no longer has what it just read, and it reads it again -- forever,
+# at ~$0.12 a round, until the budget guard stops it.
+#
+# The question that turn was asked spanned a strategy module, an API route and
+# two frontend components. It could never hold all four at once, so it could
+# never answer. 170k/70k gives 100k of headroom (~8 large reads) and leaves
+# ~90k of slack under the >=262K context every pinned model has -- enough for
+# the triggering call and its response. Cost per call rises with context; that
+# is the intended trade, and it is far cheaper than reading bot.js 129 times.
+PLANNING_SUMMARIZATION_TRIGGER = [("tokens", 170_000), ("messages", 400)]
+PLANNING_SUMMARIZATION_KEEP = ("tokens", 70_000)
 # The library default (4000) is tuned for ordinary back-and-forth chat, where a
 # HumanMessage recurs often. Our conversations are tool-call-heavy: one
 # HumanMessage with the goal, then dozens of AIMessage/ToolMessage pairs before

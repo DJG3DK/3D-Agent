@@ -12,6 +12,11 @@ interface PlanningStreamState {
   sendError: string | null;
 }
 
+/* The server pings every 20s (stream_planning_session's sender loop), so
+   three missed pings means the socket is dead however healthy it looks. */
+const SOCKET_SILENCE_LIMIT_MS = 70_000;
+const SOCKET_WATCHDOG_POLL_MS = 15_000;
+
 const EMPTY_STATE: PlanningStreamState = {
   log: [],
   planMarkdown: null,
@@ -46,6 +51,21 @@ export function usePlanningStream(sessionId: string | null) {
   const reconnectRef = useRef<() => void>(() => {});
   const reconnecting = useRef(false);
   const deliberateClose = useRef(false);
+  // Liveness watchdog (2026-08-31). onclose is not a reliable death signal:
+  // a half-open TCP -- laptop sleep, NAT idle-kill, a proxy dropping the
+  // connection without a FIN -- leaves the browser holding a socket it will
+  // never hear from again, and no event ever fires. The turn then ends
+  // server-side and its `error`/`closed` events go to a socket nobody is
+  // listening on, so the UI sits on `running: true` forever: thinking
+  // bubbles that never stop, composer disabled, and -- because the outcome
+  // banner only renders when NOT running -- no sign of why the turn ended.
+  // Observed live on the $8 budget-exceeded turn of 2026-08-31.
+  //
+  // The server pings every 20s, so silence past three pings is death. The
+  // recovery is just close(): that fires onclose, which reconnects and
+  // re-hydrates, and hydration reads `running` from the server -- which is
+  // the authority on whether a turn is actually in flight.
+  const lastMessageAt = useRef(Date.now());
 
   useEffect(() => {
     if (!sessionId) return;
@@ -92,9 +112,13 @@ export function usePlanningStream(sessionId: string | null) {
       // Tracks whether an in-band `closed` event arrived for THIS socket, so
       // onclose can tell a clean end-of-turn from a dropped connection.
       let sawClosed = false;
-      ws.onopen = () => resolve(ws);
+      ws.onopen = () => {
+        lastMessageAt.current = Date.now();
+        resolve(ws);
+      };
       ws.onerror = () => reject(new Error("connection failed"));
       ws.onmessage = (ev) => {
+        lastMessageAt.current = Date.now();
         const event: PlanningStreamEvent = JSON.parse(ev.data);
         if (event.type === "ping") return; // server heartbeat, not content
         if (event.type === "cost") {
@@ -174,6 +198,25 @@ export function usePlanningStream(sessionId: string | null) {
     }
   }, [connect, sessionId]);
   reconnectRef.current = reconnect;
+
+  // Only armed while a turn is in flight -- an idle session has no socket to
+  // watch and nothing to recover.
+  useEffect(() => {
+    if (!state.running) return;
+    const id = window.setInterval(() => {
+      if (Date.now() - lastMessageAt.current < SOCKET_SILENCE_LIMIT_MS) return;
+      const ws = wsRef.current;
+      lastMessageAt.current = Date.now(); // don't re-fire while the retry runs
+      if (ws) {
+        try { ws.close(); } catch { /* already gone */ }
+      } else {
+        // No socket at all and still "running" -- reconnect directly, since
+        // there is no onclose coming to do it for us.
+        reconnectRef.current();
+      }
+    }, SOCKET_WATCHDOG_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [state.running]);
 
   const sendMessage = useCallback(
     async (text: string, attachments?: AttachmentEntry[]) => {

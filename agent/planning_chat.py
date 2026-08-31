@@ -69,8 +69,8 @@ from agent.config import Config, PROJECTS
 from agent.deep_agent import (
     MEMORY_PATH,
     ORG_MEMORY_PATH,
-    SUMMARIZATION_KEEP,
-    SUMMARIZATION_TRIGGER,
+    PLANNING_SUMMARIZATION_KEEP,
+    PLANNING_SUMMARIZATION_TRIGGER,
     SUMMARIZATION_TRIM_TOKENS,
     build_memory_backend,
     llm_for_role,
@@ -341,8 +341,8 @@ async def build_planning_agent(
                 # this model directly, outside any agent middleware (see
                 # BudgetMeterCallback in budget_guard.py).
                 model=llm_for_role(config, "agent-summarizer", callbacks=[BudgetMeterCallback(tracker)]),
-                trigger=SUMMARIZATION_TRIGGER,
-                keep=SUMMARIZATION_KEEP,
+                trigger=PLANNING_SUMMARIZATION_TRIGGER,
+                keep=PLANNING_SUMMARIZATION_KEEP,
                 # Not optional -- the library default (4000) is a REAL, live
                 # bug here, confirmed 2026-08-23: a planning turn opens with
                 # one long HumanMessage (the operator's own detailed
