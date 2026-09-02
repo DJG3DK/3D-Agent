@@ -13,6 +13,13 @@ module.exports = {
             cwd:           __dirname,
             interpreter:   'none',   // it's already a venv-shebang'd executable, not a .js file
             restart_delay: 3000,
+            env: {
+                // litellm shells out to the `prisma` CLI on startup to check
+                // migrations against the database. Without the venv on PATH it
+                // cannot find it and the proxy EXITS during startup rather than
+                // degrading — found by rehearsing this on a spare port first.
+                PATH: `${__dirname}/venv/bin:${process.env.PATH}`,
+            },
         },
     ],
 };
