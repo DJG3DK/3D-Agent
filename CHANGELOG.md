@@ -1,5 +1,121 @@
 # Changelog
 
+## v0.3.0 — runtime limits in the console, one save bar everywhere, planning that stops for the right reasons (pre-release)
+
+**2026-09-02**
+
+Fourteen commits on top of v0.2.0. The headline is that the dials which
+used to need a file edit and a restart are now in the console, and that a
+planning turn is no longer killed for the crime of taking a while.
+
+### Runtime limits, from the console
+
+Fourteen limits were module constants and environment variables, so
+retuning one meant editing a file and restarting — and a restart is
+exactly what you cannot do while the thing you want to retune is running.
+They live in the store now (**Settings → Runtime limits**, admin only):
+
+    planning turn budget      planning stall timeout    default task budget
+    model calls per run       tool calls per run        review wait timeout
+    model call timeout        planning model timeout    lint timeout
+    typecheck timeout         test suite timeout        review test timeout
+    frontend build timeout    default shell timeout
+
+Every one is read at the point of *use*, so a change lands on the next
+turn or task and never mutates something already in flight. Values are
+clamped to each knob's bounds rather than rejected; unknown names are
+rejected, because a typo must not sit in the database looking like
+configuration. Existing environment variables still seed the defaults.
+Seconds render beside their plain-units equivalent (1200 → "20 min"), and
+the label carries the full reasoning as a tooltip.
+
+Worth knowing: `npm test` was capped at 180s, and a repo that chains
+dozens of suites can exceed that. An abort reads to the agent as a
+*failing* test rather than a slow one, so it would try to fix a suite that
+was merely long. That cap is now a dial.
+
+Deliberately not exposed: auto-approve and merge review. Those change what
+the agent is *permitted* to do; these are dials on effort.
+
+### One save bar, on both pages that have something to save
+
+Every editable card on the settings page carried its own Save button — a
+row of controls disabled almost all of the time, and an edit in a card you
+had scrolled past was easy to abandon. There is now one bar, pinned
+bottom-right, that appears only when something is genuinely dirty, names
+the count, and offers Discard. On a phone it goes full width above the tab
+bar rather than floating over it.
+
+The **model configuration page** gets the same flow. Its static
+"Save N changes" button sat at the very bottom of three groups of rows, so
+a pin changed in the top group was just as easy to lose. Same bar, same
+Discard, and a failed save is reported beside the button that caused it
+with the edit kept.
+
+The settings page itself was also re-laid: three cards per row where the
+grid arithmetic had silently only ever allowed two, Telegram and Projects
+paired into one row, spinner buttons gone from numeric fields where they
+sat on top of the digits.
+
+### Planning turns that end for the right reasons
+
+- **Bounded by silence, not by the clock.** A planning turn was killed at
+  30 minutes while actively streaming — $2.50 spent, no plan saved. A
+  duration ceiling selects against exactly the work it should protect.
+  The watchdog now fires only when a turn produces *nothing* for 20
+  minutes (adjustable above); duration is unbounded on purpose, and the
+  budget ceiling remains the only thing that stops work abruptly.
+- **Why it stopped is recorded.** The reason used to be a live WebSocket
+  event and nothing else — refresh and it was gone. Outcomes are now
+  classified (`completed / stopped / stalled / budget / error`), stored
+  with the session, and shown when you open one that ended badly, with the
+  note that the context is still there and the turn can be continued.
+- **The re-read loop.** One session read `src/core/bot.js` 129 times,
+  spent its whole $8 ceiling and produced nothing: planning shared the
+  build task's summarization window, which was too small to hold the four
+  files the question spanned, so it dropped what it had just read and read
+  it again. Planning has its own window now, plus a per-turn per-file read
+  ledger that warns at 6 reads and refuses at 14.
+- **Live cost, and a UI that notices the turn ended.** Cost read $0 for
+  the whole turn because it was banked only at the end; it is mirrored as
+  it accrues now. And a half-open socket left the browser showing thinking
+  bubbles forever — a liveness watchdog treats 70s of silence as death and
+  reconnects, with `running` read back from the server.
+
+### Fixes
+
+- **The investigator subagent was never used.** 281 coder calls, 207
+  test-writer, zero investigator, across every task since the router
+  rework. Its delegation was written as a preference ("prefer the
+  investigator for multi-file research") and the coordinator, holding
+  `rg` itself, always declined. It is a rule now, with a trigger it can
+  evaluate. Prompt-only — worth re-checking the per-role counts.
+- **The public demo went down on two 429s a minute apart.** Its model was
+  pinned to a single provider with fallbacks off, the one alias in the
+  config with no router-level fallback either. Three layers now:
+  preferred provider, any other provider of the same model, then a cheap
+  proven tool-caller if the model is unavailable everywhere.
+- **The router exited at startup instead of degrading** when the database
+  was connected, because LiteLLM shells out to the `prisma` CLI to check
+  migrations and could not find it outside the venv. The pm2 config puts
+  the venv on `PATH`.
+- **The mail agent's model spiralled on reasoning.** One "can you see
+  starred mail" turn spent 40K reasoning tokens and $0.72 producing
+  nothing visible, since reasoning streams as empty chunks. Reasoning
+  effort is pinned low for that role: a tool-driven mail agent needs quick
+  tool calls, not deep chains.
+
+### Known limits
+
+The half-open-socket gap fixed for planning streams still exists for task
+streams; a task's UI can show it running after the socket has died.
+
+### Requirements
+
+Unchanged: Linux, Python 3.12+, Node 24+, Docker, PostgreSQL 14+, and an
+OpenRouter API key. pm2 optional. **740 Python tests, 168 frontend
+tests** pass on this release.
+
 ## v0.2.0 — landing page, a frontend test suite, Node 24 (pre-release)
 
 **2026-08-30**
