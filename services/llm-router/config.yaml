@@ -521,10 +521,15 @@ model_list:
   # GLM family is already the trusted tool-caller in this config (glm-5.2 is
   # the complexity router's last-resort default). Grok 4.6's 500K context was
   # the deciding mark against it for this particular workload.
+  # reasoning effort pinned LOW (2026-09-02): glm-5.3 spiraled on a simple
+  # "can you see starred mail" turn - 40K reasoning tokens in one call, $0.72
+  # for one invisible turn - and reasoning streams as empty chunks, so the
+  # mail app's stall guard sees a live stream while the user sees nothing.
+  # A tool-driven mail agent needs quick tool calls, not deep chains.
   - model_name: mail-chat
     litellm_params:
       model: openrouter/z-ai/glm-5.3
-      extra_body: {"provider": {"require_parameters": true}}
+      extra_body: {"provider": {"require_parameters": true}, "reasoning": {"effort": "low"}}
     model_info:
       input_cost_per_token: 0.0000014
       output_cost_per_token: 0.0000044
