@@ -271,7 +271,6 @@
   flex-wrap: wrap;
 }
 
-.model-config-save-btn,
 .model-config-restart-btn {
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
@@ -279,19 +278,6 @@
   font-weight: 600;
   padding: 9px 16px;
   cursor: pointer;
-}
-
-.model-config-save-btn {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.model-config-save-btn:disabled {
-  background: var(--surface-raised);
-  border-color: var(--border);
-  color: var(--text-faint);
-  cursor: not-allowed;
 }
 
 .model-config-restart-btn {

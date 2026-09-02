@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getModelCatalog, getModelConfig, getModelEndpoints, probeForcedToolCall, restartLlmRouter, saveModelConfig, saveProviderPins } from "../api";
 import type { ProviderEndpoint } from "../api";
 import type { ModelCatalogEntry, ModelPin } from "../types";
+import { SettingsSaveBar, SettingsSaveProvider, useSettingsSave } from "./SettingsSaveBar";
 import "./ModelConfigPanel.css";
 
 // Display ORDER for this agent's pinned roles (agent/model_config.py's
@@ -257,7 +258,22 @@ function ModelPicker({
   );
 }
 
+/* The same save flow as the settings page: one sticky bar, pinned
+ * bottom-right, that appears only when a pin is genuinely dirty. The static
+ * "Save N changes" button lived at the very bottom of a page that is three
+ * groups of rows long, so a model changed in the top group was easy to
+ * scroll away from and abandon. The provider carries the registry the bar
+ * reads; the panel below registers its pending count into it. */
 export function ModelConfigPanel() {
+  return (
+    <SettingsSaveProvider>
+      <ModelConfigPins />
+      <SettingsSaveBar />
+    </SettingsSaveProvider>
+  );
+}
+
+function ModelConfigPins() {
   const [pins, setPins] = useState<Record<string, ModelPin> | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   // Which models actually survive a forced tool call, from real probes rather
@@ -301,7 +317,6 @@ export function ModelConfigPanel() {
   const [pending, setPending] = useState<Record<string, string>>({});
   // Provider pins pending save. undefined = untouched; null = clear to auto.
   const [pendingProviders, setPendingProviders] = useState<Record<string, string | null>>({});
-  const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState(false);
@@ -374,30 +389,32 @@ export function ModelConfigPanel() {
 
   const changedCount = Object.keys(pending).length + Object.keys(pendingProviders).length;
 
-  async function handleSave() {
-    setSaving(true);
-    setError(null);
-    try {
-      // Models first: a model repin RESETS that role's provider pin on the
-      // backend (a provider chosen for the old model is meaningless), so the
-      // provider save must land second to apply against the new model.
-      let roles = pins!;
-      if (Object.keys(pending).length) {
-        roles = (await saveModelConfig(pending)).roles;
-      }
-      if (Object.keys(pendingProviders).length) {
-        roles = (await saveProviderPins(pendingProviders)).roles;
-      }
-      setPins(roles);
-      setPending({});
-      setPendingProviders({});
-      setJustSaved(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "save failed");
-    } finally {
-      setSaving(false);
+  // Committed by the page's save bar, which owns the saving state and shows
+  // any error next to its own button -- so this throws rather than catching.
+  async function commitPins() {
+    // Models first: a model repin RESETS that role's provider pin on the
+    // backend (a provider chosen for the old model is meaningless), so the
+    // provider save must land second to apply against the new model.
+    let roles = pins!;
+    if (Object.keys(pending).length) {
+      roles = (await saveModelConfig(pending)).roles;
     }
+    if (Object.keys(pendingProviders).length) {
+      roles = (await saveProviderPins(pendingProviders)).roles;
+    }
+    setPins(roles);
+    setPending({});
+    setPendingProviders({});
+    setJustSaved(true);
   }
+
+  function discardPins() {
+    setPending({});
+    setPendingProviders({});
+    setJustSaved(false);
+  }
+
+  useSettingsSave("model-pins", changedCount, commitPins, discardPins);
 
   async function handleRestart() {
     setRestarting(true);
@@ -533,10 +550,9 @@ export function ModelConfigPanel() {
         ));
       })()}
 
+      {/* Saving lives in the sticky bar (see ModelConfigPanel above); this
+          row holds the two actions that are not edits. */}
       <div className="model-config-actions">
-        <button className="model-config-save-btn" disabled={changedCount === 0 || saving} onClick={handleSave}>
-          {saving ? "Saving…" : changedCount > 0 ? `Save ${changedCount} change${changedCount > 1 ? "s" : ""}` : "Save changes"}
-        </button>
         <button className="model-config-restart-btn" disabled={restarting} onClick={() => setConfirmingRestart(true)}>
           {restarting ? "Restarting…" : "Restart Router"}
         </button>
