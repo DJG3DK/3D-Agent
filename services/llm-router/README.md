@@ -54,7 +54,8 @@ that project's nightly run entirely.
 ```
 config.yaml            model list, aliases, rates, provider routing, fallbacks
 custom_callbacks.py    routing logger — powers the dashboard's Router tab
-ecosystem.config.js    pm2
+auth-gate/             WebAuthn passkey gate for a publicly exposed admin panel
+ecosystem.config.js    pm2 — llm-router, and llm-auth-gate if the panel is public
 ```
 
 Listens on `0.0.0.0:4000`. Callers authenticate with `LITELLM_MASTER_KEY`.
@@ -63,3 +64,19 @@ Setup: `cp .env.example .env`, fill in the OpenRouter key and generate a master 
 (`openssl rand -hex 32`). The same master key goes in the agent's `.env` as `LITELLM_API_KEY`.
 The `model_list` in `config.yaml` ships with this deployment's pins as a worked example — the
 `agent-*` aliases are the contract; what each resolves to is yours to change.
+
+## Exposing the admin panel
+
+LiteLLM's `/ui` is fine on a private network. If you put it on a public hostname, `auth-gate/`
+is the outer wall: a small Node service that nginx consults through `auth_request` on every
+panel request. Requests carrying a `Bearer` token pass through for LiteLLM to judge; everything
+else needs a session cookie that only a passkey ceremony mints. Sessions are stored server-side
+as SHA-256 hashes in `auth-gate/state/` (gitignored, mode 0600), so a config dump yields nothing
+usable.
+
+Set `GATE_RP_ID` and `GATE_ORIGIN` in `.env` to the panel's hostname, `npm ci` inside `auth-gate/`,
+and start it with `pm2 start ecosystem.config.js --only llm-auth-gate`. On first boot with no
+passkey it writes a single-use, 30-minute enrolment token to `auth-gate/state/enrolment-token`;
+open `$GATE_ORIGIN/auth/enrol?token=<that>` on the device you want to enrol. Later devices:
+`node server.mjs issue-token`. Keep a second vhost that skips the gate (a tailnet-only one, say)
+so a lost passkey never locks you out.
