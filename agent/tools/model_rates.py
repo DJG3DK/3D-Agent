@@ -1,7 +1,6 @@
-"""Per-model $/token rate table, loaded once from the LLM router's own
-config.yaml -- the same file that already defines these rates for the
-proxy's own billing, so there is exactly one place the base input/output
-rates are maintained.
+"""Per-model $/token rate table, loaded once: OpenRouter's live pricing for
+every model the LLM router's own config.yaml pins, with the config's own
+model_info rates as the fallback.
 
 Only used as a fallback for BudgetGuardMiddleware's cost read. LiteLLM's own
 computed response_metadata["token_usage"]["cost"] is preferred when present
@@ -20,9 +19,16 @@ prefix on every turn, so the overwhelming majority of a later call's "input
 tokens" are cache reads, not fresh ones -- treating all of them as full-price
 input (as a naive per-token calculation does) can overestimate real cost by
 several times on exactly the kind of long, looping conversation this exists
-to catch. config.yaml only carries the two base rates, so the cache-read
-rate is fetched from OpenRouter's own public, unauthenticated pricing
-endpoint instead, once per process lifetime, and merged in alongside them.
+to catch. All three rates are taken from OpenRouter's own public,
+unauthenticated pricing endpoint, once per process lifetime, because that is
+what the router is actually billed; config.yaml's two base rates are the
+fallback when OpenRouter is unreachable. An undated pin the catalog does not
+list by name (`qwen/qwen3.8-max` vs the catalog's `qwen3.8-max-0902`) is
+resolved through the per-model endpoints resource -- the miss used to fall
+back to full input price on cache reads and overstated one turn 4.7x.
+
+Even so, this is the fallback: the budget is enforced against the router's
+own billed cost wherever it can be had (see router_ledger.py).
 """
 
 import logging
@@ -45,18 +51,35 @@ LLM_ROUTER_CONFIG_PATH = Path(
     or (Path(__file__).resolve().parents[2] / "services" / "llm-router" / "config.yaml")
 )
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{model_id}/endpoints"
+
+# Log when config.yaml's rate and OpenRouter's current rate disagree by more
+# than this much: the config figure is decorative for OpenRouter-routed
+# models (the proxy bills from OpenRouter's own usage.cost), but a stale one
+# still misleads anyone reading the file.
+_DRIFT_WARN_RATIO = 1.25
 
 _rates: dict[str, dict[str, float]] | None = None
 
 
-def _fetch_cache_read_rates() -> dict[str, float]:
-    """{model_id: cache_read_cost_per_token}, from OpenRouter's public
-    models listing. Best-effort: an unreachable endpoint or a model without
-    published cache pricing just means no discount is applied for it --
-    estimate_cost falls back to charging cached tokens at the full input
-    rate, which overestimates but never underestimates against the budget
-    ceiling.
-    """
+def _pricing_of(entry: dict) -> dict[str, float] | None:
+    """{"input", "output", "cache_read"} from one OpenRouter pricing block, or
+    None when the base rates are missing or malformed. A missing cache-read
+    price means "no discount", so cache reads bill at the input rate."""
+    pricing = entry.get("pricing") or {}
+    try:
+        rates = {"input": float(pricing["prompt"]), "output": float(pricing["completion"])}
+        cache_read = pricing.get("input_cache_read")
+        rates["cache_read"] = float(cache_read) if cache_read is not None else rates["input"]
+        return rates
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _fetch_catalog_rates() -> dict[str, dict[str, float]]:
+    """{model_id: {"input", "output", "cache_read"}} per token, from
+    OpenRouter's public models listing. Best-effort: an unreachable endpoint
+    means an empty catalog, and every rate falls back to config.yaml."""
     try:
         resp = httpx.get(OPENROUTER_MODELS_URL, timeout=10)
         resp.raise_for_status()
@@ -64,16 +87,36 @@ def _fetch_cache_read_rates() -> dict[str, float]:
     except Exception as e:  # noqa: BLE001 -- pricing metadata, never worth failing a task over
         logger.warning("OpenRouter pricing fetch failed: %s", e)
         return {}
-    rates: dict[str, float] = {}
+    rates: dict[str, dict[str, float]] = {}
     for entry in data.get("data", []):
         model_id = entry.get("id")
-        cache_read = (entry.get("pricing") or {}).get("input_cache_read")
-        if model_id and cache_read is not None:
-            try:
-                rates[model_id] = float(cache_read)
-            except (TypeError, ValueError):
-                pass
+        pricing = _pricing_of(entry)
+        if model_id and pricing:
+            rates[model_id] = pricing
     return rates
+
+
+def _fetch_endpoint_rates(model_id: str) -> dict[str, float] | None:
+    """Rates for a model id the catalog does not list under that exact name.
+
+    OpenRouter lists dated snapshots under their dated id and serves the
+    undated alias by redirect -- `qwen/qwen3.8-max` is pinned in config.yaml,
+    the catalog only has `qwen/qwen3.8-max-0902`. The per-model endpoints
+    resource resolves the alias. Its pricing is per serving provider; the
+    dearest one is taken so the estimate errs high, never low -- the router's
+    billed figure replaces the estimate anyway (see router_ledger.py).
+    """
+    try:
+        resp = httpx.get(OPENROUTER_ENDPOINTS_URL.format(model_id=model_id), timeout=10)
+        resp.raise_for_status()
+        endpoints = (resp.json().get("data") or {}).get("endpoints") or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning("OpenRouter endpoint pricing fetch failed for %s: %s", model_id, e)
+        return None
+    priced = [p for p in (_pricing_of(e) for e in endpoints) if p]
+    if not priced:
+        return None
+    return {key: max(p[key] for p in priced) for key in ("input", "output", "cache_read")}
 
 
 def _load_rates() -> dict[str, dict[str, float]]:
@@ -83,10 +126,16 @@ def _load_rates() -> dict[str, dict[str, float]]:
     prefix off litellm_params.model -- mirror that here so lookups match)
     and by the config alias (pinned-role calls echo the alias, not the raw
     id -- see the alias branch below).
+
+    Rates come from OpenRouter's live pricing when it is reachable, because
+    that is what the router is actually billed: config.yaml's model_info is
+    the fallback, and a drift between the two is logged so the stale figure
+    gets fixed rather than trusted.
     """
     rates: dict[str, dict[str, float]] = {}
     cfg = yaml.safe_load(LLM_ROUTER_CONFIG_PATH.read_text())
-    cache_read_rates = _fetch_cache_read_rates()
+    catalog = _fetch_catalog_rates()
+    drift_reported: set[str] = set()  # one warning per raw id, however many aliases pin it
     for entry in cfg.get("model_list", []):
         litellm_params = entry.get("litellm_params") or {}
         model_info = entry.get("model_info") or {}
@@ -94,21 +143,35 @@ def _load_rates() -> dict[str, dict[str, float]]:
         stripped = raw.split("/", 1)[1] if raw.startswith("openrouter/") else raw
         input_cost = model_info.get("input_cost_per_token")
         output_cost = model_info.get("output_cost_per_token")
-        if stripped and input_cost is not None and output_cost is not None:
-            entry_rates = {
-                "input": float(input_cost),
-                "output": float(output_cost),
-                "cache_read": cache_read_rates.get(stripped, float(input_cost)),
-            }
-            rates[stripped] = entry_rates
-            # Also key by the config alias (model_name): pinned-alias calls
-            # echo the alias as the response's model_name --
-            # return_raw_model_name only applies to auto_router deployments.
-            # Without this, every pinned-role call would fall through the
-            # raw-id lookup and be costed at $0.0.
-            alias = entry.get("model_name")
-            if alias and alias not in rates:
-                rates[alias] = entry_rates
+        if not stripped or input_cost is None or output_cost is None:
+            continue
+        config_rates = {"input": float(input_cost), "output": float(output_cost)}
+        live = rates.get(stripped)  # the same raw id pinned under two aliases: one fetch
+        if live is None:
+            live = catalog.get(stripped)
+            if live is None and catalog and raw.startswith("openrouter/"):
+                live = _fetch_endpoint_rates(stripped)
+        if live is None:
+            entry_rates = {**config_rates, "cache_read": config_rates["input"]}
+        else:
+            entry_rates = dict(live)
+            for key in ("input", "output"):
+                a, b = config_rates[key], live[key]
+                if a and b and max(a, b) / min(a, b) > _DRIFT_WARN_RATIO and stripped not in drift_reported:
+                    drift_reported.add(stripped)
+                    logger.warning(
+                        "rate drift for %s: config.yaml says $%.2f/M %s, OpenRouter bills $%.2f/M -- using OpenRouter's",
+                        stripped, a * 1e6, key, b * 1e6,
+                    )
+        rates[stripped] = entry_rates
+        # Also key by the config alias (model_name): pinned-alias calls echo
+        # the alias as the response's model_name -- return_raw_model_name
+        # only applies to auto_router deployments. Without this, every
+        # pinned-role call would fall through the raw-id lookup and be
+        # costed at $0.0.
+        alias = entry.get("model_name")
+        if alias and alias not in rates:
+            rates[alias] = entry_rates
     return rates
 
 

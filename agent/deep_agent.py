@@ -5,6 +5,7 @@ keys) by the outer "work" node.
 """
 
 import json
+import warnings
 
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
@@ -22,6 +23,14 @@ from deepagents.backends.utils import file_data_to_string
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 from agent.config import Config, PROJECTS
+
+# langchain-openai cannot attach response headers on the structured-output
+# stream path (with_structured_output sets response_format) and warns on every
+# such call. Those calls are metered at their estimate, which is the documented
+# fallback -- the warning adds nothing per call.
+warnings.filterwarnings(
+    "ignore", message="Cannot currently include response headers when response_format is specified"
+)
 from agent import runtime_settings as _rs
 from agent.middleware.hidden_tools import HiddenToolsMiddleware
 from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddleware, BudgetTracker
@@ -505,6 +514,14 @@ def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None =
         temperature=0,
         timeout=timeout if timeout is not None else _rs.as_int("model_call_timeout_s"),
         stream_usage=True,
+        # include_response_headers: the proxy's x-litellm-call-id lands in
+        # response_metadata["headers"], which is how BudgetGuardMiddleware
+        # matches a call to the router's own billed cost for it
+        # (agent/tools/router_ledger.py). Streaming included: langchain-openai
+        # attaches the headers to the first chunk's generation_info, and
+        # langchain-core merges generation_info into the final message's
+        # response_metadata.
+        include_response_headers=True,
         reasoning_effort=reasoning_effort,
         # callbacks: how a model invoked OUTSIDE the graph's model node still
         # gets metered -- SummarizationMiddleware ainvoke()s its summary model

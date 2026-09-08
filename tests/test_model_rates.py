@@ -12,6 +12,23 @@ import pytest
 
 import agent.tools.model_rates as model_rates
 
+GLM_CONFIG_INPUT = 0.00000119   # config.yaml model_info for "openrouter/z-ai/glm-5.2"
+GLM_CONFIG_OUTPUT = 0.00000374
+
+
+@pytest.fixture(autouse=True)
+def offline_catalog(request, monkeypatch):
+    """Every test here gets a fresh rate table built from config.yaml alone,
+    unless it opts out with @pytest.mark.real_fetchers (the one real network
+    test) or installs its own catalog. Live rates now take precedence over
+    config.yaml when OpenRouter is reachable, so a test that asserts the
+    config figure must not be at the mercy of a price change."""
+    monkeypatch.setattr(model_rates, "_rates", None)
+    if "real_fetchers" in request.keywords:
+        return
+    monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {})
+    monkeypatch.setattr(model_rates, "_fetch_endpoint_rates", lambda model_id: None)
+
 
 def test_estimate_cost_returns_zero_for_unknown_model():
     assert model_rates.estimate_cost("totally/made-up-model", 1000, 1000) == 0.0
@@ -41,8 +58,6 @@ def test_estimate_cost_zero_tokens_is_zero_cost():
 
 
 def test_rates_cache_populates_once_and_is_reused(monkeypatch):
-    # Reset the module-level cache so this test controls exactly one load.
-    monkeypatch.setattr(model_rates, "_rates", None)
     load_calls = []
     real_load = model_rates._load_rates
 
@@ -71,8 +86,9 @@ def test_rates_cache_populates_once_and_is_reused(monkeypatch):
 
 
 def test_cache_read_tokens_billed_at_the_discounted_rate(monkeypatch):
-    monkeypatch.setattr(model_rates, "_rates", None)
-    monkeypatch.setattr(model_rates, "_fetch_cache_read_rates", lambda: {"z-ai/glm-5.2": 0.00000026})
+    monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
+        "z-ai/glm-5.2": {"input": GLM_CONFIG_INPUT, "output": GLM_CONFIG_OUTPUT, "cache_read": 0.00000026},
+    })
 
     cost = model_rates.estimate_cost("z-ai/glm-5.2", 118294, 376, cache_read_tokens=117888)
     fresh_input = 118294 - 117888
@@ -86,8 +102,9 @@ def test_cache_read_tokens_billed_at_the_discounted_rate(monkeypatch):
 
 
 def test_cache_read_tokens_clamped_to_input_tokens(monkeypatch):
-    monkeypatch.setattr(model_rates, "_rates", None)
-    monkeypatch.setattr(model_rates, "_fetch_cache_read_rates", lambda: {"z-ai/glm-5.2": 0.00000026})
+    monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
+        "z-ai/glm-5.2": {"input": GLM_CONFIG_INPUT, "output": GLM_CONFIG_OUTPUT, "cache_read": 0.00000026},
+    })
 
     # A malformed/inconsistent usage report (cache_read > input_tokens)
     # must never go negative on the "fresh" portion.
@@ -97,14 +114,14 @@ def test_cache_read_tokens_clamped_to_input_tokens(monkeypatch):
 
 
 def test_model_without_published_cache_rate_falls_back_to_full_input_price(monkeypatch):
-    monkeypatch.setattr(model_rates, "_rates", None)
-    monkeypatch.setattr(model_rates, "_fetch_cache_read_rates", lambda: {})  # no OpenRouter data for this model
+    # no OpenRouter data for this model (the autouse fixture's empty catalog)
 
     cost = model_rates.estimate_cost("z-ai/glm-5.2", 1000, 500, cache_read_tokens=800)
     expected = 1000 * 0.00000119 + 500 * 0.00000374  # cache tokens charged at full input rate, no discount
     assert cost == expected
 
 
+@pytest.mark.real_fetchers
 def test_real_openrouter_fetch_returns_a_well_formed_rate_table():
     """One real network call against OpenRouter's actual pricing endpoint,
     matching this project's own preference for verifying against real infra
@@ -113,9 +130,83 @@ def test_real_openrouter_fetch_returns_a_well_formed_rate_table():
     published prices can change), so this doesn't get flaky over a routine
     price update.
     """
-    rates = model_rates._fetch_cache_read_rates()
+    rates = model_rates._fetch_catalog_rates()
     assert isinstance(rates, dict)
     if not rates:
         pytest.skip("OpenRouter pricing endpoint unreachable from this environment")
     assert "z-ai/glm-5.3" in rates
-    assert 0 < rates["z-ai/glm-5.3"] < 0.00001  # plausible per-token dollar range, not a unit-mixup
+    glm = rates["z-ai/glm-5.3"]
+    assert set(glm) == {"input", "output", "cache_read"}
+    assert 0 < glm["cache_read"] <= glm["input"] < 0.00001  # plausible per-token dollar range, not a unit-mixup
+
+
+# ---------------------------------------------------------------------------
+# Live rates over config rates. The router is billed OpenRouter's usage.cost,
+# not config.yaml's model_info, so when the two disagree the estimate must
+# follow OpenRouter: on 2026-09-08 config.yaml carried $1.32/M for a model
+# OpenRouter had repriced to $0.58/M.
+# ---------------------------------------------------------------------------
+
+
+def test_live_catalog_rate_takes_precedence_over_config(monkeypatch):
+    monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
+        "z-ai/glm-5.2": {"input": 0.0000005, "output": 0.000001, "cache_read": 0.0000001},
+    })
+    cost = model_rates.estimate_cost("z-ai/glm-5.2", 1000, 500, cache_read_tokens=400)
+    assert cost == pytest.approx(600 * 0.0000005 + 400 * 0.0000001 + 500 * 0.000001)
+
+
+def test_alias_gets_the_same_live_rates_as_its_raw_id(monkeypatch):
+    monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
+        "z-ai/glm-5.2": {"input": 0.0000005, "output": 0.000001, "cache_read": 0.0000001},
+    })
+    rates = model_rates._load_rates()
+    aliases = [k for k, v in rates.items() if v is rates["z-ai/glm-5.2"] and k != "z-ai/glm-5.2"]
+    assert aliases, "the config alias pinned to glm-5.2 should share its rate entry"
+
+
+def test_undated_pin_missing_from_catalog_is_resolved_through_endpoints(monkeypatch):
+    """The 2026-09-08 miss: config pins qwen/qwen3.8-max, the catalog lists
+    only qwen3.8-max-0902, and the cache-read discount silently vanished."""
+    asked = []
+
+    def endpoints(model_id):
+        asked.append(model_id)
+        return {"input": 0.000002, "output": 0.000006, "cache_read": 0.00000025}
+
+    # A non-empty catalog that lacks the pinned id: the endpoints lookup runs.
+    monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {"some/other-model": {"input": 1e-6, "output": 2e-6, "cache_read": 1e-7}})
+    monkeypatch.setattr(model_rates, "_fetch_endpoint_rates", endpoints)
+    rates = model_rates._load_rates()
+    assert "z-ai/glm-5.2" in asked
+    assert rates["z-ai/glm-5.2"]["cache_read"] == 0.00000025
+
+
+def test_unreachable_catalog_skips_endpoint_lookups_and_uses_config(monkeypatch):
+    asked = []
+    monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {})
+    monkeypatch.setattr(model_rates, "_fetch_endpoint_rates", lambda model_id: asked.append(model_id))
+    rates = model_rates._load_rates()
+    assert asked == [], "no catalog at all means OpenRouter is down; do not fan out one request per model"
+    assert rates["z-ai/glm-5.2"] == {"input": GLM_CONFIG_INPUT, "output": GLM_CONFIG_OUTPUT, "cache_read": GLM_CONFIG_INPUT}
+
+
+@pytest.mark.real_fetchers  # stubs httpx itself, so the real fetcher must stay in place
+def test_endpoint_rates_take_the_dearest_provider():
+    payload = {"data": {"endpoints": [
+        {"pricing": {"prompt": "0.000001", "completion": "0.000004", "input_cache_read": "0.0000001"}},
+        {"pricing": {"prompt": "0.000002", "completion": "0.000003"}},  # no cache pricing: cache reads at input rate
+    ]}}
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return payload
+
+    import httpx
+    real_get = httpx.get
+    httpx.get = lambda url, timeout=10: FakeResp()
+    try:
+        rates = model_rates._fetch_endpoint_rates("vendor/model")
+    finally:
+        httpx.get = real_get
+    assert rates == {"input": 0.000002, "output": 0.000004, "cache_read": 0.000002}

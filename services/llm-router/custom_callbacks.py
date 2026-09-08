@@ -4,8 +4,9 @@ Appends one JSON line per completed request to logs/routing.jsonl, recording
 which underlying model actually answered (return_raw_model_name=true makes
 response.model the real deployment, not "smart-router") plus cost/tokens.
 This is what the review dashboard's "Router" tab reads to show live model
-usage, since litellm's own spend/usage API requires a Postgres DB we don't
-have set up.
+usage, and what the agent's budget guard reads back (agent/tools/
+router_ledger.py) to charge each call at the router's billed cost instead
+of its own estimate -- keyed by call_id, the proxy's x-litellm-call-id.
 """
 
 import json
@@ -82,6 +83,11 @@ class RoutingLogger(CustomLogger):
             routing_decision = metadata.get("routing_decision") or {}
             entry = {
                 "ts": time.time(),
+                # The proxy returns this same id to the caller as the
+                # x-litellm-call-id response header. The agent's budget guard
+                # keys on it to replace its per-call estimate with the cost
+                # below -- OpenRouter's own usage.cost for the request.
+                "call_id": kwargs.get("litellm_call_id"),
                 "requested_model": requested,
                 "routed_model": model,
                 "tier": routing_decision.get("tier"),
@@ -104,6 +110,7 @@ class RoutingLogger(CustomLogger):
         try:
             entry = {
                 "ts": time.time(),
+                "call_id": kwargs.get("litellm_call_id"),
                 "requested_model": kwargs.get("model"),
                 "routed_model": None,
                 "error": True,
