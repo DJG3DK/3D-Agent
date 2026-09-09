@@ -948,6 +948,19 @@ class ResumeTaskRequest(BaseModel):
     message: str | None = None
 
 
+def _check_budget_topup(delta: float) -> None:
+    """Reject a resume top-up outside [0, _MAX_BUDGET_TOPUP_USD]. Zero is a
+    valid delta: the dashboard's resume panel only shows the budget field when
+    the task is nearly out of money and sends 0 otherwise (a merge failure or
+    an operator Stop has nothing to do with cost), and the escalated branch of
+    resume_task already words its note for "no budget added". Rejecting 0
+    (as this did until 2026-09-09) left every such resume stuck on a 400 with
+    no field on screen to fix."""
+    if not (0 <= delta <= _MAX_BUDGET_TOPUP_USD):
+        raise HTTPException(
+            400, f"additional_budget_usd must be between 0 and ${_MAX_BUDGET_TOPUP_USD:.2f}")
+
+
 class ApprovalRequest(BaseModel):
     decision: Literal["approve", "reject", "respond"]
     message: str | None = None  # only meaningful for a reject -- explains why to the model
@@ -3106,11 +3119,13 @@ async def resume_task(task_id: str, req: ResumeTaskRequest, user: User = Depends
         # A bare float let a negative value shrink the ceiling below what has
         # already been spent (making the guard fire immediately and look like a
         # crash) and let an enormous one defeat the budget entirely. Bound it to a
-        # sane top-up range; the field is a *delta*, not a new total.
-        if not (0 < req.additional_budget_usd <= _MAX_BUDGET_TOPUP_USD):
-            raise HTTPException(
-                400, f"additional_budget_usd must be greater than 0 and at most "
-                     f"${_MAX_BUDGET_TOPUP_USD:.2f}")
+        # sane top-up range; the field is a *delta*, not a new total. Zero is a
+        # valid delta: the dashboard's resume panel only shows the budget field
+        # when the task is nearly out of money and sends 0 otherwise (a merge
+        # failure or an operator Stop has nothing to do with cost), and the
+        # escalated branch below already words the note for "no budget added".
+        # Rejecting 0 left every such resume stuck on a 400 with no field to fix.
+        _check_budget_topup(req.additional_budget_usd)
         new_budget = values["budget_usd"] + req.additional_budget_usd
         # max_iterations is set once at task creation (40) and, unlike
         # budget_usd, was never bumped on resume -- every work<->verify_and_ship
