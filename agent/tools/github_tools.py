@@ -1,0 +1,204 @@
+"""Read-only GitHub pull-request access for the planner and the coder.
+
+"See PR 12 and fix the audit issues" needs the agent to read a pull
+request: its description, its diff, the review comments with file and line,
+and the check runs. Until 2026-09-09 nothing here could: the agent knows a
+project as a local checkout, and the private repos are invisible to the
+planner's web browser.
+
+Host-side on purpose. The token is a secret, and the sandbox is built so the
+coder never holds one (agent/tools/sandbox.py, _safe_base_env). These tools
+run in the agent process, call the API with GITHUB_TOKEN, and hand the model
+TEXT -- the same contract as read_project_file. Which GitHub repo a project
+maps to is read from the checkout's own `origin` remote, so nothing is
+configured twice.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import subprocess
+
+import httpx
+from langchain_core.tools import tool
+
+from agent.config import PROJECTS
+from agent.tools.tool_errors import tool_errors_to_text
+
+logger = logging.getLogger("3d-agent")
+
+API = "https://api.github.com"
+_TIMEOUT = 20
+_DIFF_CAP = 60_000        # chars of diff handed to the model
+_COMMENT_CAP = 40         # review comments shown
+_LIST_CAP = 30            # PRs listed
+_REMOTE_RE = re.compile(r"(?:git@github\.com:|https?://github\.com/)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def repo_slug_from_remote(url: str) -> str | None:
+    """'git@github.com:DJG3DK/3d-bot.git' or 'https://github.com/DJG3DK/3d-bot' -> 'DJG3DK/3d-bot'."""
+    m = _REMOTE_RE.match((url or "").strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+_slug_cache: dict[str, str | None] = {}
+
+
+def resolve_slug(repo: str) -> str | None:
+    """The GitHub owner/name for a configured project, from its checkout's origin."""
+    if repo in _slug_cache:
+        return _slug_cache[repo]
+    proj = PROJECTS.get(repo) or {}
+    slug = None
+    for path in (proj.get("live"), proj.get("sandbox")):
+        if not path:
+            continue
+        try:
+            r = subprocess.run(["git", "-C", path, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=10)
+        except Exception:  # noqa: BLE001
+            continue
+        if r.returncode == 0:
+            slug = repo_slug_from_remote(r.stdout)
+            if slug:
+                break
+    _slug_cache[repo] = slug
+    return slug
+
+
+def _headers(token: str, accept: str = "application/vnd.github+json") -> dict:
+    return {"Authorization": f"Bearer {token}", "Accept": accept, "X-GitHub-Api-Version": "2022-11-28"}
+
+
+def _get(token: str, path: str, accept: str = "application/vnd.github+json", params: dict | None = None):
+    r = httpx.get(f"{API}{path}", headers=_headers(token, accept), params=params, timeout=_TIMEOUT)
+    if r.status_code == 404:
+        raise LookupError("not found (or the token has no access to this repository)")
+    if r.status_code in (401, 403):
+        raise PermissionError(f"GitHub refused ({r.status_code}): the token is missing, expired, or lacks access")
+    r.raise_for_status()
+    return r.text if accept.endswith("diff") else r.json()
+
+
+def fetch_pull_request(token: str, slug: str, number: int) -> dict:
+    """Everything the model needs about one PR, as plain data."""
+    pr = _get(token, f"/repos/{slug}/pulls/{number}")
+    diff = _get(token, f"/repos/{slug}/pulls/{number}", accept="application/vnd.github.diff")
+    review_comments = _get(token, f"/repos/{slug}/pulls/{number}/comments", params={"per_page": 100})
+    issue_comments = _get(token, f"/repos/{slug}/issues/{number}/comments", params={"per_page": 100})
+    reviews = _get(token, f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 50})
+    checks = []
+    head_sha = (pr.get("head") or {}).get("sha")
+    if head_sha:
+        try:
+            runs = _get(token, f"/repos/{slug}/commits/{head_sha}/check-runs", params={"per_page": 50})
+            checks = runs.get("check_runs") or []
+        except Exception as e:  # noqa: BLE001 -- checks are optional detail
+            logger.info("github: check-runs unavailable for %s#%s: %s", slug, number, e)
+    return {"pr": pr, "diff": diff, "review_comments": review_comments, "issue_comments": issue_comments, "reviews": reviews, "checks": checks}
+
+
+def format_pull_request(data: dict, part: str = "all") -> str:
+    pr = data["pr"]
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    lines = [
+        f"PR #{pr.get('number')}: {pr.get('title')}",
+        f"state: {pr.get('state')}{' (draft)' if pr.get('draft') else ''} | author: {(pr.get('user') or {}).get('login')} | "
+        f"branch: {head.get('ref')} -> {base.get('ref')} | head: {str(head.get('sha'))[:10]} | "
+        f"+{pr.get('additions')} -{pr.get('deletions')} in {pr.get('changed_files')} files",
+        f"url: {pr.get('html_url')}",
+    ]
+    if part in ("all", "summary"):
+        body = (pr.get("body") or "").strip()
+        lines += ["", "DESCRIPTION:", body or "(none)"]
+    if part in ("all", "checks", "summary"):
+        checks = data.get("checks") or []
+        if checks:
+            lines += ["", "CHECKS:"]
+            lines += [f"- {c.get('name')}: {c.get('status')} / {c.get('conclusion') or '-'}" for c in checks]
+    if part in ("all", "comments", "summary"):
+        rc = data.get("review_comments") or []
+        ic = data.get("issue_comments") or []
+        rv = [r for r in (data.get("reviews") or []) if (r.get("body") or "").strip()]
+        if rv:
+            lines += ["", f"REVIEWS ({len(rv)}):"]
+            lines += [f"- [{r.get('state')}] {(r.get('user') or {}).get('login')}: {(r.get('body') or '').strip()[:800]}" for r in rv[:10]]
+        if rc:
+            lines += ["", f"REVIEW COMMENTS ON THE DIFF ({len(rc)}, showing {min(len(rc), _COMMENT_CAP)}):"]
+            for c in rc[:_COMMENT_CAP]:
+                where = f"{c.get('path')}:{c.get('line') or c.get('original_line') or '?'}"
+                lines.append(f"- {where} ({(c.get('user') or {}).get('login')}): {(c.get('body') or '').strip()[:600]}")
+        if ic:
+            lines += ["", f"CONVERSATION COMMENTS ({len(ic)}):"]
+            lines += [f"- {(c.get('user') or {}).get('login')}: {(c.get('body') or '').strip()[:600]}" for c in ic[:_COMMENT_CAP]]
+        if not (rv or rc or ic):
+            lines += ["", "COMMENTS: none"]
+    if part in ("all", "diff"):
+        diff = data.get("diff") or ""
+        if len(diff) > _DIFF_CAP:
+            diff = diff[:_DIFF_CAP] + f"\n... (diff truncated at {_DIFF_CAP} chars of {len(data['diff'])}; ask for part='diff' on a narrower PR, or read the changed files)"
+        lines += ["", "DIFF:", diff or "(empty)"]
+    return "\n".join(lines)
+
+
+def format_pull_request_list(slug: str, prs: list, state: str) -> str:
+    if not prs:
+        return f"No {state} pull requests on {slug}."
+    lines = [f"{len(prs)} {state} pull request(s) on {slug}" + (f" (showing {_LIST_CAP})" if len(prs) > _LIST_CAP else "") + ":"]
+    for p in prs[:_LIST_CAP]:
+        lines.append(f"- #{p.get('number')} [{p.get('state')}{', draft' if p.get('draft') else ''}] {p.get('title')} -- {(p.get('user') or {}).get('login')}, {(p.get('head') or {}).get('ref')} -> {(p.get('base') or {}).get('ref')}")
+    return "\n".join(lines)
+
+
+def make_github_tools(token: str | None, allowed_repos: list[str] | None = None) -> list:
+    """The two read-only PR tools, or an empty list when no token is set (the
+    prompts only mention them when they exist)."""
+    if not token:
+        return []
+
+    def _slug_for(repo: str) -> str:
+        if repo not in PROJECTS or (allowed_repos is not None and repo not in allowed_repos):
+            raise ValueError(f"unknown or inaccessible repo {repo!r}")
+        slug = resolve_slug(repo)
+        if not slug:
+            raise ValueError(f"{repo!r} has no GitHub origin remote, so it has no pull requests here")
+        return slug
+
+    @tool
+    @tool_errors_to_text
+    def github_pull_request(repo: str, number: int, part: str = "all") -> str:
+        """Read a GitHub pull request on one of the configured projects: its
+        description, check results, review comments (with file:line), and diff.
+        `part` narrows the output: "summary" (description + checks + comments,
+        no diff), "diff", "comments", "checks", or "all". Use this whenever a
+        request names a PR ("fix the audit issues on PR 12"): the findings you
+        must address are in the review comments, and the diff is the code they
+        refer to."""
+        try:
+            slug = _slug_for(repo)
+            data = fetch_pull_request(token, slug, int(number))
+        except (ValueError, LookupError, PermissionError) as e:
+            return f"ERROR: {e}"
+        except httpx.HTTPError as e:
+            return f"ERROR: GitHub request failed: {e}"
+        part = part if part in ("all", "summary", "diff", "comments", "checks") else "all"
+        return format_pull_request(data, part)
+
+    @tool
+    @tool_errors_to_text
+    def github_pull_requests(repo: str, state: str = "open") -> str:
+        """List a project's GitHub pull requests: number, state, title, author
+        and branches. `state` is "open" (default), "closed" or "all". Use it
+        to find the PR a request refers to by title when no number was given."""
+        try:
+            slug = _slug_for(repo)
+            state = state if state in ("open", "closed", "all") else "open"
+            prs = _get(token, f"/repos/{slug}/pulls", params={"state": state, "per_page": 50, "sort": "updated", "direction": "desc"})
+        except (ValueError, LookupError, PermissionError) as e:
+            return f"ERROR: {e}"
+        except httpx.HTTPError as e:
+            return f"ERROR: GitHub request failed: {e}"
+        return format_pull_request_list(slug, prs, state)
+
+    return [github_pull_request, github_pull_requests]

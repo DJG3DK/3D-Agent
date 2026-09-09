@@ -27,6 +27,9 @@ class Config:
     smtp_pass: str
     smtp_from: str
     admin_email: str
+    # Optional: fine-grained, read-only, selected repos. Enables the GitHub
+    # pull-request tools (agent/tools/github_tools.py); absent = tools absent.
+    github_token: str | None = None
 
 
 def load_config() -> Config:
@@ -51,6 +54,7 @@ def load_config() -> Config:
         smtp_pass=os.environ["SMTP_PASS"],
         smtp_from=os.environ["SMTP_FROM"],
         admin_email=os.environ.get("ADMIN_EMAIL", "admin@example.com"),
+        github_token=os.environ.get("GITHUB_TOKEN") or None,
     )
 
 

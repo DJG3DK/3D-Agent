@@ -60,4 +60,4 @@ def test_search_is_not_counted_against_the_read_budget(tools, tmp_path):
 
 
 def test_knob_is_on_the_settings_page():
-    assert rs.KNOBS["planning_read_budget"]["default"] == 30
+    assert rs.KNOBS["planning_read_budget"]["default"] == 50

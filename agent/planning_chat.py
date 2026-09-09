@@ -90,6 +90,7 @@ from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddle
 from agent.middleware.pinned_brief import BriefFirstMiddleware, PinnedBriefMiddleware
 from agent.model_config import resolve_alias
 from agent.tools.agent_tools import make_agent_tools
+from agent.tools.github_tools import make_github_tools
 from agent.tools.planning_tools import make_planning_tools
 from deepagents.backends import StoreBackend
 
@@ -203,6 +204,11 @@ files it scanned and what to change -- never rerun it unchanged, and never open 
 to find something a search would find in one call.
 - find_files(repo, glob, path="."): the repo files matching a glob ("**/*.css"), .gitignore-aware -- the \
 answer to "where are all the X files", cheaper than listing directories one by one.
+- github_pull_request(repo, number, part="all") / github_pull_requests(repo, state="open"): read a GitHub pull \
+request (description, checks, review comments with file:line, diff) or list them. When the request names a \
+PR, read it FIRST -- the review comments are the findings a fix has to address -- and put each finding in \
+the brief and the plan. These tools exist only when the deployment has a GitHub token; if they are absent, \
+say so rather than guessing at a PR's contents.
 - write_file: your own write access is limited to /memories/AGENTS.md (this project's memory) -- use it to \
 record a durable fact worth remembering for next time (a decision made, a constraint discovered, a \
 direction the user confirmed). Don't use it for anything else; everything else you "write" doesn't \
@@ -303,6 +309,7 @@ async def build_planning_agent(
     project_tools, _ = make_agent_tools(repo_root)
     tool_by_name = {t.name: t for t in project_tools}
     skills_manifest = await load_skills_manifest(repo, store)
+    github_tools = make_github_tools(getattr(config, "github_token", None), allowed_repos)
     planning_tools, plan_ref = make_planning_tools(
         existing_plan, allowed_repos, existing_brief=existing_brief, skills_manifest=skills_manifest,
     )
@@ -347,7 +354,7 @@ async def build_planning_agent(
         planning_model_role = "agent-planning-chat-hard" if difficulty == "HARD" else "agent-planning-chat"
     agent = create_deep_agent(
         model=llm_for_role(config, planning_model_role, reasoning_effort="high", timeout=_rs.as_int("planning_model_call_timeout_s")),
-        tools=[tool_by_name["describe_image"], *planning_tools],
+        tools=[tool_by_name["describe_image"], *planning_tools, *github_tools],
         system_prompt=PLANNING_SYSTEM_PROMPT.format(
             repo=repo,
             other_repos=other_repos,

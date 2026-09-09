@@ -38,7 +38,7 @@ KNOBS: dict[str, dict] = {
             "after save_plan. The draft gate: reading is never the deliverable."
         ),
         "unit": "reads",
-        "default": 30,
+        "default": 50,
         "min": 5,
         "max": 500,
         "env": "PLANNING_READ_BUDGET",

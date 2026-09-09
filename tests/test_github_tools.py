@@ -1,0 +1,113 @@
+"""Read-only GitHub pull-request tools (agent/tools/github_tools.py):
+slug resolution from the checkout's remote, formatting of what the model
+sees, the no-token case, and wiring into both agents."""
+
+import agent.tools.github_tools as gh
+from agent.tools.github_tools import (
+    format_pull_request, format_pull_request_list, make_github_tools, repo_slug_from_remote,
+)
+
+
+def test_slug_from_ssh_and_https_remotes():
+    assert repo_slug_from_remote("git@github.com:DJG3DK/3d-bot.git") == "DJG3DK/3d-bot"
+    assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent") == "DJG3DK/3D-Agent"
+    assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent.git\n") == "DJG3DK/3D-Agent"
+    assert repo_slug_from_remote("git@gitlab.com:x/y.git") is None
+    assert repo_slug_from_remote("") is None
+
+
+def _data():
+    return {
+        "pr": {"number": 12, "title": "Audit fixes", "state": "open", "draft": False, "user": {"login": "reviewer"},
+               "head": {"ref": "audit/fixes", "sha": "abcdef1234567890"}, "base": {"ref": "main"},
+               "additions": 10, "deletions": 3, "changed_files": 2, "html_url": "https://github.com/o/r/pull/12",
+               "body": "Addresses the S1-S3 audit findings."},
+        "diff": "diff --git a/src/a.js b/src/a.js\n+const x = 1;\n",
+        "review_comments": [{"path": "src/a.js", "line": 42, "user": {"login": "auditor"}, "body": "S1: this can divide by zero"}],
+        "issue_comments": [{"user": {"login": "danny"}, "body": "please also fix S3"}],
+        "reviews": [{"state": "CHANGES_REQUESTED", "user": {"login": "auditor"}, "body": "three findings"}],
+        "checks": [{"name": "CI", "status": "completed", "conclusion": "failure"}],
+    }
+
+
+def test_full_format_carries_every_section_the_model_needs():
+    out = format_pull_request(_data(), "all")
+    assert out.startswith("PR #12: Audit fixes")
+    assert "audit/fixes -> main" in out and "+10 -3 in 2 files" in out
+    assert "DESCRIPTION:\nAddresses the S1-S3 audit findings." in out
+    assert "- CI: completed / failure" in out
+    assert "[CHANGES_REQUESTED] auditor: three findings" in out
+    assert "- src/a.js:42 (auditor): S1: this can divide by zero" in out
+    assert "- danny: please also fix S3" in out
+    assert "DIFF:\ndiff --git a/src/a.js" in out
+
+
+def test_parts_narrow_the_output():
+    assert "DIFF:" not in format_pull_request(_data(), "summary")
+    assert "src/a.js:42" in format_pull_request(_data(), "summary")
+    d = format_pull_request(_data(), "diff")
+    assert "DIFF:" in d and "REVIEW COMMENTS" not in d
+    assert "COMMENTS: none" in format_pull_request({**_data(), "review_comments": [], "issue_comments": [], "reviews": []}, "comments")
+
+
+def test_a_huge_diff_is_truncated_with_a_way_forward():
+    data = {**_data(), "diff": "x" * 100_000}
+    out = format_pull_request(data, "diff")
+    assert "diff truncated at 60000 chars of 100000" in out
+
+
+def test_list_format():
+    prs = [{"number": 16, "state": "open", "draft": False, "title": "chore: prettier", "user": {"login": "d"}, "head": {"ref": "chore/prettier"}, "base": {"ref": "main"}}]
+    assert "- #16 [open] chore: prettier -- d, chore/prettier -> main" in format_pull_request_list("o/r", prs, "open")
+    assert format_pull_request_list("o/r", [], "closed") == "No closed pull requests on o/r."
+
+
+def test_no_token_means_no_tools():
+    assert make_github_tools(None) == [] and make_github_tools("") == []
+
+
+def test_tools_resolve_repo_via_remote_and_report_errors_as_text(monkeypatch):
+    monkeypatch.setattr(gh, "PROJECTS", {"demo": {"sandbox": "/nowhere"}})
+    monkeypatch.setattr(gh, "_slug_cache", {})
+    monkeypatch.setattr(gh, "resolve_slug", lambda repo: "o/r")
+    calls = []
+
+    def fake_fetch(token, slug, number):
+        calls.append((token, slug, number))
+        return _data()
+
+    monkeypatch.setattr(gh, "fetch_pull_request", fake_fetch)
+    tools = {t.name: t for t in make_github_tools("tok")}
+    out = tools["github_pull_request"].invoke({"repo": "demo", "number": 12, "part": "summary"})
+    assert calls == [("tok", "o/r", 12)] and out.startswith("PR #12")
+    assert tools["github_pull_request"].invoke({"repo": "unknown", "number": 1}).startswith("ERROR: unknown or inaccessible repo")
+    assert tools["github_pull_request"].invoke({"repo": "demo", "number": 1, "part": "bogus"}).startswith("PR #12"), "an unknown part falls back to all"
+
+
+def test_not_found_and_auth_failures_are_text_not_exceptions(monkeypatch):
+    monkeypatch.setattr(gh, "PROJECTS", {"demo": {"sandbox": "/nowhere"}})
+    monkeypatch.setattr(gh, "resolve_slug", lambda repo: "o/r")
+
+    def not_found(token, slug, number):
+        raise LookupError("not found (or the token has no access to this repository)")
+
+    monkeypatch.setattr(gh, "fetch_pull_request", not_found)
+    tools = {t.name: t for t in make_github_tools("tok")}
+    assert tools["github_pull_request"].invoke({"repo": "demo", "number": 999}).startswith("ERROR: not found")
+
+
+def test_allowed_repos_scope_is_enforced(monkeypatch):
+    monkeypatch.setattr(gh, "PROJECTS", {"a": {"sandbox": "/x"}, "b": {"sandbox": "/y"}})
+    monkeypatch.setattr(gh, "resolve_slug", lambda repo: "o/r")
+    monkeypatch.setattr(gh, "fetch_pull_request", lambda t, s, n: _data())
+    tools = {t.name: t for t in make_github_tools("tok", allowed_repos=["a"])}
+    assert tools["github_pull_request"].invoke({"repo": "b", "number": 1}).startswith("ERROR")
+    assert tools["github_pull_request"].invoke({"repo": "a", "number": 1}).startswith("PR #12")
+
+
+def test_planner_and_coder_get_the_tools_only_with_a_token():
+    import inspect
+    import agent.deep_agent as da
+    import agent.planning_chat as pc
+    assert "make_github_tools(getattr(config, \"github_token\", None)" in inspect.getsource(da)
+    assert "make_github_tools(getattr(config, \"github_token\", None), allowed_repos)" in inspect.getsource(pc)

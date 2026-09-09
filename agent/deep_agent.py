@@ -24,6 +24,7 @@ from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 from agent.config import Config, PROJECTS
 from agent.frontend_route import CODER_ROLE
+from agent.tools.github_tools import make_github_tools
 from agent.memory_freshness import memory_with_freshness
 
 # langchain-openai cannot attach response headers on the structured-output
@@ -816,6 +817,11 @@ as a string, never actually called the function. It would pass even if the logic
 broken (wrong lock key, called with the wrong argument, a race condition mishandled). Do not write \
 this kind of test. Ever.
 
+If the task names a GitHub pull request, read it with `github_pull_request(repo, number)` BEFORE planning \
+the work: the review comments (file:line) are the findings to address, the diff is the code they refer to, \
+and the checks say what is failing. Treat each review comment as a todo. (The tool exists only when this \
+deployment has a GitHub token; if it is missing, say so instead of guessing.)
+
 Before reporting a test as done, call the `run_checks` tool yourself to confirm it actually runs \
 and actually passes -- and read what it's asserting one more time: would this test fail if the \
 underlying logic were subtly wrong? If you're not sure, it isn't a real test yet.
@@ -968,7 +974,12 @@ async def build_deep_agent(
     # image has no way to actually see one -- `read` returns raw bytes as
     # text (not a description), and the built-in read_file tool can't reach
     # the real repo filesystem at all (see _FILESYSTEM_GUIDANCE).
-    read_only_tools = [tool_by_name["read"], tool_by_name["bash"], tool_by_name["describe_image"]]
+    # GitHub PR tools (read-only, host-side, only when a token is configured):
+    # the coordinator, the investigator and the general-purpose seat all read
+    # PRs; the test-writer has no use for them.
+    github_tools = make_github_tools(getattr(config, "github_token", None))
+    project_tools = [*project_tools, *github_tools]
+    read_only_tools = [tool_by_name["read"], tool_by_name["bash"], tool_by_name["describe_image"], *github_tools]
     if db_tool is not None:
         read_only_tools.append(db_tool)
     run_checks_tool = _make_run_checks_tool(repo_root, repo)
