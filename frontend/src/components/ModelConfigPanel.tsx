@@ -14,6 +14,7 @@ import "./ModelConfigPanel.css";
 const ROLE_ORDER = [
   "agent-planner",
   "agent-coder",
+  "agent-coder-frontend",
   "agent-investigator",
   "agent-test-writer",
   "agent-summarizer",
@@ -23,6 +24,7 @@ const ROLE_ORDER = [
   "agent-classifier",
   "agent-planning-chat",
   "agent-planning-chat-hard",
+  "agent-planning-chat-frontend",
   "agent-demo-chat",
   "agent-reviewer",
 ];
@@ -32,8 +34,8 @@ const ROLE_ORDER = [
 // every group still renders, in a trailing "Other" group -- same
 // never-hide-a-role rule as ROLE_ORDER.
 const ROLE_GROUPS: [string, string[]][] = [
-  ["Build pipeline", ["agent-planner", "agent-coder", "agent-investigator", "agent-test-writer", "agent-reviewer"]],
-  ["Planning chat", ["agent-planning-chat", "agent-planning-chat-hard", "agent-classifier"]],
+  ["Build pipeline", ["agent-planner", "agent-coder", "agent-coder-frontend", "agent-investigator", "agent-test-writer", "agent-reviewer"]],
+  ["Planning chat", ["agent-planning-chat", "agent-planning-chat-hard", "agent-planning-chat-frontend", "agent-classifier"]],
   ["Support", ["agent-summarizer", "agent-vision", "agent-cartographer", "agent-consolidator", "agent-demo-chat"]],
 ];
 

@@ -25,6 +25,7 @@ from agent.tools.model_rates import LLM_ROUTER_CONFIG_PATH, OPENROUTER_MODELS_UR
 MANAGED_ROLES = {
     "agent-planner": "Planner",
     "agent-coder": "Coder",
+    "agent-coder-frontend": "Coder (Frontend)",
     "agent-investigator": "Investigator",
     "agent-test-writer": "Test Writer",
     "agent-summarizer": "Summarizer",
@@ -34,6 +35,7 @@ MANAGED_ROLES = {
     "agent-classifier": "Classifier",
     "agent-planning-chat": "Planning Chat (Easy)",
     "agent-planning-chat-hard": "Planning Chat (Hard)",
+    "agent-planning-chat-frontend": "Planning Chat (Frontend)",
     "agent-demo-chat": "Demo Chat (public)",
     # The commit reviewer. It is a separate service (commit-reviewer/reviewer.js)
     # and deliberately independent of the agent, but "independent" did not have to
