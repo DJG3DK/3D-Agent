@@ -88,3 +88,36 @@ def test_skill_bodies_stay_within_progressive_disclosure_budget():
         text = (SKILLS_ROOT / rel_dir / "SKILL.md").read_text()
         assert len(text) / 4 < 5000, f"{rel_dir}: SKILL.md likely over 5k tokens"
         assert text.count("\n") < 500, f"{rel_dir}: SKILL.md over 500 lines"
+
+
+def test_blocked_skills_are_never_seed_targets(tmp_path):
+    """j-space is blocked by operator decision (2026-09-08): even if a copy sits
+    in skills/local/, it must not be seeded anywhere."""
+    (tmp_path / "local" / "j-space").mkdir(parents=True)
+    (tmp_path / "local" / "j-space" / "SKILL.md").write_text("---\nname: j-space\ndescription: blocked\n---\n")
+    (tmp_path / "local" / "keep").mkdir()
+    (tmp_path / "local" / "keep" / "SKILL.md").write_text("---\nname: keep\ndescription: fine\n---\n")
+    targets = {rel: repos for rel, repos in seed_skills._seed_targets(tmp_path, ["r1"]).items()
+               if Path(rel).name not in seed_skills.BLOCKED_SKILLS}
+    assert "local/keep" in targets and "local/j-space" not in targets
+    assert "j-space" in seed_skills.BLOCKED_SKILLS
+
+
+async def test_unregister_skill_removes_manifest_entry_and_files():
+    from langgraph.store.memory import InMemoryStore
+
+    from agent.deep_agent import load_skills_manifest, seed_skill, skills_namespace, unregister_skill
+
+    store = InMemoryStore()
+    await seed_skill("r1", store, "j-space", "blocked", "---\nname: j-space\ndescription: x\n---\n")
+    await seed_skill("r1", store, "keep", "fine", "---\nname: keep\ndescription: y\n---\n")
+    ns = skills_namespace("r1")(None)
+    await store.aput(ns, "/j-space/modules/focus.md", {"content": "..."})
+
+    removed = await unregister_skill("r1", store, "j-space")
+
+    assert removed == 2
+    assert await load_skills_manifest("r1", store) == {"keep": "fine"}
+    remaining = sorted(i.key for i in await store.asearch(ns, limit=50))
+    assert remaining == ["/_manifest.json", "/keep/SKILL.md"]
+    assert await unregister_skill("r1", store, "j-space") == 0, "idempotent"

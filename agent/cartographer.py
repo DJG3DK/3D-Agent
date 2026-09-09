@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import subprocess
 from collections import Counter
 from pathlib import Path
@@ -40,13 +41,25 @@ from langgraph.store.base import BaseStore
 
 from agent.config import PROJECTS, Config
 from agent.deep_agent import (
+    MEMORY_PATH,
     project_namespace,
+    route_local_path,
     seed_skill,
 )
 from deepagents.backends.store import StoreBackend
 
+logger = logging.getLogger("3d-agent")
+
+# The project memory both agents load, at the key the project namespace stores it under.
+_MEMORY_FILE = route_local_path("/memories/", MEMORY_PATH)
+
 SKILL_NAME = "codebase-map"
 MAP_MARKER_PATH = "/.last_mapped"
+CHANGES_SKILL_NAME = "recent-changes"
+CHANGES_MARKER_PATH = "/.last_changes_head"
+CHANGES_COMMITS = 30            # newest commits the changelog skill carries
+CHANGES_BODY_LINES = 14         # of each commit message body
+CHANGES_FILES = 12              # of each commit's touched files
 
 # Directories that are never part of a repo's architecture. Walking them is
 # both slow and actively misleading -- a node_modules tree would dominate the
@@ -253,6 +266,123 @@ Rules:
 """
 
 
+def build_recent_changes(repo: str, repo_root: str) -> tuple[str, str]:
+    """(HEAD sha, Markdown) -- the last CHANGES_COMMITS commits with their
+    message bodies and touched files, plus which files those commits touched
+    most. Deterministic and model-free: this repo's commit messages already
+    say WHY, so summarising them would only add cost and a chance to be
+    wrong. The operator's 2026-09-08 planning session opened with "a lot of
+    changes have happened to this repo, so your memory is stale" and the
+    planner answered by re-reading the repo for twenty minutes; this is the
+    one read that answers that question."""
+    head = _run(["git", "rev-parse", "HEAD"], repo_root)
+    if not head:
+        return "", ""
+    sep = "\x1e"
+    raw = _run(
+        ["git", "log", f"-{CHANGES_COMMITS}", "--date=short", "--name-only",
+         f"--pretty=format:{sep}%h%x1f%ad%x1f%an%x1f%s%x1f%b"],
+        repo_root,
+    )
+    commits: list[dict] = []
+    touched: Counter = Counter()
+    for chunk in raw.split(sep):
+        chunk = chunk.strip("\n")
+        if not chunk:
+            continue
+        header, _, files_blob = chunk.partition("\n\n") if "\x1f" in chunk else (chunk, "", "")
+        parts = header.split("\x1f")
+        if len(parts) < 5:
+            continue
+        sha, day, subject, body = parts[0], parts[1], parts[3], "\x1f".join(parts[4:])  # parts[2] is the author
+        # body and file list are separated by the blank line git emits before
+        # --name-only output; the body itself may contain blank lines, so take
+        # the file list as the trailing run of path-looking lines instead.
+        lines = (body + ("\n\n" + files_blob if files_blob else "")).split("\n")
+        files: list[str] = []
+        while lines and (not lines[-1].strip() or ("/" in lines[-1] or "." in lines[-1]) and " " not in lines[-1].strip()):
+            line = lines.pop().strip()
+            if line:
+                files.insert(0, line)
+        body_text = "\n".join(line.rstrip() for line in lines).strip()
+        files = [f for f in files if not any(part in SKIP_DIRS for part in Path(f).parts)]
+        touched.update(files)
+        commits.append({"sha": sha, "date": day, "subject": subject, "body": body_text, "files": files})
+    if not commits:
+        return head, ""
+    out = [
+        f"# Recent changes in {repo}",
+        "",
+        f"The newest {len(commits)} commits, newest first, as of {commits[0]['date']} (HEAD {head[:10]}). "
+        "Each entry is the commit's own message -- the WHY is in there -- followed by the files it touched. "
+        "Read this before concluding that memory or the codebase map is out of date: if the thing you are "
+        "planning around changed recently, the change and its reasoning are here.",
+        "",
+        "## Most-touched files in these commits",
+        "",
+    ]
+    out += [f"- `{path}` ({n} commits)" for path, n in touched.most_common(15)]
+    out += ["", "## Commits", ""]
+    for c in commits:
+        out.append(f"### {c['date']} -- {c['subject']}  (`{c['sha']}`)")
+        if c["body"]:
+            body_lines = c["body"].splitlines()
+            out.extend(body_lines[:CHANGES_BODY_LINES])
+            if len(body_lines) > CHANGES_BODY_LINES:
+                out.append(f"... ({len(body_lines) - CHANGES_BODY_LINES} more lines in the commit message)")
+        if c["files"]:
+            shown = ", ".join(f"`{f}`" for f in c["files"][:CHANGES_FILES])
+            more = f" and {len(c['files']) - CHANGES_FILES} more" if len(c["files"]) > CHANGES_FILES else ""
+            out.append(f"files: {shown}{more}")
+        out.append("")
+    return head, "\n".join(out).rstrip() + "\n"
+
+
+async def refresh_recent_changes(repo: str, repo_root: str, store: BaseStore, project_backend) -> dict:
+    """Rebuilds the recent-changes skill when HEAD moved since the last build.
+    No model call, so this runs on every cartographer tick for free."""
+    from deepagents.backends.utils import file_data_to_string
+
+    head, content = build_recent_changes(repo, repo_root)
+    if not head or not content:
+        return {"changes": "no git history"}
+    marker = await project_backend.aread(CHANGES_MARKER_PATH)
+    if marker.error is None and marker.file_data and file_data_to_string(marker.file_data).strip() == head:
+        return {"changes": "unchanged"}
+    description = (
+        f"The newest {CHANGES_COMMITS} commits to {repo} with their full messages and touched files, "
+        f"rebuilt whenever HEAD moves. Read this when a request says the repo has changed, when memory "
+        f"or the codebase map might lag a recent change, or before re-deriving what a recently touched "
+        f"file does -- the commit message already says why it changed."
+    )
+    import json as _json
+    content = (
+        "---\n"
+        f"name: {CHANGES_SKILL_NAME}\n"
+        f"description: {_json.dumps(description)}\n"
+        "---\n\n"
+        + content
+    )
+    await seed_skill(repo, store, CHANGES_SKILL_NAME, description, content)
+    await project_backend.awrite(CHANGES_MARKER_PATH, head)
+    return {"changes": "rebuilt", "head": head[:10]}
+
+
+async def refresh_freshness(repo: str, repo_root: str, project_backend, inv: dict) -> dict:
+    """Flags memory facts whose cited file changed after the fact was first
+    seen (agent/memory_freshness.py). Reads the project's memory directly from
+    the project namespace -- the same file both agents load."""
+    from deepagents.backends.utils import file_data_to_string
+    from agent.memory_freshness import refresh_memory_freshness
+
+    r = await project_backend.aread(_MEMORY_FILE)
+    memory_text = file_data_to_string(r.file_data) if r.error is None and r.file_data else ""
+    if not memory_text.strip():
+        return {"freshness": "no memory"}
+    tree = inv.get("tree") or []
+    return await refresh_memory_freshness(repo, repo_root, project_backend, memory_text, tree)
+
+
 async def run_cartographer(
     config: Config, repo: str, store: BaseStore, *, force: bool = False
 ) -> dict:
@@ -264,6 +394,19 @@ async def run_cartographer(
     inv = build_inventory(repo, repo_root)
     digest = inventory_hash(inv)
 
+    # Cheap, model-free companions that run on every tick regardless of
+    # whether the structure changed: the changelog skill and the memory
+    # freshness flags both key on git state, not on the inventory hash.
+    extras: dict = {}
+    for step in (
+        lambda: refresh_recent_changes(repo, repo_root, store, project_backend),
+        lambda: refresh_freshness(repo, repo_root, project_backend, inv),
+    ):
+        try:
+            extras.update(await step())
+        except Exception as e:  # noqa: BLE001 -- a companion must never block the map
+            logger.warning("cartographer companion failed for %s: %s", repo, e)
+
     if not force:
         marker = await project_backend.aread(MAP_MARKER_PATH)
         if marker.error is None and marker.file_data:
@@ -272,7 +415,7 @@ async def run_cartographer(
             if file_data_to_string(marker.file_data).strip() == digest:
                 return {
                     "repo": repo, "mapped": False, "hash": digest,
-                    "reasoning": "repo structure unchanged since last map",
+                    "reasoning": "repo structure unchanged since last map", **extras,
                 }
 
     model = init_chat_model(
@@ -327,5 +470,5 @@ async def run_cartographer(
     return {
         "repo": repo, "mapped": True, "hash": digest,
         "chars": len(content), "files_seen": inv["file_count"],
-        "reasoning": "map rebuilt",
+        "reasoning": "map rebuilt", **extras,
     }

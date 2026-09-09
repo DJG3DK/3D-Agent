@@ -105,13 +105,17 @@ def test_refuses_to_be_constructed_with_nothing_to_hide():
 # ---------------------------------------------------------------------------
 
 
-async def _tools_offered_to_the_planning_model(monkeypatch, tmp_path):
+async def _tools_offered_to_the_planning_model(monkeypatch, tmp_path, existing_brief=None):
     monkeypatch.setattr(pc, "PROJECTS", {"demo": {"sandbox": str(tmp_path)}})
     monkeypatch.setattr("agent.tools.planning_tools.PROJECTS", {"demo": {"sandbox": str(tmp_path)}})
     monkeypatch.setattr(pc, "llm_for_role", lambda *a, **k: _RecordingModel(responses=["done"]))
+    # A session that already has a brief: BriefFirstMiddleware otherwise
+    # narrows the first call to save_brief alone (tested separately below).
+    if existing_brief is None:
+        existing_brief = {"goal": "g", "deliverable": "d", "out_of_scope": "", "needs": "", "matched_skills": []}
     agent, _, _ = await pc.build_planning_agent(
         pc.load_config() if hasattr(pc, "load_config") else __import__("agent.config", fromlist=["load_config"]).load_config(),
-        "demo", InMemorySaver(), InMemoryStore(),
+        "demo", InMemorySaver(), InMemoryStore(), existing_brief=existing_brief or None,
     )
     from langchain_core.messages import HumanMessage
     await agent.ainvoke({"messages": [HumanMessage("hello")]},
@@ -123,6 +127,14 @@ async def test_the_planning_model_is_never_offered_task(monkeypatch, tmp_path):
     offered = await _tools_offered_to_the_planning_model(monkeypatch, tmp_path)
     assert offered, "the recording model saw no bind_tools call at all"
     assert "task" not in offered, f"planning agent still offers delegation: {offered}"
+
+
+async def test_without_a_brief_the_model_sees_only_save_brief(monkeypatch, tmp_path):
+    """Brief first (agent/middleware/pinned_brief.py): a new session's first
+    model call offers save_brief and describe_image and nothing else, so the
+    request is written down before any repo file is read."""
+    offered = await _tools_offered_to_the_planning_model(monkeypatch, tmp_path, existing_brief={})
+    assert set(offered) == {"save_brief", "describe_image"}, offered
 
 
 async def test_the_planning_model_still_gets_its_real_tools(monkeypatch, tmp_path):

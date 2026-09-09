@@ -23,6 +23,7 @@ from deepagents.backends.utils import file_data_to_string
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 from agent.config import Config, PROJECTS
+from agent.memory_freshness import memory_with_freshness
 
 # langchain-openai cannot attach response headers on the structured-output
 # stream path (with_structured_output sets response_format) and warns on every
@@ -641,6 +642,54 @@ async def seed_skill(repo: str, store: BaseStore, name: str, description: str, c
     await backend.awrite(manifest_key, json.dumps(manifest, indent=2))
 
 
+async def load_skills_manifest(repo: str, store: BaseStore) -> dict[str, str]:
+    """{skill name: description} for every skill registered to `repo`; empty
+    when nothing is registered or the manifest is unreadable."""
+    backend = StoreBackend(namespace=skills_namespace(repo), store=store)
+    manifest_result = await backend.aread(route_local_path(SKILLS_ROUTE, SKILLS_MANIFEST_PATH))
+    if manifest_result.error is not None or not manifest_result.file_data:
+        return {}
+    try:
+        manifest = json.loads(file_data_to_string(manifest_result.file_data))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+async def unregister_skill(repo: str, store: BaseStore, name: str) -> int:
+    """Removes one skill from `repo`: its manifest entry and every file under
+    /skills/<name>/. Returns the number of files deleted. The inverse of
+    seed_skill, for a skill the operator has decided the agents must not see.
+
+    Goes to the store directly rather than through StoreBackend: the backend's
+    `ls` is synchronous, which AsyncPostgresStore refuses inside a running
+    event loop, and the async search is private. The namespace tuple and the
+    key shape ("/<name>/<relpath>") are the ones skills_namespace/route_local_path
+    produce, so this sees exactly what the agent's own read_file sees.
+    """
+    namespace = skills_namespace(repo)(None)
+    manifest = await load_skills_manifest(repo, store)
+    if name in manifest:
+        del manifest[name]
+        backend = StoreBackend(namespace=skills_namespace(repo), store=store)
+        await backend.awrite(route_local_path(SKILLS_ROUTE, SKILLS_MANIFEST_PATH), json.dumps(manifest, indent=2))
+    prefix = f"/{name}/"
+    deleted = 0
+    offset = 0
+    while True:
+        page = await store.asearch(namespace, limit=200, offset=offset)
+        if not page:
+            break
+        for item in page:
+            if item.key.startswith(prefix):
+                await store.adelete(namespace, item.key)
+                deleted += 1
+        if len(page) < 200:
+            break
+        offset += 200
+    return deleted
+
+
 async def load_skills_summary(repo: str, store: BaseStore) -> str:
     """The level-1 progressive-disclosure load: name+description only, for
     every registered skill, formatted for the system prompt. Manual
@@ -649,14 +698,7 @@ async def load_skills_summary(repo: str, store: BaseStore) -> str:
     broken download_files/adownload_files path) -- deepagents' `skills=`
     parameter is not used here for the same reason `memory=` isn't.
     """
-    backend = StoreBackend(namespace=skills_namespace(repo), store=store)
-    manifest_result = await backend.aread(route_local_path(SKILLS_ROUTE, SKILLS_MANIFEST_PATH))
-    if manifest_result.error is not None or not manifest_result.file_data:
-        return "(no skills registered for this project)"
-    try:
-        manifest = json.loads(file_data_to_string(manifest_result.file_data))
-    except (json.JSONDecodeError, TypeError):
-        return "(no skills registered for this project)"
+    manifest = await load_skills_manifest(repo, store)
     if not manifest:
         return "(no skills registered for this project)"
     lines = [
@@ -935,7 +977,10 @@ async def build_deep_agent(
     # updates are invisible to every future task's prompt.
     project_memory_backend = StoreBackend(namespace=project_namespace(repo), store=store)
     org_memory_backend = StoreBackend(namespace=org_namespace, store=store)
-    project_memory_content = await read_memory_or_empty(project_memory_backend, route_local_path("/memories/", MEMORY_PATH))
+    project_memory_content = await memory_with_freshness(
+        project_memory_backend,
+        await read_memory_or_empty(project_memory_backend, route_local_path("/memories/", MEMORY_PATH)),
+    )
     org_memory_content = await read_memory_or_empty(org_memory_backend, route_local_path("/org-memory/", ORG_MEMORY_PATH))
     skills_summary = await load_skills_summary(repo, store)
 
@@ -971,8 +1016,11 @@ async def build_deep_agent(
             # bash rg covers repo search strictly better; read_file/ls still
             # cover skills/memory. execute goes too -- `bash` is the real
             # shell here, and built-in execute has no sandbox behind this
-            # backend, so it can only error or mislead.
-            HiddenToolsMiddleware("glob", "grep", "execute"),
+            # backend, so it can only error or mislead. delete likewise: it
+            # sees the agent's own file space, never the repo, so a coder
+            # cleaning up dead modules gets "not found" four times before it
+            # thinks of `rm` (observed 2026-09-08). bash rm is the real one.
+            HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
             BudgetGuardMiddleware(tracker),
             ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
@@ -1006,7 +1054,7 @@ async def build_deep_agent(
             # cover skills/memory. execute goes too -- `bash` is the real
             # shell here, and built-in execute has no sandbox behind this
             # backend, so it can only error or mislead.
-            HiddenToolsMiddleware("glob", "grep", "execute"),
+            HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
             BudgetGuardMiddleware(tracker),
             ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
@@ -1044,7 +1092,7 @@ async def build_deep_agent(
             # cover skills/memory. execute goes too -- `bash` is the real
             # shell here, and built-in execute has no sandbox behind this
             # backend, so it can only error or mislead.
-            HiddenToolsMiddleware("glob", "grep", "execute"),
+            HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
             BudgetGuardMiddleware(tracker),
             ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
@@ -1069,7 +1117,7 @@ async def build_deep_agent(
             skills_summary=skills_summary,
         ),
         middleware=[
-            HiddenToolsMiddleware("glob", "grep", "execute"),  # see subagent specs' comment
+            HiddenToolsMiddleware("glob", "grep", "execute", "delete"),  # see subagent specs' comment
             BudgetGuardMiddleware(tracker),
             # Planner on the thread's first turn, coder after -- see model_pin.py.
             PlanCodeModelMiddleware(planner_model, coordinator_model),

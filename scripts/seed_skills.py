@@ -29,6 +29,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # (gitignored) and are discovered automatically, so a public checkout carries
 # no one's private domain knowledge. See skills/local/README.md.
 SHIPPED_SKILLS = ["vendor/webapp-testing"]
+# Skills the operator has decided the agents must NOT see. Seeding removes them
+# from every project's manifest and store; install scripts refuse to add them.
+# j-space (2026-09-08): a generic essay on the model's "inner workspace" -- its
+# "directed focus" module says nothing about any of this operator's repos, and
+# a planner that opened it looking for focus paid for 500 lines of it.
+BLOCKED_SKILLS = {"j-space"}
 
 LOCAL_SKILLS_DIR = "local"
 LOCAL_TARGETS_FILE = "targets.json"
@@ -84,6 +90,7 @@ async def main() -> None:
         route_local_path,
         seed_skill,
         skills_namespace,
+        unregister_skill,
     )
     from deepagents.backends.store import StoreBackend
 
@@ -93,6 +100,8 @@ async def main() -> None:
     all_repos = list(PROJECTS)
     targets: dict[str, list[str]] = {}
     for rel_dir, repos in _seed_targets(skills_root, all_repos).items():
+        if Path(rel_dir).name in BLOCKED_SKILLS:
+            continue
         targets[rel_dir] = repos
 
     async with AsyncPostgresStore.from_conn_string(cfg.pg_dsn) as store:
@@ -115,6 +124,11 @@ async def main() -> None:
                         p.read_text(),
                     )
                 print(f"seeded {name} -> {repo} (SKILL.md + {len(extra_files)} files)")
+        for repo in all_repos:
+            for name in sorted(BLOCKED_SKILLS):
+                removed = await unregister_skill(repo, store, name)
+                if removed:
+                    print(f"unregistered blocked skill {name} from {repo} ({removed} files)")
 
 
 if __name__ == "__main__":

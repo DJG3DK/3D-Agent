@@ -245,7 +245,10 @@ function ChatMessageImpl({ entry, prevEntry }: { entry: LogEntry; prevEntry?: Lo
 
   if (kind === "tool-result") {
     const body = entry.detail || entry.summary.slice("tool result:".length).trim();
-    const failed = /exit_code=[1-9]|ERROR|TIMED OUT/.test(body.slice(0, 120));
+    // rg/grep exit 1 is "no matches", and the bash tool says so in the result
+    // (agent/tools/agent_tools.py NO_MATCHES_RESULT). Everything else non-zero is a failure.
+    const noMatches = /^exit_code=1 \(no matches/.test(body);
+    const failed = !noMatches && /exit_code=[1-9]|ERROR|TIMED OUT/.test(body.slice(0, 120));
     return (
       <div className={`chat-tool-result ${failed ? "chat-tool-result--failed" : ""}`}>
         <div className="chat-tool-result-head" onClick={() => setOpen((o) => !o)}>

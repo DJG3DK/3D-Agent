@@ -1716,6 +1716,7 @@ async def _bank_planning_turn(
     text: str | None = None,
     outcome: str | None = None,
     outcome_detail: str | None = None,
+    brief: dict | None = None,
 ) -> None:
     """Persist whatever a turn earned before it ended -- used by the two
     abnormal exits (operator Stop, and an exception), which both used to
@@ -1759,6 +1760,8 @@ async def _bank_planning_turn(
             meta["plan_markdown"] = plan_markdown
         if spent is not None:
             meta["cost_usd"] = spent
+        if brief is not None:
+            meta["brief"] = brief  # same PRESERVE rule: a turn can add or replace a brief, never remove one
         if text and not meta.get("title"):
             meta["title"] = text[:60]
         if outcome is not None:
@@ -1815,11 +1818,15 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         # its own previous plan and every turn starts from a blank one.
         _prior = await app.state.store.aget(("planning", repo), session_id)
         _prior_plan = _prior.value.get("plan_markdown") if _prior else None
+        # The brief too: written by save_brief on an earlier turn, it is what
+        # keeps a follow-up message from forcing a fresh brief-first round.
+        _prior_brief = _prior.value.get("brief") if _prior else None
         agent, plan_ref, tracker = await build_planning_agent(
             config, repo, app.state.checkpointer, app.state.store,
             starting_cost=starting_cost, difficulty=difficulty,
             existing_plan=_prior_plan,
             allowed_repos=allowed_repos,  # audit H-2
+            existing_brief=_prior_brief,
         )
         thread_config = planning_thread_config(session_id, repo)
         # Circuit breaker: llm_for_role's own per-call timeout (plus
@@ -1907,6 +1914,7 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
                 **meta_item.value, "updated_at": time.time(),
                 "plan_markdown": effective_plan, "cost_usd": tracker.total_cost,
                 "turn_active": False,
+                "brief": plan_ref.get("brief") or meta_item.value.get("brief"),
             }
             if not meta.get("title"):
                 meta["title"] = text[:60]
@@ -1951,7 +1959,8 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         # cancel landing before build_planning_agent leaves both unbound.
         _ref = locals().get("plan_ref") or {}
         await _bank_planning_turn(
-            session_id, repo, _ref.get("markdown"), spent, text=text, outcome="stopped"
+            session_id, repo, _ref.get("markdown"), spent, text=text, outcome="stopped",
+            brief=_ref.get("brief"),
         )
         _publish_planning(session_id, {"type": "stopped", "cost_usd": spent})
         raise
@@ -1981,6 +1990,7 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
             session_id, repo, _ref.get("markdown"),
             _t.total_cost if _t is not None else None,
             text=text, outcome=_outcome, outcome_detail=str(e)[:500],
+            brief=_ref.get("brief"),
         )
         _publish_planning(
             session_id,

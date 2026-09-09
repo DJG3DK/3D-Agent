@@ -822,6 +822,13 @@ router_settings:
   # route to the same wall.
   fallbacks:
     - agent-consolidator: ["deepseek-v4-pro", "claude-haiku-4.5"]
+    # The cartographer is one long-context summarisation call with no tools,
+    # so any capable model can stand in. mistral-small's two OpenRouter
+    # providers were both 429 ("upstream_provider_shared_pool") at 23:5x on
+    # 2026-09-08 with "Available Model Group Fallbacks=None" -- the map just
+    # went unbuilt. deepseek-v4-pro is already the fallback for three other
+    # roles and handles 5k-token inventories trivially.
+    - agent-cartographer: ["deepseek-v4-pro"]
     # Planning chat fails over to its own HARD sibling (operator's call,
     # 2026-08-26, after an upstream 429 on gemini-3.7-flash's shared pool
     # killed a planning turn outright -- "No fallback model group found").

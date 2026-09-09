@@ -22,6 +22,7 @@ current task, not persisted cross-task, matching deepagents' own default
 offload behavior.
 """
 
+import re
 import json
 import mimetypes
 import os
@@ -74,6 +75,19 @@ async def _offload_if_large(backend: BackendProtocol | None, tool_name: str, con
         f"Read it with your read_file tool (use offset/limit to page through it; do not re-read it all at once).\n\n"
         f"Preview (head and tail):\n{preview}"
     )
+
+
+_SEARCH_COMMAND = re.compile(r"(?:^|&&|\|\||;|\|)\s*(?:rg|grep|egrep|fgrep)\b")
+# Exit code kept truthful for the model; the marker is what the UI keys on
+# (frontend/src/components/ChatMessage.tsx) to render it as a plain result.
+NO_MATCHES_RESULT = "exit_code=1 (no matches -- rg/grep exit 1 means the pattern was not found, not a failure)\n"
+
+
+def _is_search_command(command: str) -> bool:
+    """True when the command's last pipeline stage that could set the exit
+    code is rg/grep -- the one family whose exit 1 is a normal answer."""
+    tail = command.strip().split("&&")[-1]
+    return bool(_SEARCH_COMMAND.search(tail))
 
 
 def make_agent_tools(
@@ -198,6 +212,12 @@ def make_agent_tools(
             timeout = min(timeout, _BASH_TIMEOUT_CEILING)
             r = await run_shell_sandboxed(command, repo_root, timeout=timeout)
             content = f"exit_code={r['exit_code']}\n{r['output']}"
+            if r["exit_code"] == 1 and not r["output"].strip() and _is_search_command(command):
+                # rg/grep exit 1 is "pattern not found", not a failure. Say so
+                # in the result, for the model and for the dashboard: on
+                # 2026-09-08 a coder's clean post-removal sweep (four rg calls,
+                # nothing left to find) rendered as four red errors.
+                content = NO_MATCHES_RESULT
             return await _offload_if_large(backend, "bash", content)
         except ShellTimeout as e:
             return f"TIMED OUT: {e}"

@@ -2,7 +2,8 @@
 
 These are the properties that make scheduling it cheap. If the hash moves when
 nothing structural changed, every run calls the model and the marker is
-pointless; if it does NOT move when structure changes, maps silently go stale.
+pointless
+if it does NOT move when structure changes, maps silently go stale.
 """
 from __future__ import annotations
 
@@ -64,3 +65,55 @@ def test_hash_ignores_commit_churn(tmp_path):
     inv2["recent_commits"] = "totally different subjects"
     inv2["hot_files"] = {"src/main.py": 99}
     assert inventory_hash(inv2) == base
+
+
+# ---------------------------------------------------------------------------
+# recent-changes: the model-free changelog skill rebuilt whenever HEAD moves.
+# ---------------------------------------------------------------------------
+
+import subprocess
+
+from agent.cartographer import CHANGES_COMMITS, build_recent_changes
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _repo_with_history(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.js").write_text("1")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "feat: add a\n\nBecause the bot needed an a.\nSecond body line.")
+    (tmp_path / "src" / "b.js").write_text("2")
+    (tmp_path / "src" / "a.js").write_text("11")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "fix: b and a")
+    return tmp_path
+
+
+def test_recent_changes_carries_subjects_bodies_and_files(tmp_path):
+    head, md = build_recent_changes("demo", str(_repo_with_history(tmp_path)))
+    assert len(head) == 40
+    assert md.startswith("# Recent changes in demo")
+    assert "fix: b and a" in md and "feat: add a" in md
+    assert "Because the bot needed an a." in md, "the commit body is the WHY -- it must survive"
+    assert "`src/a.js`" in md and "`src/b.js`" in md
+    assert "`src/a.js` (2 commits)" in md, "most-touched files are counted across the window"
+    assert md.index("fix: b and a") < md.index("feat: add a"), "newest first"
+
+
+def test_recent_changes_is_empty_without_git(tmp_path):
+    assert build_recent_changes("demo", str(tmp_path)) == ("", "")
+
+
+def test_recent_changes_window_is_bounded(tmp_path):
+    root = _repo_with_history(tmp_path)
+    for i in range(CHANGES_COMMITS + 5):
+        (root / "src" / "a.js").write_text(str(i) * 3)
+        _git(root, "add", ".")
+        _git(root, "commit", "-q", "-m", f"chore: bump {i}")
+    _, md = build_recent_changes("demo", str(root))
+    assert md.count("\n### ") == CHANGES_COMMITS
+    assert "feat: add a" not in md

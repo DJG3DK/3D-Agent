@@ -66,6 +66,7 @@ from deepagents import FilesystemPermission, create_deep_agent
 from agent.classify import classify_task
 from agent.message_text import content_text
 from agent.config import Config, PROJECTS
+from agent.memory_freshness import memory_with_freshness
 from agent.deep_agent import (
     MEMORY_PATH,
     ORG_MEMORY_PATH,
@@ -74,6 +75,7 @@ from agent.deep_agent import (
     SUMMARIZATION_TRIM_TOKENS,
     build_memory_backend,
     llm_for_role,
+    load_skills_manifest,
     load_skills_summary,
     org_namespace,
     project_namespace,
@@ -82,6 +84,7 @@ from agent.deep_agent import (
 )
 from agent.middleware.hidden_tools import HiddenToolsMiddleware
 from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddleware, BudgetTracker
+from agent.middleware.pinned_brief import BriefFirstMiddleware, PinnedBriefMiddleware
 from agent.model_config import resolve_alias
 from agent.tools.agent_tools import make_agent_tools
 from agent.tools.planning_tools import make_planning_tools
@@ -164,6 +167,14 @@ This project also has REGISTERED SKILLS -- durable curated reference docs your b
 read (they live in your own file space, not the repo):
 {skills_summary}
 
+FIRST ACTION OF A NEW REQUEST: call save_brief. Until the session has a brief, save_brief (and \
+describe_image) are the only tools you have -- restate the goal in the operator's terms, name the \
+deliverable, say what is out of scope, and list what you expect to need. The brief is pinned into \
+this prompt for the rest of the conversation, so compaction can never lose the request, and its tool \
+result names the registered skills that match the request -- read THOSE before any repo file. When a \
+later message changes what the operator wants, call save_brief again before doing anything else. A \
+one-line follow-up ("yes", "go ahead") needs no new brief.
+
 START every code investigation with the CODEBASE MAP: read /skills/codebase-map/SKILL.md (with built-in \
 read_file) BEFORE walking the repo with list_project_dir. It is the maintained map of "{repo}" -- where \
 things live, entry points, conventions -- rebuilt on a schedule from the real tree. One read replaces a \
@@ -194,6 +205,7 @@ investigation you do yourself, with the tools above. Read the files, page throug
 about what you found -- that is the job, not a detour from it. If a question is too big to answer fully in \
 one turn, say what you found, say what is still open, and save the plan you can justify now; a partial \
 plan the operator can act on beats a perfect one that never gets written.
+- save_brief: pin the brief for the current request (see FIRST ACTION above).
 - save_plan: save the current draft plan document (Markdown). Call this once the plan is genuinely ready, \
 and again any time it meaningfully changes -- never wait to be asked. The user can hit "Build Now" the \
 moment a plan exists, so don't leave a stale or half-finished draft saved if the conversation has moved on. \
@@ -244,6 +256,7 @@ async def build_planning_agent(
     difficulty: str = "EASY",
     existing_plan: str | None = None,
     allowed_repos: list[str] | None = None,
+    existing_brief: dict | None = None,
 ):
     """Returns (agent, plan_ref, tracker).
 
@@ -272,11 +285,17 @@ async def build_planning_agent(
     repo_root = PROJECTS[repo]["sandbox"]
     project_tools, _ = make_agent_tools(repo_root)
     tool_by_name = {t.name: t for t in project_tools}
-    planning_tools, plan_ref = make_planning_tools(existing_plan, allowed_repos)
+    skills_manifest = await load_skills_manifest(repo, store)
+    planning_tools, plan_ref = make_planning_tools(
+        existing_plan, allowed_repos, existing_brief=existing_brief, skills_manifest=skills_manifest,
+    )
 
     project_memory_backend = StoreBackend(namespace=project_namespace(repo), store=store)
     org_memory_backend = StoreBackend(namespace=org_namespace, store=store)
-    project_memory_content = await read_memory_or_empty(project_memory_backend, route_local_path("/memories/", MEMORY_PATH))
+    project_memory_content = await memory_with_freshness(
+        project_memory_backend,
+        await read_memory_or_empty(project_memory_backend, route_local_path("/memories/", MEMORY_PATH)),
+    )
     org_memory_content = await read_memory_or_empty(org_memory_backend, route_local_path("/org-memory/", ORG_MEMORY_PATH))
     # audit H-2: render only repos this session's user may actually read, not
     # every configured project -- the prompt used to advertise "you can read any
@@ -335,6 +354,11 @@ async def build_planning_agent(
             # sandbox behind it in this agent, delete has nothing it should
             # ever delete.
             HiddenToolsMiddleware("task", "grep", "glob", "execute", "delete"),
+            # Brief first, then pinned: the request is written down before any
+            # file is read, and stays in the system message through every
+            # compaction (agent/middleware/pinned_brief.py).
+            BriefFirstMiddleware(plan_ref),
+            PinnedBriefMiddleware(plan_ref),
             BudgetGuardMiddleware(tracker),
             SummarizationMiddleware(
                 # Metered via callback -- SummarizationMiddleware ainvoke()s

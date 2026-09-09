@@ -271,9 +271,20 @@ def _project_root(repo: str, allowed_repos: list[str] | None = None) -> str:
     return PROJECTS[repo]["sandbox"]
 
 
-def make_planning_tools(existing_plan: str | None = None, allowed_repos: list[str] | None = None) -> tuple[list, dict]:
+def make_planning_tools(
+    existing_plan: str | None = None,
+    allowed_repos: list[str] | None = None,
+    existing_brief: dict | None = None,
+    skills_manifest: dict[str, str] | None = None,
+) -> tuple[list, dict]:
     """Returns ([web_search, browse_page, list_project_dir, read_project_file,
-    save_plan], plan_ref).
+    save_brief, save_plan], plan_ref).
+
+    plan_ref also carries "brief": the dict save_brief last wrote (seeded from
+    `existing_brief`), which BriefFirstMiddleware/PinnedBriefMiddleware read
+    (agent/middleware/pinned_brief.py). `skills_manifest` ({name: description})
+    is what save_brief matches the request against to tell the model which
+    architecture skills to read before it opens a repo file.
 
     Unlike agent_tools.py's read/list tools (closure-bound to one repo_root
     at construction time, matching a build task's single-repo scope),
@@ -299,7 +310,8 @@ def make_planning_tools(existing_plan: str | None = None, allowed_repos: list[st
     # rebuilt from scratch on EVERY turn, so a plan_ref that always started at
     # None meant the session's own draft was invisible to the turn that came
     # after it -- and, worse, got clobbered (see run_planning_turn's caller).
-    plan_ref: dict = {"markdown": existing_plan}
+    plan_ref: dict = {"markdown": existing_plan, "brief": existing_brief}
+    skills_manifest = skills_manifest or {}
 
     @tool
     @tool_errors_to_text
@@ -480,4 +492,90 @@ def make_planning_tools(existing_plan: str | None = None, allowed_repos: list[st
         plan_ref["markdown"] = markdown
         return "Plan saved. The user can now see it and use \"Build Now\" whenever they're ready."
 
-    return [web_search, browse_page, list_project_dir, read_project_file, save_plan], plan_ref
+    @tool
+    @tool_errors_to_text
+    def save_brief(goal: str, deliverable: str, out_of_scope: str = "", needs: str = "") -> str:
+        """Write the brief for this request BEFORE reading anything. `goal`: what
+        the operator wants, in one or two sentences, in their terms. `deliverable`:
+        what this session must produce (a plan for X; an answer to Y; a comparison
+        of A and B). `out_of_scope`: what you will deliberately not touch or
+        investigate. `needs`: the strategy/module/files/skills you expect to need,
+        by name. The brief is pinned into your context for the rest of the
+        conversation, so write it as the yardstick every later read and every
+        paragraph of the plan is measured against. Call it again whenever the
+        operator's request changes."""
+        brief = {
+            "goal": goal.strip(),
+            "deliverable": deliverable.strip(),
+            "out_of_scope": out_of_scope.strip(),
+            "needs": needs.strip(),
+        }
+        brief["matched_skills"] = match_skills(f"{goal} {deliverable} {needs}", skills_manifest)
+        plan_ref["brief"] = brief
+        if brief["matched_skills"]:
+            listing = "\n".join(
+                f"- /skills/{name}/SKILL.md -- {skills_manifest[name][:160]}" for name in brief["matched_skills"]
+            )
+            return (
+                "Brief pinned. These registered skills match the request -- read them with read_file "
+                f"BEFORE any list_project_dir/read_project_file call:\n{listing}"
+            )
+        return (
+            "Brief pinned. No registered skill matches this request by name; start with "
+            "/skills/codebase-map/SKILL.md and read only the files the goal needs."
+        )
+
+    return [web_search, browse_page, list_project_dir, read_project_file, save_brief, save_plan], plan_ref
+
+
+_STOPWORDS = frozenset("""
+the and for with that this from into when what which where read before touching how works
+your you are its his her they them will must should would could about after over under
+also then than more most some such only into onto upon each every either both been being
+have has had does did done make made take took use used using work works working file
+files module modules code strategy strategies bot agent plan planning settings setting
+""".split())
+_SKILL_ALWAYS_EXCLUDED = frozenset({"codebase-map"})  # already mandated by the system prompt
+
+
+def _keywords(text: str) -> set[str]:
+    """Lowercase tokens worth matching on: words of 4+ letters that are not
+    filler, plus every identifier-ish token (camelCase names, file stems) so
+    `srDivergence.js` in a request meets `srDivergence.js` in a description."""
+    import re
+
+    out: set[str] = set()
+    for tok in re.findall(r"[A-Za-z][A-Za-z0-9_./-]*", text):
+        stem = tok.rsplit("/", 1)[-1]
+        stem = re.sub(r"\.(js|mjs|ts|tsx|jsx|py|md|json|ya?ml)$", "", stem, flags=re.I)
+        low = stem.lower()
+        if len(low) >= 4 and low not in _STOPWORDS:
+            out.add(low)
+        # split camelCase / snake_case so "sr divergence" meets "srDivergence"
+        for part in re.split(r"(?<=[a-z0-9])(?=[A-Z])|[_-]", stem):
+            pl = part.lower()
+            if len(pl) >= 4 and pl not in _STOPWORDS:
+                out.add(pl)
+    return out
+
+
+def match_skills(request_text: str, skills_manifest: dict[str, str], limit: int = 4) -> list[str]:
+    """Registered skills whose name/description share distinctive words with
+    the request, best first. Deterministic and cheap: this runs inside the
+    save_brief tool, not in the model, so the routing does not depend on the
+    model noticing a one-line description among a dozen."""
+    want = _keywords(request_text)
+    if not want or not skills_manifest:
+        return []
+    scored: list[tuple[int, str]] = []
+    for name, description in skills_manifest.items():
+        if name in _SKILL_ALWAYS_EXCLUDED:
+            continue
+        have = _keywords(f"{name} {description}")
+        # a hit on the skill's own name is worth more than one on its description
+        name_hits = len(want & _keywords(name))
+        score = len(want & have) + 2 * name_hits
+        if score >= 2 or name_hits:
+            scored.append((score, name))
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    return [name for _, name in scored[:limit]]

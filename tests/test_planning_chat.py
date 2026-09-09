@@ -160,7 +160,7 @@ async def test_default_difficulty_is_easy():
     # smoke test that the whole wiring succeeds with no `difficulty` passed.
     agent, plan_ref, tracker = await build_planning_agent(_FakeConfig(), "test-repo", checkpointer, store)
     assert agent is not None
-    assert plan_ref == {"markdown": None}
+    assert plan_ref == {"markdown": None, "brief": None}
 
 
 async def test_qwen_gets_the_identical_tools_memory_and_permissions_as_gemini(monkeypatch):

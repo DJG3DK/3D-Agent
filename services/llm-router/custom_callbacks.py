@@ -114,6 +114,10 @@ class RoutingLogger(CustomLogger):
                 "requested_model": kwargs.get("model"),
                 "routed_model": None,
                 "error": True,
+                # The reason, or the row is useless: 106 gemini failures on
+                # 2026-09-08 fell back cleanly to deepseek, so the proxy logged
+                # nothing anywhere and the cause stayed unknown for 90 minutes.
+                "error_detail": str(kwargs.get("exception") or response_obj or "")[:600],
             }
             os.makedirs(LOG_DIR, exist_ok=True)
             with open(LOG_PATH, "a") as f:

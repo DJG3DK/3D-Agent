@@ -34,6 +34,16 @@ from agent.outer_graph import open_store
 
 VENDOR_DIR = Path(__file__).resolve().parent.parent / "skills" / "vendor" / "j-space"
 SKILL_NAME = "j-space"
+
+# Operator decision 2026-09-08: j-space is BLOCKED (see BLOCKED_SKILLS in
+# seed_skills.py). Running this script without --force prints why and exits;
+# scripts/seed_skills.py removes it from every project either way.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from seed_skills import BLOCKED_SKILLS  # noqa: E402
+
+if SKILL_NAME in BLOCKED_SKILLS and "--force" not in sys.argv:
+    print(f"{SKILL_NAME} is in BLOCKED_SKILLS (scripts/seed_skills.py); not installing. Pass --force to override.")
+    sys.exit(0)
 DESCRIPTION = (
     "Inference-time control for deep reasoning and long-horizon work: an entry "
     "gate picks a fast/full/loop pass and loads only the relevant modules "
