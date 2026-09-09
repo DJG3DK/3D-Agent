@@ -608,6 +608,53 @@ async function runChecks(cfg, worktreePath) {
   return results;
 }
 
+// A check that fails on the branch AND fails identically on the base commit is
+// not this change's fault. Seen live 2026-09-09 (3DSteals, multi-category
+// products): `pnpm audit` reports 14 high vulnerabilities in nodemailer/multer
+// on main itself, the diff touched no package.json, Sonnet wrote "no blocking
+// issues, pre-existing audit failure" -- and the harness forced NEEDS_FIXES
+// on the failed check anyway, round after round, until escalation. True
+// verdict, wrong cause, infinite-loop shape (the packDiff comment above
+// describes the same shape). The gate is for what the DIFF breaks.
+//
+// Only cfg.checks commands are compared (build/db/secrets are not re-run on
+// base). Results are cached in state.json per base sha, so a slow suite is
+// re-run on base once per base, not once per round.
+function applyBaseline(checkResults, baselineForBase) {
+  // Pure: marks each failed check whose baseline entry is a recorded FAILURE
+  // as pre-existing. Returns the same objects, mutated, for the caller.
+  for (const c of checkResults) {
+    if (!c.ok && baselineForBase && baselineForBase[c.name] === false) c.preexisting = true;
+  }
+  return checkResults;
+}
+
+async function markPreexistingFailures(project, cfg, base, checkResults, prevBaseline) {
+  const eligible = new Set((cfg.checks || []).map((c) => c.name));
+  const failed = checkResults.filter((c) => !c.ok && eligible.has(c.name));
+  const baseline = { ...(prevBaseline || {}) };
+  const forBase = { ...(baseline[base] || {}) };
+  const missing = failed.filter((c) => !(c.name in forBase));
+  if (missing.length) {
+    log(`[${project}] ${missing.map((c) => c.name).join(', ')} failed on the branch -- checking the base commit ${base.slice(0, 12)} for a pre-existing failure`);
+    let basePath = null;
+    try {
+      ({ worktreePath: basePath } = await setupWorktree(project, cfg, base, base));
+      const only = { ...cfg, checks: cfg.checks.filter((c) => missing.some((m) => m.name === c.name)) };
+      for (const r of await runChecks(only, basePath)) forBase[r.name] = r.ok;
+    } catch (err) {
+      log(`[${project}] baseline check failed to run (treating failures as this change's): ${err.message}`);
+    } finally {
+      if (basePath) await cleanupWorktree(cfg, basePath).catch(() => {});
+    }
+  }
+  baseline[base] = forBase;
+  applyBaseline(checkResults, forBase);
+  const pre = checkResults.filter((c) => c.preexisting).map((c) => c.name);
+  if (pre.length) log(`[${project}] pre-existing failing checks (also fail on base): ${pre.join(', ')}`);
+  return baseline;
+}
+
 // Mirrors ci.yml's `build` job: the build itself, then the three assertions
 // it runs after — each exists because it caught a real incident (see the
 // comments on buildCheck.assertions in PROJECTS above), not just "did the
@@ -960,8 +1007,8 @@ TRUSTED section that follows, placed after this diff on purpose.
 ${fenceUntrusted('DIFF', packedDiff.packed)}
 
 ## TRUSTED mechanical check results (from this harness, not the diff)
-${checkResults.map((c) => `- ${c.name}: ${c.ok ? 'PASS' : 'FAIL'}`).join('\n')}
-${failedChecks.length ? '\n### Failure output\n' + failedChecks.map((c) => `--- ${c.name} ---\n${c.output}`).join('\n\n') : ''}
+${checkResults.map((c) => `- ${c.name}: ${c.ok ? 'PASS' : c.preexisting ? 'FAIL (PRE-EXISTING: fails identically on the base commit; not caused by this change -- do not block on it, do not ask the agent to fix it)' : 'FAIL'}`).join('\n')}
+${failedChecks.length ? '\n### Failure output\n' + failedChecks.map((c) => `--- ${c.name}${c.preexisting ? ' (pre-existing, informational)' : ''} ---\n${c.output}`).join('\n\n') : ''}
 ${packedDiff.omitted.length ? `\n### ${packedDiff.omitted.length} file(s) were TOO LARGE to include and were NOT reviewed\nThese are recorded as unreviewed by the harness and independently force NEEDS_FIXES; you do not need to act on them, but do NOT treat their absence as evidence the commit is fine.` : ''}
 
 Submit your review via the submit_review tool.`;
@@ -1117,7 +1164,8 @@ function _blockingSeverity(sev) {
 }
 
 function buildAgentMessage(review, checkResults) {
-  const failedChecks = checkResults.filter((c) => !c.ok).map((c) => c.name);
+  const failedChecks = checkResults.filter((c) => !c.ok && !c.preexisting).map((c) => c.name);
+  const preexisting = checkResults.filter((c) => !c.ok && c.preexisting).map((c) => c.name);
   const blocking = review.findings.filter((f) => f.severity === 'blocking');
   const minor = review.findings.filter((f) => f.severity !== 'blocking');
   const lines = [
@@ -1136,6 +1184,9 @@ function buildAgentMessage(review, checkResults) {
   }
   if (failedChecks.length) {
     lines.push(`Failed checks: ${failedChecks.join(', ')}`);
+  }
+  if (preexisting.length) {
+    lines.push(`Pre-existing failing checks (they fail the same way on the base commit, so they are NOT counted against this change and you should NOT try to fix them here): ${preexisting.join(', ')}`);
   }
   if (blocking.length) {
     lines.push('Blocking findings:');
@@ -1239,6 +1290,7 @@ async function reviewProject(project, cfg, routerKey) {
       log(`[${project}] prior reviewed sha ${prevState.lastReviewedSha.slice(0, 12)} is not an ancestor of ${sha.slice(0, 12)} -- discarding stale review history instead of carrying it forward`);
       prevState = null;
     }
+    const baseline = await markPreexistingFailures(project, cfg, base, checkResults, prevState?.baseline);
     const existingTestCoverage = gatherExistingTestCoverage(worktreePath, diff);
     const referencedFiles = gatherReferencedFiles(worktreePath, commitLog, diff);
 
@@ -1258,7 +1310,7 @@ async function reviewProject(project, cfg, routerKey) {
     // nudge with nothing concrete to act on (see buildAgentMessage). This
     // way verdict can never be NEEDS_FIXES without something specific to
     // point at, by construction.
-    const mechanicalFailed = checkResults.some((c) => !c.ok);
+    const mechanicalFailed = checkResults.some((c) => !c.ok && !c.preexisting);
     const hasBlockingFindings = (review.findings || []).some((f) => f.severity === 'blocking');
     // audit H-9/H-10: ANY omitted file forces NEEDS_FIXES in NODE -- not left
     // to the model, which the prompt could talk out of it. (The unreadable-
@@ -1312,7 +1364,8 @@ async function reviewProject(project, cfg, routerKey) {
       summary: review.summary,
       findings: review.findings,
       omittedFiles,  // audit H-9: record what the review could not see
-      checkResults: checkResults.map((c) => ({ name: c.name, ok: c.ok })),
+      checkResults: checkResults.map((c) => ({ name: c.name, ok: c.ok, ...(c.preexisting ? { preexisting: true } : {}) })),
+      baseline,  // per-base-sha cache of which checks fail on base, so a slow suite is re-run there once
       reviewedAt: new Date().toISOString(),
       consecutiveNeedsFixes,
       escalated,
@@ -1418,5 +1471,5 @@ if (require.main === module) {
 
 module.exports = {
   PROJECTS, setupWorktree, cleanupWorktree, runChecks, runBuildCheck, runDatabaseCheck, runSecretScan,
-  detectNewCommit, reviewWithSonnet, buildAgentMessage,
+  detectNewCommit, reviewWithSonnet, buildAgentMessage, applyBaseline,
 };

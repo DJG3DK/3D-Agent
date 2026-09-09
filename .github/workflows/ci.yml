@@ -128,7 +128,9 @@ jobs:
           done
 
       - name: Shared project-config tests
-        run: node tests/test_projects_config_merge.js
+        run: |
+          node tests/test_projects_config_merge.js
+          node tests/test_reviewer_preexisting.js
 
   shell:
     name: Shell — installer and cron scripts
