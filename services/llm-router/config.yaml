@@ -351,12 +351,12 @@ model_list:
       # digests reviewer feedback, lighter-weight than raw code editing.
       # Previously kimi-k3, gemini-3.7-flash, Kimi K2.7 Code, and
       # deepseek-v4-pro (moved to coder 2026-08-20).
-      model: openrouter/google/gemini-3.7-flash
+      model: openrouter/qwen/qwen3.8-flash
       api_key: os.environ/OPENROUTER_API_KEY
       extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.000000375
-      output_cost_per_token: 0.000001875
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.00000047
   - model_name: agent-vision
     litellm_params:
       # Vision bridge for the coding agent's describe_image tool -- the
@@ -448,7 +448,7 @@ model_list:
       # `tests/test_pnl_reconciler.js` -- because an agent trusting the map goes
       # looking for a file that was never there. More output was not better:
       # the 80b cited the most paths AND invented the most.
-      model: openrouter/mistralai/mistral-small-3.2-24b-instruct
+      model: openrouter/~z-ai/glm-flash-latest
       api_key: os.environ/OPENROUTER_API_KEY
       extra_body: {"provider": {"require_parameters": true}}
     model_info:
@@ -456,7 +456,7 @@ model_list:
       # catalog (get_current_pins_priced), because these hand-written blocks
       # drift. Kept so a catalog outage degrades to a stale number, not to "—".
       input_cost_per_token: 0.000000075
-      output_cost_per_token: 0.0000003
+      output_cost_per_token: 0.00000025
 
   - model_name: agent-consolidator
     litellm_params:
