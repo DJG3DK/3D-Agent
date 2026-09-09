@@ -61,3 +61,25 @@ def test_search_is_not_counted_against_the_read_budget(tools, tmp_path):
 
 def test_knob_is_on_the_settings_page():
     assert rs.KNOBS["planning_read_budget"]["default"] == 50
+
+
+def test_a_gate_forced_save_tells_the_model_to_keep_working(tools):
+    """2026-09-09: hit the gate, saved, one more read, turn over -- because
+    save_plan replied "Plan saved, use Build Now", which reads as done."""
+    t, _ = tools
+    for i in range(5):
+        t["read_project_file"].invoke({"repo": "demo", "path": f"f{i}.ts"})
+    assert t["read_project_file"].invoke({"repo": "demo", "path": "f5.ts"}).startswith("ERROR: 5 file reads")
+    reply = t["save_plan"].invoke({"markdown": "# draft\n\nopen question: f6"})
+    assert reply.startswith("Draft saved (") and "read 5 more files" in reply
+    assert "keep working in this same turn" in reply and "save_plan again" in reply
+    # a save that was NOT forced keeps the plain reply
+    assert t["save_plan"].invoke({"markdown": "# final"}) == 'Plan saved. The user can now see it and use "Build Now" whenever they\'re ready.'
+
+
+def test_the_gate_message_calls_the_save_a_checkpoint(tools):
+    t, _ = tools
+    for i in range(5):
+        t["read_project_file"].invoke({"repo": "demo", "path": f"f{i}.ts"})
+    msg = t["read_project_file"].invoke({"repo": "demo", "path": "f5.ts"})
+    assert "DRAFT" in msg and "checkpoint, not the end of the turn" in msg

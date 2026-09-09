@@ -432,7 +432,7 @@ def make_planning_tools(
     # tool closes until a plan is saved -- reading is never the deliverable,
     # and a session that reads instead of writing is the failure this exists
     # for (2026-09-09: 250 reads, two compactions, $13, no draft).
-    reads = {"since_save": 0}
+    reads = {"since_save": 0, "gated": False}
 
     # Seeded with whatever the session already has saved. A planning agent is
     # rebuilt from scratch on EVERY turn, so a plan_ref that always started at
@@ -529,12 +529,14 @@ def make_planning_tools(
             return f"ERROR: {e}"
         read_budget = _rs.as_int("planning_read_budget")
         if reads["since_save"] >= read_budget:
+            reads["gated"] = True
             return (
                 f"ERROR: {reads['since_save']} file reads since the last saved plan -- the read budget "
-                f"({read_budget}) is spent. Save the plan NOW with save_plan, from what you already know; "
-                f"list anything still uncertain as an open question in it. Reads reopen after the save. "
-                f"To find something specific, use search_project and then read only the window it "
-                f"points to."
+                f"({read_budget}) is spent. Save a DRAFT of the plan NOW with save_plan, from what you already "
+                f"know, listing anything still uncertain as an open question. This is a checkpoint, not the end "
+                f"of the turn: reads reopen after the save, and you then continue investigating the open "
+                f"questions and save the finished plan. To find something specific, use search_project and "
+                f"then read only the window it points to."
             )
         reads["since_save"] += 1
         # Counted before the read, so a refusal costs nothing. Keyed on the
@@ -630,6 +632,20 @@ def make_planning_tools(
         plan evolves; each call replaces the previous draft."""
         plan_ref["markdown"] = markdown
         reads["since_save"] = 0  # the draft gate reopens: reads now refine a plan that exists
+        if reads["gated"]:
+            # A save forced by the gate is a checkpoint. The plain "Plan saved"
+            # reply read as "you're done": on 2026-09-09 a session hit the gate,
+            # saved, made one more read and ended the turn with its open
+            # questions unanswered. Say what happens next, explicitly.
+            reads["gated"] = False
+            budget = _rs.as_int("planning_read_budget")
+            return (
+                f"Draft saved ({len(markdown)} chars). The read budget has reset: you can read {budget} more files. "
+                f"This save was forced by the budget, so treat it as a DRAFT and keep working in this same turn: "
+                f"take the open questions you listed, search_project for each, read only the windows the hits point "
+                f"to, and call save_plan again with the finished plan. End the turn only when the plan is complete "
+                f"or you genuinely need the operator's answer to proceed."
+            )
         return "Plan saved. The user can now see it and use \"Build Now\" whenever they're ready."
 
     def _search_gate(key: tuple) -> str | None:
