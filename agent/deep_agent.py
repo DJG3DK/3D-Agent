@@ -36,6 +36,7 @@ warnings.filterwarnings(
 from agent import runtime_settings as _rs
 from agent.middleware.hidden_tools import HiddenToolsMiddleware
 from agent.middleware.repeat_guard import RepeatCallGuardMiddleware
+from agent.middleware.sanitize_tool_calls import SanitizeToolCallsMiddleware
 from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddleware, BudgetTracker
 from agent.middleware.model_pin import PlanCodeModelMiddleware
 from agent.tools.agent_tools import make_agent_tools
@@ -1038,6 +1039,7 @@ async def build_deep_agent(
             # sees the agent's own file space, never the repo, so a coder
             # cleaning up dead modules gets "not found" four times before it
             # thinks of `rm` (observed 2026-09-08). bash rm is the real one.
+            SanitizeToolCallsMiddleware(),  # a malformed tool call in history never reaches a provider (2026-09-09)
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
             RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)
             BudgetGuardMiddleware(tracker),
@@ -1073,6 +1075,7 @@ async def build_deep_agent(
             # cover skills/memory. execute goes too -- `bash` is the real
             # shell here, and built-in execute has no sandbox behind this
             # backend, so it can only error or mislead.
+            SanitizeToolCallsMiddleware(),  # a malformed tool call in history never reaches a provider (2026-09-09)
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
             RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)
             BudgetGuardMiddleware(tracker),
@@ -1112,6 +1115,7 @@ async def build_deep_agent(
             # cover skills/memory. execute goes too -- `bash` is the real
             # shell here, and built-in execute has no sandbox behind this
             # backend, so it can only error or mislead.
+            SanitizeToolCallsMiddleware(),  # a malformed tool call in history never reaches a provider (2026-09-09)
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
             RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)
             BudgetGuardMiddleware(tracker),
@@ -1138,6 +1142,7 @@ async def build_deep_agent(
             skills_summary=skills_summary,
         ),
         middleware=[
+            SanitizeToolCallsMiddleware(),  # a malformed tool call in history never reaches a provider (2026-09-09)
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
             RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)  # see subagent specs' comment
             BudgetGuardMiddleware(tracker),
