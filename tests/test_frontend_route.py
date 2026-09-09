@@ -19,17 +19,45 @@ def test_ui_styling_category_routes_frontend():
     assert d.is_frontend and d.reason == "category ui-styling"
 
 
-def test_mostly_frontend_paths_route_frontend_even_for_a_feature():
-    text = "Add a Notional column: frontend/src/pages/OpenPositionsPage.tsx, frontend/src/utils/format.ts, and expose it in src/api/routes.js"
+def test_a_clear_frontend_majority_routes_frontend_even_for_a_feature():
+    text = "Add a Notional column: frontend/src/pages/OpenPositionsPage.tsx, frontend/src/utils/format.ts, frontend/src/utils/positions.ts and a note in docs/README.md"
     d = classify_frontend(text, category="feature")
     assert d.is_frontend
-    assert d.reason == "2 of 3 named files are frontend"
+    assert d.reason == "3 of 3 named files are frontend"
+
+
+def test_any_named_backend_path_routes_general_whatever_the_count():
+    """2026-09-09: a Prisma schema change with API, mapper and import edits
+    named 19 frontend files against 17 backend ones and went to the frontend
+    seat on the majority vote. The migration was the whole risk."""
+    text = ("Products in several categories: change apps/api/prisma/schema.prisma, apps/api/src/catalog/products/products.service.ts, "
+            "apps/api/src/catalog/mappers/product.mapper.ts, then apps/admin/src/pages/ProductEditPage.tsx, "
+            "apps/admin/src/components/CategoryMultiSelect.tsx, apps/storefront/src/pages/ShopPage.tsx, HomePage.tsx, ProductDetailPage.tsx")
+    d = classify_frontend(text, category="feature")
+    assert d.route == "general"
+    assert d.reason.startswith("backend work named:") and "schema.prisma" in d.reason
+
+
+def test_backend_keywords_route_general_even_with_frontend_paths():
+    d = classify_frontend("Add a migration so the ShopPage.tsx filter can read the new column", category="feature")
+    assert d.route == "general" and "migration" in d.reason
+
+
+def test_a_slim_frontend_majority_is_not_enough():
+    text = "Touch frontend/src/a.tsx, frontend/src/b.tsx and lib/util.js, lib/other.js"  # 2 of 4
+    d = classify_frontend(text, category="feature")
+    assert d.route == "general" and d.reason.startswith("mixed:")
 
 
 def test_mostly_backend_paths_stay_general():
     text = "Fix src/core/bot.js and src/strategies/strata.js; adjust the badge in frontend/src/components/Sidebar.tsx"
     d = classify_frontend(text, category="bug-fix")
-    assert d.route == "general" and d.reason.startswith("mixed:")
+    assert d.route == "general"
+
+
+def test_ui_styling_category_still_wins_over_a_backend_mention():
+    # The classifier read the whole goal; a passing mention of an endpoint in a styling task does not demote it.
+    assert classify_frontend("restyle the settings page; the endpoint stays as is", category="ui-styling").is_frontend
 
 
 def test_two_keywords_route_frontend_one_does_not():

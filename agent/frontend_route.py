@@ -13,10 +13,15 @@ Three signals, strongest first, plus a switch the operator flips:
 1. category  -- the task classifier's `ui-styling` is the strongest evidence:
                 a model read the whole goal. (Tasks only; a planning session
                 has no category when its first turn starts.)
-2. paths     -- files the request names. Mostly frontend paths is frontend
-                work whatever the category says: a `feature` that lives in
-                frontend/ routes to Kimi. Mostly backend paths stays general.
-3. keywords  -- a short list, and it takes two distinct hits: "fix the chart's
+2. backend   -- any named backend path (api/, prisma/, migrations/, a .sql or
+                .prisma file...) or backend keyword (migration, schema,
+                database, endpoint...) routes GENERAL. Database and API work is
+                never "frontend work" because it also has a UI.
+3. paths     -- files the request names. A CLEAR majority of frontend paths
+                (two thirds) is frontend work whatever the category says: a
+                `feature` that lives in frontend/ routes to Kimi. Anything
+                short of that with both kinds named stays general.
+4. keywords  -- a short list, and it takes two distinct hits: "fix the chart's
                 numbers" mentions a chart but is a data bug.
 0. override  -- "frontend" or "general" from the Build Now popup, the New Task
                 form, or a new planning session. Beats everything.
@@ -39,9 +44,21 @@ CODER_ROLE = {FRONTEND: "agent-coder-frontend", GENERAL: "agent-coder"}
 PLANNING_ROLE = {FRONTEND: "agent-planning-chat-frontend"}
 
 FRONTEND_CATEGORIES = frozenset({"ui-styling"})
+# Backend-core signals: a request that names any of these is not "frontend
+# work" however many component files it also lists. A 3DSteals task on
+# 2026-09-09 -- a Prisma schema change so products can live in several
+# categories, with API, mapper, import and shared-type edits -- named 19
+# frontend files against 17 backend ones and routed to the frontend seat on
+# the majority vote. The database migration was the whole risk of that task;
+# the file count said nothing about it.
+BACKEND_DIRS = frozenset({"api", "server", "backend", "prisma", "migrations", "db", "database", "services", "controllers", "models", "workers", "core", "strategies"})
+BACKEND_EXTS = frozenset({".sql", ".prisma", ".py", ".go", ".rs", ".java", ".rb", ".php"})
+BACKEND_KEYWORDS = ("migration", "schema", "database", "prisma", "sql", "endpoint", "controller", "foreign key", " fk ", "orm", "backfill")
+# A frontend majority has to be clear, not a coin flip.
+FRONTEND_MAJORITY = 2 / 3
 FRONTEND_DIRS = frozenset({"frontend", "web", "client", "ui", "components", "pages", "views", "layouts", "styles", "css"})
 FRONTEND_EXTS = frozenset({".tsx", ".jsx", ".css", ".scss", ".less", ".html", ".vue", ".svelte"})
-CODE_EXTS = FRONTEND_EXTS | frozenset({".ts", ".js", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".rb", ".php", ".sql", ".sh", ".json", ".yaml", ".yml"})
+CODE_EXTS = FRONTEND_EXTS | frozenset({".ts", ".js", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".rb", ".php", ".sql", ".sh", ".json", ".yaml", ".yml", ".prisma"})
 FRONTEND_KEYWORDS = (
     "ui", "ux", "layout", "styling", "style", "css", "design", "responsive", "theme",
     "animation", "polish", "dashboard", "page", "component", "button", "modal",
@@ -76,6 +93,24 @@ def _is_code_path(path: str) -> bool:
     return "." in last and ("." + last.rsplit(".", 1)[-1]) in CODE_EXTS
 
 
+def _is_backend_path(path: str) -> bool:
+    parts = [p.lower() for p in path.strip("`'\"()[],.").split("/")]
+    ext = "." + parts[-1].rsplit(".", 1)[-1] if "." in parts[-1] else ""
+    if ext in BACKEND_EXTS or parts[-1].lower() == "schema.prisma":
+        return True
+    return any(p in BACKEND_DIRS for p in parts[:-1]) and not _is_frontend_path(path)
+
+
+def backend_signals(text: str) -> list[str]:
+    """Named backend paths and backend keywords in the request, for the reason string."""
+    fe, other = named_paths(text)
+    hits = [p for p in other if _is_backend_path(p)]
+    lowered = (text or "").lower()
+    # Whole words only: "orm" must not fire on "format.ts", "sql" not on "mysql".
+    hits += [kw.strip() for kw in BACKEND_KEYWORDS if re.search(r"(?<![a-z])" + re.escape(kw.strip()) + r"(?![a-z])", lowered)]
+    return hits
+
+
 def named_paths(text: str) -> tuple[list[str], list[str]]:
     """(frontend paths, other code paths) named in the text, de-duplicated."""
     fe: list[str] = []
@@ -108,10 +143,15 @@ def classify_frontend(text: str, category: str | None = None, override: str | No
         return RouteDecision(override, "operator's choice")
     if category in FRONTEND_CATEGORIES:
         return RouteDecision(FRONTEND, f"category {category}")
+    backend = backend_signals(text)
+    if backend:
+        shown = ", ".join(dict.fromkeys(backend))[:120]
+        return RouteDecision(GENERAL, f"backend work named: {shown}")
     fe, other = named_paths(text)
-    if fe and len(fe) >= len(other):
-        return RouteDecision(FRONTEND, f"{len(fe)} of {len(fe) + len(other)} named files are frontend")
-    if fe and len(other) > len(fe):
+    total = len(fe) + len(other)
+    if fe and len(fe) >= FRONTEND_MAJORITY * total:
+        return RouteDecision(FRONTEND, f"{len(fe)} of {total} named files are frontend")
+    if fe and other:
         return RouteDecision(GENERAL, f"mixed: {len(other)} backend vs {len(fe)} frontend files")
     hits = keyword_hits(text)
     if len(hits) >= 2:
