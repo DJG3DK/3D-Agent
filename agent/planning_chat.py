@@ -216,6 +216,10 @@ about what you found -- that is the job, not a detour from it. If a question is 
 one turn, say what you found, say what is still open, and save the plan you can justify now; a partial \
 plan the operator can act on beats a perfect one that never gets written.
 - save_brief: pin the brief for the current request (see FIRST ACTION above).
+- THE DRAFT GATE: after a set number of repo file reads without a saved plan (Settings: "Planning reads \
+before a draft"), read_project_file closes until you call save_plan. Save early -- a draft with open \
+questions beats reading on -- then read to refine it. Paged reads return at least 500 lines; page in \
+500+ line steps, never 100.
 - save_plan: save the current draft plan document (Markdown). Call this once the plan is genuinely ready, \
 and again any time it meaningfully changes -- never wait to be asked. The user can hit "Build Now" the \
 moment a plan exists, so don't leave a stale or half-finished draft saved if the conversation has moved on. \

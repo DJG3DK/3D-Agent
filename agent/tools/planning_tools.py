@@ -81,6 +81,12 @@ _READ_HARD_CAP_CHARS = 2_000_000
 # does not.
 _READ_WARN_AT = 6
 _READ_CAP = 14
+# Paged reads return at least this many lines whatever `limit` asks for. The
+# prompt recommends 600-800 line windows; a Kimi planning turn on 2026-09-09
+# paged a 1,100-line component in 120-line windows, eight calls for one file
+# it had already read the turn before, each call resending 120k tokens of
+# context. A floor cuts that to two calls with no cooperation required.
+_READ_MIN_WINDOW = 500
 
 
 @asynccontextmanager
@@ -422,6 +428,11 @@ def make_planning_tools(
     search_seen: dict[tuple, int] = {}
     search_last: dict[tuple, str] = {}
     search_calls = {"n": 0}
+    # The draft gate: reads since the last save_plan. Past the budget the read
+    # tool closes until a plan is saved -- reading is never the deliverable,
+    # and a session that reads instead of writing is the failure this exists
+    # for (2026-09-09: 250 reads, two compactions, $13, no draft).
+    reads = {"since_save": 0}
 
     # Seeded with whatever the session already has saved. A planning agent is
     # rebuilt from scratch on EVERY turn, so a plan_ref that always started at
@@ -505,7 +516,8 @@ def make_planning_tools(
 
         For LARGE files, page through THIS tool: `offset` is the 1-based line
         to start from, `limit` the number of lines (e.g. offset=600,
-        limit=600). A plain read of a big file returns its beginning plus the
+        limit=600); a paged read always returns at least 500 lines, so page in
+        500+ steps. Prefer search_project to find the lines you need first. A plain read of a big file returns its beginning plus the
         line count -- follow up with offset/limit rather than asking for the
         whole file again, which just returns the identical text."""
         redirect = _own_space_redirect(path)
@@ -515,6 +527,16 @@ def make_planning_tools(
             repo_root = _project_root(repo, allowed_repos)
         except ValueError as e:
             return f"ERROR: {e}"
+        read_budget = _rs.as_int("planning_read_budget")
+        if reads["since_save"] >= read_budget:
+            return (
+                f"ERROR: {reads['since_save']} file reads since the last saved plan -- the read budget "
+                f"({read_budget}) is spent. Save the plan NOW with save_plan, from what you already know; "
+                f"list anything still uncertain as an open question in it. Reads reopen after the save. "
+                f"To find something specific, use search_project and then read only the window it "
+                f"points to."
+            )
+        reads["since_save"] += 1
         # Counted before the read, so a refusal costs nothing. Keyed on the
         # file rather than the exact window: the loop this exists to stop
         # paged through the same file with VARYING offsets, so a same-window
@@ -569,7 +591,7 @@ def make_planning_tools(
         if offset or limit:
             lines = content.split("\n")
             start = max(0, (offset or 1) - 1)
-            count = limit if limit and limit > 0 else 400
+            count = max(limit if limit and limit > 0 else 400, _READ_MIN_WINDOW)
             slice_lines = lines[start:start + count]
             if not slice_lines:
                 return f"(no lines at offset {offset} -- {path!r} has {len(lines)} lines)"
@@ -607,6 +629,7 @@ def make_planning_tools(
         far, and any design/UX direction. You can call this multiple times as the
         plan evolves; each call replaces the previous draft."""
         plan_ref["markdown"] = markdown
+        reads["since_save"] = 0  # the draft gate reopens: reads now refine a plan that exists
         return "Plan saved. The user can now see it and use \"Build Now\" whenever they're ready."
 
     def _search_gate(key: tuple) -> str | None:

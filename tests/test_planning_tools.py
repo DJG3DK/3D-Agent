@@ -221,8 +221,10 @@ async def test_a_paged_slice_is_line_numbered_and_reports_what_remains(tmp_path,
         {"repo": "demo", "path": "big.js", "offset": 10, "limit": 3}
     )
     assert result.startswith("10\tline 10 ")
-    assert f"[lines 10-12 of {total}" in result
-    assert f"{total - 12} more after this]" in result
+    # limit=3 is widened to the 500-line floor (_READ_MIN_WINDOW): a planner
+    # paging a big file in 100-line windows was the 2026-09-09 cost sink.
+    assert f"[lines 10-509 of {total}" in result
+    assert f"{total - 509} more after this]" in result
 
 
 async def test_the_last_slice_does_not_claim_more_is_coming(tmp_path, monkeypatch):

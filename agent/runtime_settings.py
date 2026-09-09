@@ -30,6 +30,20 @@ KEY = "runtime"
 # name -> spec. `env` is the variable that seeded the old default, kept so an
 # existing deployment's configuration is not silently discarded on upgrade.
 KNOBS: dict[str, dict] = {
+    "planning_read_budget": {
+        "label": "Planning reads before a draft",
+        "help": (
+            "How many repo file reads a planning turn may make before it must save a "
+            "plan. Past it, read_project_file answers 'save the plan now' and reopens "
+            "after save_plan. The draft gate: reading is never the deliverable."
+        ),
+        "unit": "reads",
+        "default": 30,
+        "min": 5,
+        "max": 500,
+        "env": "PLANNING_READ_BUDGET",
+        "group": "Budgets & loop limits",
+    },
     "planning_search_budget": {
         "label": "Planning searches per turn",
         "help": (
