@@ -920,7 +920,11 @@ class CreateTaskRequest(BaseModel):
     # already rejected that -- the two endpoints were inconsistent), and
     # budget_usd had no bounds so 0 tripped the guard on the first call and a
     # negative value was accepted straight into AgentState.
-    goal: str = Field(min_length=1, max_length=20_000)
+    # 80k, not 20k: a Build Now hands the whole plan document over as the goal,
+    # and a full-frontend restyle plan came in at 20,364 chars on 2026-09-09 --
+    # every click returned 422 and the planning view had nowhere to show it.
+    # Still bounded; a plan past 80k is a document, not a task.
+    goal: str = Field(min_length=1, max_length=80_000)
     repo: str
     budget_usd: float | None = Field(default=None, gt=0, le=1000)
     attachments: list[AttachmentEntry] | None = None  # manifest entries from /api/uploads

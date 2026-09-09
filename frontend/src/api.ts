@@ -268,7 +268,13 @@ export async function createTask(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ goal, repo, budget_usd: budgetUsd, attachments: attachments?.length ? attachments : null, route }),
   });
-  if (!res.ok) throw new Error(`createTask failed: ${res.status}`);
+  if (!res.ok) {
+    // Say WHY: a 422 on Build Now (plan longer than the goal limit, 2026-09-09)
+    // used to surface as a dead button.
+    const body = await res.json().catch(() => ({}));
+    const detail = typeof body.detail === "string" ? body.detail : Array.isArray(body.detail) ? body.detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join("; ") : "";
+    throw new Error(`createTask failed: ${res.status}${detail ? ` — ${detail}` : ""}`);
+  }
   return res.json();
 }
 

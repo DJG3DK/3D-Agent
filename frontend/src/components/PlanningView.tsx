@@ -27,6 +27,9 @@ interface Props {
   // Now" hands the saved plan document off to the real build system exactly
   // the way a manually-typed goal would, no dedicated backend endpoint.
   onBuildNow: (goal: string, repo: string, budgetUsd: number, route: RouteChoice) => void;
+  /** Why the last Build Now failed, if it did -- a dead button is not an answer. */
+  buildError?: string | null;
+  onClearBuildError?: () => void;
   onSessionCreated: (session: PlanningSessionMeta) => void;
 }
 
@@ -186,7 +189,7 @@ function OutcomeBanner({ session }: { session: PlanningSessionMeta | null }) {
   );
 }
 
-export function PlanningView({ repos, session, onBuildNow, onSessionCreated }: Props) {
+export function PlanningView({ repos, session, onBuildNow, onSessionCreated, buildError, onClearBuildError }: Props) {
   const [starting, setStarting] = useState(false);
   const [text, setText] = useState("");
   const [planOpen, setPlanOpen] = useState(true);
@@ -298,6 +301,12 @@ export function PlanningView({ repos, session, onBuildNow, onSessionCreated }: P
           </button>
           {stream.planMarkdown && (
             <BuildNowPanel sessionRoute={session?.route} onConfirm={(budgetUsd, route) => onBuildNow(stream.planMarkdown!, repo, budgetUsd, route)} />
+          )}
+          {buildError && (
+            <div className="planning-build-error" role="alert">
+              {buildError}
+              {onClearBuildError && <button type="button" onClick={onClearBuildError} aria-label="Dismiss error">×</button>}
+            </div>
           )}
           <button className="planning-new-plan-btn" disabled={archiving} onClick={handleNewPlan} title="Archive this plan and start a fresh one for the same project">
             {archiving ? "Archiving..." : "New Plan"}

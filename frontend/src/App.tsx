@@ -213,6 +213,8 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
             repos={repos}
             session={selectedPlanningSession}
             onBuildNow={(goal, repo, budgetUsd, route) => handleCreate(goal, repo, budgetUsd, [], route)}
+            buildError={createError}
+            onClearBuildError={() => setCreateError(null)}
             onSessionCreated={(s) => {
               setPlanningSessions((list) => [s, ...list]);
               setSelectedPlanningSession(s);

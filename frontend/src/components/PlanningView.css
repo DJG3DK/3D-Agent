@@ -296,3 +296,17 @@
 .planning-outcome--warn { border-left-color: var(--amber); }
 .planning-outcome--bad  { border-left-color: var(--red); }
 .planning-outcome-hint { color: var(--text-faint); }
+
+/* Build Now failure, shown beside the button that failed (2026-09-09). */
+.planning-build-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: #f87171;
+  border: 1px solid #f8717166;
+  max-width: 28rem;
+}
+.planning-build-error button { background: none; border: none; color: inherit; cursor: pointer; font-size: 1rem; }
