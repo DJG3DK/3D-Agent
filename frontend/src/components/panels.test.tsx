@@ -129,6 +129,7 @@ describe("NewTaskPanel", () => {
       expect.any(String),
       expect.any(Number),
       expect.any(Array),
+      "auto",  // model route: the server decides unless the operator picks
     );
   });
 

@@ -87,6 +87,12 @@ ROLE_REQUIREMENTS: dict[str, dict] = {
         "tools": True, "structured": False, "strict": False,
         "note": "The main work loop — file edits, shell, checks. Wants strong tool calling above all.",
     },
+    "agent-coder-frontend": {
+        "tools": True, "structured": False, "strict": False,
+        "note": "The coder seat for frontend work (route: category ui-styling, mostly-frontend paths, "
+                "or the operator's toggle -- agent/frontend_route.py). Also serves as that task's "
+                "investigator; the test-writer stays on its own pin. Pinned for polish, not price.",
+    },
     "agent-investigator": {
         "tools": True, "structured": False, "strict": False,
         "note": "Read-only subagent: no write or shell tools at all. Any tool-capable model.",
@@ -131,6 +137,11 @@ ROLE_REQUIREMENTS: dict[str, dict] = {
     "agent-planning-chat-hard": {
         "tools": True, "structured": False, "strict": False,
         "note": "Escalation tier for the same chat. Same needs as the easy tier.",
+    },
+    "agent-planning-chat-frontend": {
+        "tools": True, "structured": False, "strict": False,
+        "note": "Planning chat for frontend sessions, ahead of the EASY/HARD ladder. Same needs as "
+                "the other two tiers; pinned to the model that will build the plan.",
     },
     "agent-demo-chat": {
         "tools": True, "structured": False, "strict": False,

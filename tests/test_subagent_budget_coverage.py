@@ -203,3 +203,38 @@ async def test_planning_turns_have_a_real_dollar_ceiling(build_args, monkeypatch
     from agent import runtime_settings as rs
     assert tracker.budget_usd == 1.25 + rs.value("planning_turn_budget_usd")
     assert tracker.total_cost == 1.25
+
+
+# ---------------------------------------------------------------------------
+# frontend route: the coordinator and investigator move to the frontend coder
+# alias; the test-writer and the todo planner stay put (operator's call,
+# 2026-09-09).
+# ---------------------------------------------------------------------------
+
+
+async def _roles_requested(monkeypatch, build_args, route):
+    roles = []
+
+    def recording_llm_for_role(config, role, **kwargs):
+        roles.append(role)
+        return FakeListChatModel(responses=["x"])
+
+    monkeypatch.setattr(da, "create_deep_agent", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(da, "llm_for_role", recording_llm_for_role)
+    config, repo, checkpointer, store = build_args
+    await da.build_deep_agent(config, repo, budget_usd=1.0, checkpointer=checkpointer, store=store, route=route)
+    return roles
+
+
+async def test_general_route_keeps_every_seat(monkeypatch, build_args):
+    roles = await _roles_requested(monkeypatch, build_args, "general")
+    for r in ("agent-coder", "agent-planner", "agent-investigator", "agent-test-writer"):
+        assert r in roles
+    assert "agent-coder-frontend" not in roles
+
+
+async def test_frontend_route_moves_coder_and_investigator_only(monkeypatch, build_args):
+    roles = await _roles_requested(monkeypatch, build_args, "frontend")
+    assert "agent-coder-frontend" in roles
+    assert "agent-coder" not in roles and "agent-investigator" not in roles
+    assert "agent-test-writer" in roles and "agent-planner" in roles

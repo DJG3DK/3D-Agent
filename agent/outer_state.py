@@ -38,6 +38,11 @@ class AgentState(TypedDict):
     cost_so_far: float
     escalated: bool
     escalation_reason: str | None
+    # Which coder seat this task runs on ("frontend" -> the Kimi alias, else
+    # the general coder) and why (agent/frontend_route.py). Decided once at
+    # creation; a resume must keep it, like category.
+    route: str
+    route_reason: str | None
     review_gate_result: dict | None
 
     # The sha of a commit that's been made but not yet confirmed shipped
@@ -172,12 +177,16 @@ def initial_state(
     max_iterations: int = 40,
     auto_approve_commands: bool = False,
     require_merge_review: bool = True,
+    route: str = "general",
+    route_reason: str | None = None,
 ) -> AgentState:
     return AgentState(
         task_id=task_id,
         goal=goal,
         repo=repo,
         budget_usd=budget_usd,
+        route=route,
+        route_reason=route_reason,
         max_iterations=max_iterations,
         iteration_count=0,
         no_diff_streak=0,

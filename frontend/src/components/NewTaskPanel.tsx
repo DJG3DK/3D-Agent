@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
 import { useBudgetInput } from "../useDefaultTaskBudget";
+import { RouteSelect, type RouteChoice } from "./RouteSelect";
 import "./NewTaskPanel.css";
 
 interface Props {
   repos: string[];
-  onSubmit: (goal: string, repo: string, budgetUsd: number, files: File[]) => void;
+  onSubmit: (goal: string, repo: string, budgetUsd: number, files: File[], route: RouteChoice) => void;
   submitting: boolean;
   error?: string | null;
   onClearError?: () => void;
@@ -19,6 +20,7 @@ export function NewTaskPanel({ repos, onSubmit, submitting, error, onClearError 
   const [repo, setRepo] = useState("");
   const effectiveRepo = repo || repos[0] || "";
   const [budget, setBudget] = useBudgetInput();  // seeded from Settings → Default task budget
+  const [route, setRoute] = useState<RouteChoice>("auto");
   const [files, setFiles] = useState<File[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -91,6 +93,7 @@ export function NewTaskPanel({ repos, onSubmit, submitting, error, onClearError 
               onChange={(e) => setBudget(parseFloat(e.target.value) || 0)}
             />
           </label>
+          <RouteSelect value={route} onChange={setRoute} />
         </div>
 
         {error && (
@@ -102,7 +105,7 @@ export function NewTaskPanel({ repos, onSubmit, submitting, error, onClearError 
         <button
           className="submit-btn"
           disabled={!goal.trim() || !effectiveRepo || submitting}
-          onClick={() => onSubmit(goal.trim(), effectiveRepo, budget, files)}
+          onClick={() => onSubmit(goal.trim(), effectiveRepo, budget, files, route)}
         >
           {submitting ? "Starting..." : "Start Task"}
         </button>

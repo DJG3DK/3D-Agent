@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useBudgetInput } from "../useDefaultTaskBudget";
+import { RouteBadge, RouteSelect, type RouteChoice } from "./RouteSelect";
 import { JumpToBottom } from "./JumpToBottom";
 import type { AttachmentEntry } from "../api";
 import { archivePlanningSession, createPlanningSession, uploadFiles } from "../api";
@@ -25,7 +26,7 @@ interface Props {
   // Same shape as App.tsx's handleCreate for a normal new task -- "Build
   // Now" hands the saved plan document off to the real build system exactly
   // the way a manually-typed goal would, no dedicated backend endpoint.
-  onBuildNow: (goal: string, repo: string, budgetUsd: number) => void;
+  onBuildNow: (goal: string, repo: string, budgetUsd: number, route: RouteChoice) => void;
   onSessionCreated: (session: PlanningSessionMeta) => void;
 }
 
@@ -95,10 +96,11 @@ function PlanningEntry({ entry }: { entry: PlanningLogEntry }) {
   );
 }
 
-function NewSessionPanel({ repos, onStart, starting }: { repos: string[]; onStart: (repo: string) => void; starting: boolean }) {
+function NewSessionPanel({ repos, onStart, starting }: { repos: string[]; onStart: (repo: string, route: RouteChoice) => void; starting: boolean }) {
   // audit H-13: derive, don't mirror -- see NewTaskPanel for the full note.
   const [repo, setRepo] = useState("");
   const effectiveRepo = repo || repos[0] || "";
+  const [route, setRoute] = useState<RouteChoice>("auto");
   return (
     <div className="planning-start-panel">
       <div className="planning-start-card">
@@ -118,7 +120,8 @@ function NewSessionPanel({ repos, onStart, starting }: { repos: string[]; onStar
             ))}
           </select>
         </label>
-        <button className="submit-btn" disabled={!effectiveRepo || starting} onClick={() => onStart(effectiveRepo)}>
+        <RouteSelect value={route} onChange={setRoute} />
+        <button className="submit-btn" disabled={!effectiveRepo || starting} onClick={() => onStart(effectiveRepo, route)}>
           {starting ? "Starting..." : "Start Planning Session"}
         </button>
       </div>
@@ -126,9 +129,12 @@ function NewSessionPanel({ repos, onStart, starting }: { repos: string[]; onStar
   );
 }
 
-function BuildNowPanel({ onConfirm }: { onConfirm: (budgetUsd: number) => void }) {
+function BuildNowPanel({ onConfirm, sessionRoute }: { onConfirm: (budgetUsd: number, route: RouteChoice) => void; sessionRoute?: string | null }) {
   const [open, setOpen] = useState(false);
   const [budget, setBudget] = useBudgetInput();  // seeded from Settings → Default task budget
+  // A frontend planning session hands its plan to the frontend coder by
+  // default; the operator can still pick otherwise here.
+  const [route, setRoute] = useState<RouteChoice>(sessionRoute === "frontend" ? "frontend" : "auto");
   if (!open) {
     return (
       <button className="planning-build-btn" onClick={() => setOpen(true)}>
@@ -142,7 +148,8 @@ function BuildNowPanel({ onConfirm }: { onConfirm: (budgetUsd: number) => void }
         <span>Budget (USD)</span>
         <input type="number" min={0.1} step={0.1} value={budget} onChange={(e) => setBudget(parseFloat(e.target.value) || 0)} />
       </label>
-      <button className="planning-build-confirm-btn" onClick={() => onConfirm(budget)}>
+      <RouteSelect value={route} onChange={setRoute} />
+      <button className="planning-build-confirm-btn" onClick={() => onConfirm(budget, route)}>
         Confirm &amp; Start Building
       </button>
       <button className="planning-build-cancel-btn" onClick={() => setOpen(false)}>
@@ -196,13 +203,14 @@ export function PlanningView({ repos, session, onBuildNow, onSessionCreated }: P
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [stream.log.length]);
 
-  async function handleStart(chosenRepo: string) {
+  async function handleStart(chosenRepo: string, route: RouteChoice = "auto") {
     setStarting(true);
     try {
-      const { session_id } = await createPlanningSession(chosenRepo);
+      const { session_id } = await createPlanningSession(chosenRepo, route);
       onSessionCreated({
         session_id,
         repo: chosenRepo,
+        route: route === "auto" ? undefined : route,
         created_at: Date.now() / 1000,
         updated_at: Date.now() / 1000,
         title: null,
@@ -271,6 +279,7 @@ export function PlanningView({ repos, session, onBuildNow, onSessionCreated }: P
       <div className="planning-view-header">
         <span className="planning-view-repo">{repo}</span>
         <span className="planning-view-title">Planning session</span>
+        <RouteBadge route={session?.route} reason={session?.route_reason} />
         <span className="planning-view-cost" title="Total spend for this session (no cap)">
           ${stream.costUsd.toFixed(3)}
         </span>
@@ -288,7 +297,7 @@ export function PlanningView({ repos, session, onBuildNow, onSessionCreated }: P
             {planOpen ? "Hide plan" : "Show plan"}
           </button>
           {stream.planMarkdown && (
-            <BuildNowPanel onConfirm={(budgetUsd) => onBuildNow(stream.planMarkdown!, repo, budgetUsd)} />
+            <BuildNowPanel sessionRoute={session?.route} onConfirm={(budgetUsd, route) => onBuildNow(stream.planMarkdown!, repo, budgetUsd, route)} />
           )}
           <button className="planning-new-plan-btn" disabled={archiving} onClick={handleNewPlan} title="Archive this plan and start a fresh one for the same project">
             {archiving ? "Archiving..." : "New Plan"}

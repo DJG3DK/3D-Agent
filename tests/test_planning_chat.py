@@ -198,3 +198,10 @@ async def test_qwen_gets_the_identical_tools_memory_and_permissions_as_gemini(mo
     easy_middleware_types = [type(m).__name__ for m in easy_call["middleware"]]
     hard_middleware_types = [type(m).__name__ for m in hard_call["middleware"]]
     assert easy_middleware_types == hard_middleware_types
+
+
+async def test_frontend_route_uses_the_frontend_planning_alias_regardless_of_difficulty(monkeypatch):
+    calls = []
+    monkeypatch.setattr("agent.planning_chat.create_deep_agent", _capturing_create_deep_agent(calls))
+    await build_planning_agent(_FakeConfig(), "test-repo", MemorySaver(), InMemoryStore(), difficulty="HARD", route="frontend")
+    assert calls[0]["model"].model_name == "agent-planning-chat-frontend"

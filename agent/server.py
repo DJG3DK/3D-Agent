@@ -44,6 +44,7 @@ from agent.model_config import resolve_alias
 from agent.classify import classify_task, TaskClassification, TEST_REMINDER_NOTE
 from agent import runtime_settings
 from agent.middleware.budget_guard import BudgetExceededError
+from agent.frontend_route import RouteDecision, classify_frontend, normalize_override
 from agent.planning_chat import build_planning_agent, classify_planning_difficulty, planning_thread_config, run_planning_turn, _translate_message as _translate_planning_message
 from agent import auth
 from agent.auth import SESSION_COOKIE_NAME, User, check_repo_access
@@ -923,6 +924,9 @@ class CreateTaskRequest(BaseModel):
     repo: str
     budget_usd: float | None = Field(default=None, gt=0, le=1000)
     attachments: list[AttachmentEntry] | None = None  # manifest entries from /api/uploads
+    # "auto" decides from category/paths/keywords (agent/frontend_route.py);
+    # "frontend"/"general" is the operator overriding that.
+    route: Literal["auto", "frontend", "general"] = "auto"
 
 
 class SendMessageRequest(BaseModel):
@@ -951,6 +955,7 @@ class SaveModelPinsRequest(BaseModel):
 
 class CreatePlanningSessionRequest(BaseModel):
     repo: str
+    route: Literal["auto", "frontend", "general"] = "auto"
 
 
 class PlanningMessageRequest(BaseModel):
@@ -1113,7 +1118,8 @@ async def write_task_meta(store, repo: str, task_id: str, **updates) -> dict:
     return record
 
 
-async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, graph_input, category: str | None = None) -> None:
+async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, graph_input, category: str | None = None,
+                        route: str | None = None, route_reason: str | None = None) -> None:
     """Shared by a fresh task (graph_input = the initial state) and a resume
     (graph_input = None, meaning "continue from the last checkpoint" -- the
     standard LangGraph resume pattern). Everything after that point --
@@ -1138,6 +1144,9 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
     original_created_at = _existing_val.get("created_at")
     if category is None:
         category = _existing_val.get("category") or "other"
+    if route is None:
+        route = _existing_val.get("route") or "general"
+        route_reason = _existing_val.get("route_reason")
     # metadata/tags -- standard RunnableConfig fields LangChain's tracer
     # automatically attaches to every run generated within this invocation,
     # so a trace is filterable to this specific task in the LangSmith UI
@@ -1167,7 +1176,7 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
     await write_task_meta(
         store, repo, task_id, goal=goal, budget_usd=budget_usd, category=category,
         status="running", created_at=original_created_at or time.time(),
-        cost_so_far=starting_cost,
+        cost_so_far=starting_cost, route=route, route_reason=route_reason,
     )
     _publish(task_id, {"type": "status", "status": "running"})
 
@@ -1393,13 +1402,17 @@ async def _run_task(
     task_id: str, goal: str, repo: str, budget_usd: float, category: str,
     auto_approve_commands: bool = False,
     require_merge_review: bool = True,
+    route: str = "general",
+    route_reason: str | None = None,
 ) -> None:
     state = initial_state(
         task_id=task_id, goal=goal, repo=repo, budget_usd=budget_usd,
         auto_approve_commands=auto_approve_commands,
         require_merge_review=require_merge_review,
+        route=route, route_reason=route_reason,
     )
-    await _stream_graph(task_id, repo, goal, budget_usd, state, category=category)
+    await _stream_graph(task_id, repo, goal, budget_usd, state, category=category,
+                        route=route, route_reason=route_reason)
 
 
 async def _read_with_retry(fn):
@@ -1618,6 +1631,7 @@ async def create_planning_session(req: CreatePlanningSessionRequest, user: User 
         "session_id": session_id, "repo": req.repo, "created_at": time.time(),
         "updated_at": time.time(), "title": None, "plan_markdown": None, "cost_usd": 0.0,
         "archived": False, "category": None,
+        "route_override": normalize_override(req.route),
     })
     return {"session_id": session_id, "repo": req.repo}
 
@@ -1809,6 +1823,15 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         _prior_difficulty = (meta_item.value.get("difficulty") if meta_item else None) or "EASY"
         if _prior_difficulty == "HARD":
             difficulty = "HARD"
+        # Frontend route (agent/frontend_route.py): the operator's override on
+        # the session wins; otherwise decided from this message and, like
+        # difficulty, sticky once a session has gone frontend -- the whole
+        # context is frontend work from then on.
+        _meta_val = meta_item.value if meta_item else {}
+        _route_decision = classify_frontend(text, None, _meta_val.get("route_override"))
+        if _meta_val.get("route") == "frontend" and not _meta_val.get("route_override"):
+            _route_decision = RouteDecision("frontend", _meta_val.get("route_reason") or "earlier turn")
+        route = _route_decision.route
         # turn_active/turn_started_at make an in-flight planning turn
         # STORE-VISIBLE, like a running task. Deploy tooling used to infer
         # idleness from tasks + router quiet, and a >90s gap inside one long
@@ -1822,6 +1845,7 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         if meta_item:
             await app.state.store.aput(("planning", repo), session_id, {
                 **meta_item.value, "difficulty": difficulty,
+                "route": route, "route_reason": _route_decision.reason,
                 "turn_active": True, "turn_started_at": time.time(),
             })
         # Seed the turn with the draft this session already has. The agent (and
@@ -1838,6 +1862,7 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
             existing_plan=_prior_plan,
             allowed_repos=allowed_repos,  # audit H-2
             existing_brief=_prior_brief,
+            route=route,
         )
         thread_config = planning_thread_config(session_id, repo)
         # Circuit breaker: llm_for_role's own per-call timeout (plus
@@ -2159,15 +2184,20 @@ async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_
         # testable logic) classify_task can actually assess before any code
         # has been read.
         goal = goal + TEST_REMINDER_NOTE
+    # Which coder seat (agent/frontend_route.py): the operator's toggle, else
+    # the category, the named paths, then keywords. Decided once, here.
+    decision = classify_frontend(req.goal, classification.category, normalize_override(req.route))
     _running_tasks[task_id] = asyncio.create_task(
         _run_task(
             task_id, goal, req.repo, budget, classification.category,
             # Snapshot of the creator's own settings -- see outer_state.py.
             auto_approve_commands=user.auto_approve_commands,
             require_merge_review=user.require_merge_review,
+            route=decision.route, route_reason=decision.reason,
         )
     )
-    return {"task_id": task_id, "category": classification.category, "needs_tests": classification.needs_tests}
+    return {"task_id": task_id, "category": classification.category, "needs_tests": classification.needs_tests,
+            "route": decision.route, "route_reason": decision.reason}
 
 
 @app.get("/api/tasks")

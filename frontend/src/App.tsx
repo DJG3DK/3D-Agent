@@ -81,13 +81,18 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
     return () => clearInterval(interval);
   }, [refreshTasks, refreshPlanningSessions]);
 
-  async function handleCreate(goal: string, repo: string, budgetUsd: number, files: File[]) {
+  async function handleCreate(goal: string, repo: string, budgetUsd: number, files: File[], route: "auto" | "frontend" | "general" = "auto") {
     setSubmitting(true);
     setCreateError(null);
     try {
       const attachments = files.length ? await uploadFiles(repo, files) : undefined;
-      const { task_id } = await createTask(goal, repo, budgetUsd, attachments);
-      const meta: TaskMeta = { task_id, goal, repo, budget_usd: budgetUsd, status: "running", created_at: Date.now() / 1000 };
+      const created = await createTask(goal, repo, budgetUsd, attachments, route);
+      const { task_id } = created;
+      const meta: TaskMeta = {
+        task_id, goal, repo, budget_usd: budgetUsd, status: "running", created_at: Date.now() / 1000,
+        route: created.route === "frontend" || created.route === "general" ? created.route : undefined,
+        route_reason: created.route_reason ?? null,
+      };
       setTasks((t) => [meta, ...t]);
       setSelected(meta);
       setView("task");
@@ -207,7 +212,7 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
             key={selectedPlanningSession?.session_id ?? "new"}
             repos={repos}
             session={selectedPlanningSession}
-            onBuildNow={(goal, repo, budgetUsd) => handleCreate(goal, repo, budgetUsd, [])}
+            onBuildNow={(goal, repo, budgetUsd, route) => handleCreate(goal, repo, budgetUsd, [], route)}
             onSessionCreated={(s) => {
               setPlanningSessions((list) => [s, ...list]);
               setSelectedPlanningSession(s);

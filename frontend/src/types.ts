@@ -53,6 +53,9 @@ export interface TaskMeta {
   /** Fixed taxonomy from agent/classify.py, set once at creation -- absent
    * on tasks created before the classifier existed. */
   category?: string;
+  /** Which coder seat this task runs on and why (agent/frontend_route.py). */
+  route?: "frontend" | "general";
+  route_reason?: string | null;
 }
 
 export interface PlanStep {
@@ -318,6 +321,8 @@ export interface ModelCatalogEntry {
 export interface PlanningSessionMeta {
   session_id: string;
   repo: string;
+  route?: "frontend" | "general";
+  route_reason?: string | null;
   created_at: number;
   updated_at: number;
   title: string | null;

@@ -234,6 +234,9 @@ async def work_node(state: AgentState, app_config: Config, checkpointer, pg_stor
         # Captured at task creation (see outer_state.py) -- a task runs under
         # the gate its creator had at the time, not whatever is set now.
         auto_approve_commands=state.get("auto_approve_commands", False),
+        # Frontend work runs on the Kimi coder seat (agent/frontend_route.py);
+        # decided at creation, carried in state so a resume keeps it.
+        route=state.get("route", "general"),
     )
     inner_config = inner_thread_config(task_id, repo, state.get("inner_thread_generation", 0))
     pending_feedback = state.get("pending_feedback")

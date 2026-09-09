@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { RouteBadge } from "./RouteSelect";
 import type { TaskMeta } from "../types";
 import type { useTaskStream } from "../useTaskStream";
 import { ApprovalCard } from "./ApprovalCard";
@@ -69,6 +70,7 @@ export function TaskView({ task, stream, setGeneration }: Props) {
         <div className="task-view-title-row">
           <RepoBadge repo={task.repo} />
           <StatusBadge status={displayStatus} />
+          <RouteBadge route={task.route} reason={task.route_reason} />
           {/* Identity chips: enough to name THIS task unambiguously when
               talking about it elsewhere (chat, logs, git). Click copies the
               full value; the commit chip appears once a commit exists. */}

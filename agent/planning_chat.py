@@ -66,6 +66,7 @@ from deepagents import FilesystemPermission, create_deep_agent
 from agent.classify import classify_task
 from agent.message_text import content_text
 from agent.config import Config, PROJECTS
+from agent.frontend_route import PLANNING_ROLE
 from agent.memory_freshness import memory_with_freshness
 from agent.deep_agent import (
     MEMORY_PATH,
@@ -257,6 +258,7 @@ async def build_planning_agent(
     existing_plan: str | None = None,
     allowed_repos: list[str] | None = None,
     existing_brief: dict | None = None,
+    route: str = "general",
 ):
     """Returns (agent, plan_ref, tracker).
 
@@ -321,7 +323,13 @@ async def build_planning_agent(
     )
     skills_summary = await load_skills_summary(repo, store)
 
-    planning_model_role = "agent-planning-chat-hard" if difficulty == "HARD" else "agent-planning-chat"
+    # Frontend sessions get their own tier (agent/frontend_route.py) ahead of
+    # the EASY/HARD ladder: a frontend plan written by the model that will
+    # build it is the point.
+    if route == "frontend":
+        planning_model_role = PLANNING_ROLE["frontend"]
+    else:
+        planning_model_role = "agent-planning-chat-hard" if difficulty == "HARD" else "agent-planning-chat"
     agent = create_deep_agent(
         model=llm_for_role(config, planning_model_role, reasoning_effort="high", timeout=_rs.as_int("planning_model_call_timeout_s")),
         tools=[tool_by_name["describe_image"], *planning_tools],

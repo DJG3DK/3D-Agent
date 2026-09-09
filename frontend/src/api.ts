@@ -260,11 +260,13 @@ export async function uploadFiles(repo: string, files: File[]): Promise<Attachme
   return (await res.json()).files;
 }
 
-export async function createTask(goal: string, repo: string, budgetUsd?: number, attachments?: AttachmentEntry[]): Promise<{ task_id: string }> {
+export async function createTask(
+  goal: string, repo: string, budgetUsd?: number, attachments?: AttachmentEntry[], route: "auto" | "frontend" | "general" = "auto",
+): Promise<{ task_id: string; route?: string; route_reason?: string }> {
   const res = await apiFetch(`${API_BASE}/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal, repo, budget_usd: budgetUsd, attachments: attachments?.length ? attachments : null }),
+    body: JSON.stringify({ goal, repo, budget_usd: budgetUsd, attachments: attachments?.length ? attachments : null, route }),
   });
   if (!res.ok) throw new Error(`createTask failed: ${res.status}`);
   return res.json();
@@ -613,11 +615,11 @@ export async function restartLlmRouter(): Promise<{ ok: boolean; output: string 
   return res.json();
 }
 
-export async function createPlanningSession(repo: string): Promise<{ session_id: string; repo: string }> {
+export async function createPlanningSession(repo: string, route: "auto" | "frontend" | "general" = "auto"): Promise<{ session_id: string; repo: string }> {
   const res = await apiFetch(`${API_BASE}/planning/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo }),
+    body: JSON.stringify({ repo, route }),
   });
   if (!res.ok) throw new Error(`createPlanningSession failed: ${res.status}`);
   return res.json();

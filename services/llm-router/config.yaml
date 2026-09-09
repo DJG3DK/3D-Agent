@@ -326,6 +326,21 @@ model_list:
     model_info:
       input_cost_per_token: 0.000000375
       output_cost_per_token: 0.000001875
+  - model_name: agent-coder-frontend
+    litellm_params:
+      # The coder seat for frontend work (agent/frontend_route.py routes a
+      # task here on category ui-styling, mostly-frontend paths, or the
+      # operator's toggle). Pinned 2026-09-09 to kimi-k3 for frontend polish
+      # -- operator's call; ~10x the general coder's price per call, which is
+      # exactly why the route is gated. 431 tool-calling calls on this board
+      # with zero failures as reasoning-tier. Falls back to the general coder
+      # so a Kimi outage degrades to today's behaviour, not a dead task.
+      model: openrouter/moonshotai/kimi-k3
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "ignore": ["Venice"]}}
+    model_info:
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
   - model_name: agent-investigator
     litellm_params:
       model: openrouter/z-ai/glm-5.3
@@ -653,6 +668,18 @@ model_list:
     model_info:
       input_cost_per_token: 0.000002
       output_cost_per_token: 0.000006
+  - model_name: agent-planning-chat-frontend
+    litellm_params:
+      # Planning chat for frontend sessions (agent/frontend_route.py), ahead
+      # of the EASY/HARD ladder. Same model as the frontend coder so the plan
+      # is written in the vocabulary that will build it. Operator's call,
+      # 2026-09-09. Falls back to the hard tier.
+      model: openrouter/moonshotai/kimi-k3
+      api_key: os.environ/OPENROUTER_API_KEY
+      extra_body: {"provider": {"require_parameters": true, "ignore": ["Venice"]}}
+    model_info:
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
   - model_name: agent-demo-chat
     litellm_params:
       # Optional public demo bot -- an unauthenticated, resume-style chat
@@ -848,6 +875,9 @@ router_settings:
     # deepseek-v4-pro is the proven tool-caller on this board (0 failures in
     # 3,261 calls as the coder).
     - agent-planning-chat-hard: ["deepseek-v4-pro"]
+    # Frontend tiers (2026-09-09) fall back to the general seats they replace.
+    - agent-planning-chat-frontend: ["agent-planning-chat-hard"]
+    - agent-coder-frontend: ["agent-coder"]
     # The mail chat agent. qwen3.8-flash has exactly one provider (Alibaba),
     # so when that pool is slow there is nothing to route around WITHIN the
     # alias - a hung first token killed a mail turn on 2026-09-03. mail-triage

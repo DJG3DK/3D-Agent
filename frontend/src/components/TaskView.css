@@ -178,3 +178,15 @@
 /* wrapper hosting the jump-to-bottom arrow over the scrolling log */
 .task-view-log-wrap { position: relative; flex: 1; display: flex; min-height: 0; }
 .task-view-log-wrap .task-view-log { flex: 1; }
+
+/* Which coder seat a task or session runs on (RouteSelect.tsx). */
+.route-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border, #444);
+  opacity: 0.85;
+}
+.route-badge--frontend { border-color: #c084fc; color: #c084fc; }

@@ -23,6 +23,7 @@ from deepagents.backends.utils import file_data_to_string
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 from agent.config import Config, PROJECTS
+from agent.frontend_route import CODER_ROLE
 from agent.memory_freshness import memory_with_freshness
 
 # langchain-openai cannot attach response headers on the structured-output
@@ -923,6 +924,7 @@ async def build_deep_agent(
     starting_cost: float = 0.0,
     starting_last_failed_edit: str | None = None,
     auto_approve_commands: bool = False,
+    route: str = "general",
 ):
     """NOTE: async, unlike a typical factory -- it needs to `await` reading
     both memory files before constructing the agent. This is a deliberate
@@ -976,9 +978,14 @@ async def build_deep_agent(
     # Coordinator gets two models -- planner for the first turn of a thread
     # (the one that writes the todo plan), coder for every turn after -- via
     # PlanCodeModelMiddleware below.
-    coordinator_model = llm_for_role(config, "agent-coder")
+    # Frontend route (agent/frontend_route.py): the coordinator that writes
+    # the edits AND the investigator that reads for it move to the frontend
+    # coder alias; the test-writer stays general by the operator's call
+    # (2026-09-09), and the todo planner is shape-neutral either way.
+    coder_role = CODER_ROLE.get(route, CODER_ROLE["general"])
+    coordinator_model = llm_for_role(config, coder_role)
     planner_model = llm_for_role(config, "agent-planner")
-    investigator_model = llm_for_role(config, "agent-investigator")
+    investigator_model = llm_for_role(config, coder_role if route == "frontend" else "agent-investigator")
     test_writer_model = llm_for_role(config, "agent-test-writer")
 
     # Stripped keys (route_local_path), not the full agent-visible paths --
