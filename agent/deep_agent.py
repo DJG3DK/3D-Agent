@@ -92,7 +92,17 @@ SKILLS_MANIFEST_PATH = "/skills/_manifest.json"
 # pinned model has >=262K context, so trading some headroom for stability is
 # cheap -- context quality owns this trigger, cost never did (BudgetGuard
 # owns cost).
-SUMMARIZATION_TRIGGER = [("tokens", 80_000), ("messages", 120)]  # OR semantics (list of clauses)
+# Tokens ONLY. There used to be an OR'd ("messages", 120) clause, and it is the
+# exact degenerate case described below: `keep` is 30k TOKENS, and 30k tokens
+# of short tool calls is easily more than 120 messages. Observed 2026-09-09 on
+# task 828ca1d9 (3d-bot): every compaction preserved 139 messages, so the
+# message clause was true again on the very next call, and summarization fired
+# before EVERY model call for over an hour -- a 3.5k-token summary regenerated
+# each step, plus a failed primary-summarizer attempt each step, while the
+# coordinator's own context never dropped below ~50k. Progress continued, at
+# roughly twice the cost and latency per step. A message-count clause can only
+# be safe against a message-count keep; with a token keep it must not exist.
+SUMMARIZATION_TRIGGER = [("tokens", 80_000)]
 # Retention is expressed in TOKENS, deliberately matching the unit the trigger
 # above uses. It was ("messages", 20), and a message-count keep against a
 # token-count trigger is a unit mismatch with no relationship between the two:
@@ -152,7 +162,7 @@ SUMMARIZATION_KEEP = ("tokens", 30_000)
 # ~90k of slack under the >=262K context every pinned model has -- enough for
 # the triggering call and its response. Cost per call rises with context; that
 # is the intended trade, and it is far cheaper than reading bot.js 129 times.
-PLANNING_SUMMARIZATION_TRIGGER = [("tokens", 170_000), ("messages", 400)]
+PLANNING_SUMMARIZATION_TRIGGER = [("tokens", 170_000)]  # tokens only -- see SUMMARIZATION_TRIGGER
 PLANNING_SUMMARIZATION_KEEP = ("tokens", 70_000)
 # The library default (4000) is tuned for ordinary back-and-forth chat, where a
 # HumanMessage recurs often. Our conversations are tool-call-heavy: one
