@@ -60,6 +60,37 @@ OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{model_id}/endpo
 _DRIFT_WARN_RATIO = 1.25
 
 _rates: dict[str, dict[str, float]] | None = None
+# mtime of config.yaml the cached table was built from. Pins change from the
+# Models page without an agent restart (2026-09-09: agent-planner repinned to
+# qwen3.8-flash, agent-cartographer to glm-flash-latest while the agent kept
+# running); a table cached at startup would price the alias at the OLD model's
+# rate, or not at all, until the next restart.
+_rates_config_mtime: float | None = None
+
+
+def _config_changed() -> bool:
+    """True once config.yaml has been rewritten since the table was built.
+    A table installed without a recorded mtime (tests inject one directly) is
+    taken as authoritative until it is explicitly reset."""
+    if _rates_config_mtime is None:
+        return False
+    try:
+        return LLM_ROUTER_CONFIG_PATH.stat().st_mtime != _rates_config_mtime
+    except OSError:
+        return False
+
+
+def _table() -> dict[str, dict[str, float]]:
+    """The rate table, rebuilt when config.yaml has been rewritten since."""
+    global _rates, _rates_config_mtime
+    if _rates is None or _config_changed():
+        try:
+            mtime = LLM_ROUTER_CONFIG_PATH.stat().st_mtime
+        except OSError:
+            mtime = None
+        _rates = _load_rates()
+        _rates_config_mtime = mtime
+    return _rates
 
 
 def _pricing_of(entry: dict) -> dict[str, float] | None:
@@ -180,11 +211,9 @@ async def warm_rates() -> None:
     a background thread at server startup, so the first real cost estimate
     doesn't block the event loop on a synchronous network call.
     """
-    global _rates
-    if _rates is None:
-        import asyncio
+    import asyncio
 
-        _rates = await asyncio.to_thread(_load_rates)
+    await asyncio.to_thread(_table)
 
 
 def estimate_cost(
@@ -201,12 +230,9 @@ def estimate_cost(
     is billed at its own discounted rate, not the full input rate -- see
     this module's own docstring for why that distinction matters.
     """
-    global _rates
-    if _rates is None:
-        _rates = _load_rates()
     if not model_name:
         return 0.0
-    rate = _rates.get(model_name)
+    rate = _table().get(model_name)
     if rate is None:
         return 0.0  # best-effort caller (analytics); the budget guard uses estimate_cost_strict
     cache_read_tokens = min(cache_read_tokens, input_tokens)
@@ -236,10 +262,7 @@ def estimate_cost_strict(
     known rate, so a hard budget ceiling can never be defeated by an unpriced
     model reading as $0. Callers that only want a best-effort dollar figure
     (analytics) keep using estimate_cost."""
-    global _rates
-    if _rates is None:
-        _rates = _load_rates()
-    if model_name and _rates.get(model_name) is not None:
+    if model_name and _table().get(model_name) is not None:
         return estimate_cost(model_name, input_tokens, output_tokens, cache_read_tokens)
     raise UnpricedModelError(
         f"model {model_name!r} has no rate in llm-router/config.yaml model_info; "

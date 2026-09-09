@@ -210,3 +210,18 @@ def test_endpoint_rates_take_the_dearest_provider():
     finally:
         httpx.get = real_get
     assert rates == {"input": 0.000002, "output": 0.000004, "cache_read": 0.000002}
+
+
+def test_rate_table_reloads_when_config_yaml_changes(monkeypatch, tmp_path):
+    """Pins change from the Models page without an agent restart; a table
+    cached at startup would price a repinned alias at the old model's rate."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model_list:\n  - model_name: agent-planner\n    litellm_params:\n      model: openrouter/vendor/old\n    model_info:\n      input_cost_per_token: 0.000001\n      output_cost_per_token: 0.000002\n")
+    monkeypatch.setattr(model_rates, "LLM_ROUTER_CONFIG_PATH", cfg)
+    monkeypatch.setattr(model_rates, "_rates", None)  # a fresh load records the mtime
+    assert model_rates.estimate_cost("agent-planner", 1000, 0) == 1000 * 0.000001
+    cfg.write_text("model_list:\n  - model_name: agent-planner\n    litellm_params:\n      model: openrouter/vendor/new\n    model_info:\n      input_cost_per_token: 0.000005\n      output_cost_per_token: 0.000002\n")
+    import os
+    os.utime(cfg, (cfg.stat().st_atime, cfg.stat().st_mtime + 5))
+    assert model_rates.estimate_cost("agent-planner", 1000, 0) == 1000 * 0.000005, "repinned alias must be priced at the new model's rate"
+    assert "vendor/new" in model_rates._table()
