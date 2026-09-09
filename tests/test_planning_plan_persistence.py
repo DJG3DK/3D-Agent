@@ -222,3 +222,46 @@ async def test_live_cost_events_stream_during_a_turn():
                             "go", lambda e: published.append(e), tracker=_Tracker())
     costs = [e["cost_usd"] for e in published if e.get("type") == "cost"]
     assert costs == [0.45, 0.61], costs
+
+
+async def test_messages_after_a_compaction_still_stream():
+    """2026-09-09: SummarizationMiddleware shrank the thread below the count
+    already published, `len(messages) > seen_count` went false, and a turn
+    making a call every 10s streamed nothing for 13 minutes -- while the
+    stall watchdog, which beats on published events, counted down to killing
+    it. Publishing is by message identity now, and a tick with nothing new
+    still emits a heartbeat ping."""
+    published = []
+
+    class _Agent(_FakeAgent):
+        def __init__(self):
+            pass
+
+        async def aget_state(self, *_a, **_k):
+            class _S:
+                values = {"messages": []}
+            return _S()
+
+        async def astream_events(self, *_a, **_k):
+            class _Run:
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return False
+                @property
+                def values(self):
+                    async def _gen():
+                        before = [AIMessage(content=f"step {i}", id=f"m{i}") for i in range(6)]
+                        yield {"messages": before}
+                        # compaction: a summary + the last two, then one new message
+                        after = [_HM(content="Here is a summary of the conversation to date: ...", id="sum"),
+                                 *before[-2:]]
+                        yield {"messages": after}
+                        yield {"messages": [*after, AIMessage(content="fresh after compaction", id="m7")]}
+                    return _gen()
+            return _Run()
+
+    await run_planning_turn(_Agent(), {"markdown": "# p"}, {"configurable": {"thread_id": "t"}},
+                            "hi", lambda e: published.append(e))
+    texts = [e.get("summary") for e in published if e.get("kind") == "agent"]
+    assert "fresh after compaction" in texts, texts
+    assert texts.count("step 5") == 1, "surviving messages are not re-published after compaction"
+    assert any(e.get("type") == "ping" for e in published), "a tick with nothing new still heartbeats"

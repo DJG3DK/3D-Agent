@@ -468,6 +468,14 @@ def _translate_message(msg) -> dict | None:
     return None
 
 
+def _message_key(msg) -> str:
+    """A stable identity for a message across stream ticks. LangChain assigns
+    ids; the fallback keeps a message without one from being re-published
+    forever (identity of the object, which the graph keeps stable per tick)."""
+    mid = getattr(msg, "id", None)
+    return str(mid) if mid else f"obj:{id(msg)}"
+
+
 async def run_planning_turn(agent, plan_ref: dict, thread_config: dict, text: str | None, publish, tracker=None) -> str | None:
     """Runs one turn (text=None resumes/continues the thread with no new
     input, e.g. after a process restart) and publishes each new message via
@@ -486,7 +494,16 @@ async def run_planning_turn(agent, plan_ref: dict, thread_config: dict, text: st
     # re-publish the entire conversation history from message 0, not just
     # what's new this turn.
     existing = await agent.aget_state(thread_config)
-    seen_count = len(existing.values.get("messages", [])) if existing and existing.values else 0
+    # Track WHICH messages have been published, not how many. A count broke
+    # the moment SummarizationMiddleware compacted the thread: the list got
+    # shorter than the count already sent, `len(messages) > seen_count` went
+    # false, and nothing was published again until the thread had regrown
+    # past the old count -- 13 silent minutes on a turn that was making a
+    # call every 10 seconds (2026-09-09), and since the stall watchdog beats
+    # on published events, a working turn was about to be killed as stalled.
+    seen_ids: set[str] = {
+        _message_key(m) for m in (existing.values.get("messages", []) if existing and existing.values else [])
+    }
     _last_cost_emitted = tracker.total_cost if tracker is not None else 0.0
     async with await agent.astream_events(graph_input, config=thread_config, version="v3") as run:
         async for values in run.values:
@@ -500,20 +517,29 @@ async def run_planning_turn(agent, plan_ref: dict, thread_config: dict, text: st
                 _last_cost_emitted = tracker.total_cost
                 publish({"type": "cost", "cost_usd": tracker.total_cost})
             messages = values.get("messages") or []
-            if len(messages) > seen_count:
-                for msg in messages[seen_count:]:
-                    translated = _translate_message(msg)
-                    # kind=="user" entries are NOT published live: the client
-                    # renders its own copy the moment the operator hits send,
-                    # and the turn handler seeds the live-log buffer with it
-                    # -- streaming the translated HumanMessage too painted a
-                    # SECOND user bubble (with the attachments note appended)
-                    # right under the first (reported live 2026-08-28). The
-                    # translation exists for checkpoint HYDRATION, where no
-                    # client-side copy exists.
-                    if translated and translated.get("kind") != "user":
-                        publish(translated)
-                seen_count = len(messages)
+            fresh = [m for m in messages if _message_key(m) not in seen_ids]
+            published_any = False
+            for msg in fresh:
+                seen_ids.add(_message_key(msg))
+                translated = _translate_message(msg)
+                # kind=="user" entries are NOT published live: the client
+                # renders its own copy the moment the operator hits send,
+                # and the turn handler seeds the live-log buffer with it
+                # -- streaming the translated HumanMessage too painted a
+                # SECOND user bubble (with the attachments note appended)
+                # right under the first (reported live 2026-08-28). The
+                # translation exists for checkpoint HYDRATION, where no
+                # client-side copy exists.
+                if translated and translated.get("kind") != "user":
+                    publish(translated)
+                    published_any = True
+            if not published_any:
+                # Still a heartbeat: the graph advanced but nothing was worth
+                # showing (a superstep with no new message, or only the
+                # compaction summary, which is never displayed). The stall
+                # watchdog must see progress; the client's "ping" type is
+                # already a no-op for it.
+                publish({"type": "ping"})
     if plan_ref.get("markdown") is None:
         # Safety net for a model that writes the plan as CHAT TEXT and ends
         # the turn without ever calling save_plan -- which a real session did

@@ -155,7 +155,7 @@ def _translate_message(task_id: str, node_label: str, msg) -> dict | None:
 async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dict, tracker=None) -> None:
     """Drains one `run.values`-shaped projection (root or a subagent handle),
     translating newly-seen messages/todos into custom events as they land.
-    `seen` is a per-projection dict (`{"msg_count": int, "todos": Any}`) so
+    `seen` is a per-projection dict (`{"msg_ids": set, "todos": Any}`) so
     the same accumulated state isn't re-emitted every superstep.
 
     `tracker` (the shared BudgetTracker) makes live cost visible mid-pass:
@@ -172,13 +172,20 @@ async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dic
             seen["todos"] = todos
             writer({"type": "todos", "todos": todos})
         messages = values.get("messages") or []
-        seen_count = seen.get("msg_count", 0)
-        if len(messages) > seen_count:
-            for msg in messages[seen_count:]:
-                translated = _translate_message(task_id, node_label, msg)
-                if translated:
-                    writer({"type": "log_entry", "entry": translated})
-            seen["msg_count"] = len(messages)
+        # By identity, not by count: after SummarizationMiddleware compacts
+        # the thread the list is SHORTER than the count already published,
+        # and a count-based check goes silent until the thread regrows past
+        # it -- the "no movement for 20 minutes" reports of 2026-09-09 on a
+        # coder that was calling every 40 seconds (same fix in planning_chat).
+        seen_ids = seen.setdefault("msg_ids", set())
+        for msg in messages:
+            key = str(getattr(msg, "id", None) or f"obj:{id(msg)}")
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
+            translated = _translate_message(task_id, node_label, msg)
+            if translated:
+                writer({"type": "log_entry", "entry": translated})
         if tracker is not None:
             cost = tracker.total_cost
             # Any real move emits (operator ask 2026-08-28: "update on every
