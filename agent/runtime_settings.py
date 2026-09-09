@@ -30,6 +30,21 @@ KEY = "runtime"
 # name -> spec. `env` is the variable that seeded the old default, kept so an
 # existing deployment's configuration is not silently discarded on upgrade.
 KNOBS: dict[str, dict] = {
+    "planning_search_budget": {
+        "label": "Planning searches per turn",
+        "help": (
+            "How many repo searches (search_project / find_files) one planning turn may "
+            "run. Past it the tool answers 'budget spent, write the plan from what you "
+            "have'. Search is cheap; what it guards against is a session that searches "
+            "instead of writing."
+        ),
+        "unit": "searches",
+        "default": 40,
+        "min": 5,
+        "max": 500,
+        "env": "PLANNING_SEARCH_BUDGET",
+        "group": "Budgets & loop limits",
+    },
     "planning_turn_budget_usd": {
         "label": "Planning turn budget",
         "help": (

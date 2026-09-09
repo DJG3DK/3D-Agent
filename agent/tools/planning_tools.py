@@ -26,6 +26,8 @@ API) later is a drop-in replacement for just this one function.
 """
 
 import base64
+import os
+import subprocess
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlparse
 
@@ -33,6 +35,7 @@ from langchain_core.tools import tool
 
 from agent.tools.url_guard import UnsafeUrlError, assert_public_url, make_route_guard
 
+from agent import runtime_settings as _rs
 from agent.config import PROJECTS
 from agent.tools.files import BinaryFileError, PathEscapeError, read_file
 from agent.tools.files import _resolve
@@ -271,6 +274,114 @@ def _project_root(repo: str, allowed_repos: list[str] | None = None) -> str:
     return PROJECTS[repo]["sandbox"]
 
 
+# ---------------------------------------------------------------------------
+# Repo search for planning (2026-09-09). The planner had no search at all --
+# the built-in grep/glob see the agent's own memory/skills space, and a
+# session that kept "grepping" the wrong space looped on "No matches" until
+# they were hidden. Without search, "restyle the frontend" meant opening
+# every file: a Kimi turn read 250 files in 100-line windows, compacted twice,
+# and spent $13 before writing a line. Kimi's own CLI finds the six files
+# that matter with one grep. These are that grep, against the real repo,
+# with the loop-proofing the old one lacked (see _search_gate).
+# ---------------------------------------------------------------------------
+_SEARCH_RESULTS_CAP = 100      # hard ceiling on max_results
+_SEARCH_PER_FILE_CAP = 8       # hits shown per file (rg -m)
+_SEARCH_OUTPUT_CHARS = 8_000   # what may enter the context from one call
+_SEARCH_TIMEOUT_S = 20
+_FIND_CAP = 200
+
+
+def _rel_target(repo_root: str, path: str) -> str:
+    """The repo-relative form of `path`, escape-checked. rg runs with
+    cwd=repo_root so every hit comes back repo-relative."""
+    target = _resolve(repo_root, path or ".")
+    rel = os.path.relpath(str(target), repo_root)
+    return "." if rel == "." else rel
+
+
+def _rg(args: list[str], cwd: str) -> tuple[int, str]:
+    try:
+        r = subprocess.run(["rg", *args], cwd=cwd, capture_output=True, text=True, timeout=_SEARCH_TIMEOUT_S)
+    except FileNotFoundError:
+        return 2, "ripgrep (rg) is not installed on this host"
+    except subprocess.TimeoutExpired:
+        return 2, f"search timed out after {_SEARCH_TIMEOUT_S}s -- narrow `path` or `glob`"
+    return r.returncode, r.stdout if r.returncode in (0, 1) else (r.stderr.strip() or r.stdout)
+
+
+def _files_scanned(repo_root: str, rel: str, glob: str | None) -> int:
+    args = ["--files"]
+    if glob:
+        args += ["-g", glob]
+    code, out = _rg([*args, "--", rel], repo_root)
+    return len(out.splitlines()) if code == 0 else 0
+
+
+def run_search(repo_root: str, pattern: str, path: str = ".", glob: str | None = None, fixed: bool = False, max_results: int = 40) -> str:
+    """ripgrep over the repo, as text for the model. Zero hits come back with
+    a diagnosis (files scanned, what to change) rather than a blank."""
+    rel = _rel_target(repo_root, path)
+    if not os.path.exists(os.path.join(repo_root, rel)):
+        return f"ERROR: {path!r} does not exist in this repo -- list_project_dir(repo, '.') to see what does"
+    if not pattern or not pattern.strip():
+        return "ERROR: pattern is empty"
+    max_results = max(1, min(int(max_results or 40), _SEARCH_RESULTS_CAP))
+    args = ["-n", "--no-heading", "--color", "never", "--max-columns", "200", "--max-columns-preview",
+            "-m", str(_SEARCH_PER_FILE_CAP), "--max-filesize", "2M"]
+    if fixed:
+        args.append("-F")
+    if glob:
+        args += ["-g", glob]
+    args += ["-e", pattern, "--", rel]
+    code, out = _rg(args, repo_root)
+    if code == 2:
+        if "regex parse error" in out or "error parsing" in out:
+            return (
+                f"ERROR: {pattern!r} is not a valid regex ({out.strip().splitlines()[-1][:120]}). "
+                f"Set fixed=True to search for it literally, or escape the special characters."
+            )
+        return f"ERROR: search failed: {out.strip()[:300]}"
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    where = f"under {rel!r}" + (f" (glob {glob!r})" if glob else "")
+    if not lines:
+        n = _files_scanned(repo_root, rel, glob)
+        hint = (
+            "Next: search from '.' instead of a subdirectory" if rel != "." else "Next: shorten the pattern"
+        )
+        if not fixed and any(ch in pattern for ch in "()[]{}.*+?|\\$^"):
+            hint += ", or set fixed=True (your pattern contains regex characters)"
+        return f"No matches for {pattern!r} {where}: {n} files scanned. {hint}, or try a different word from the brief."
+    shown = lines[:max_results]
+    files = len({ln.split(":", 1)[0] for ln in lines})
+    head = f"{len(lines)} hit(s) for {pattern!r} {where} across {files} file(s), showing {len(shown)}"
+    if len(lines) > len(shown):
+        head += f"; {len(lines) - len(shown)} more not shown -- narrow with path= or glob="
+    body = "\n".join(shown)
+    if len(body) > _SEARCH_OUTPUT_CHARS:
+        body = body[:_SEARCH_OUTPUT_CHARS] + "\n... (truncated; narrow the search)"
+    return head + ":\n" + body
+
+
+def run_find(repo_root: str, glob: str, path: str = ".") -> str:
+    """The .gitignore-aware file list matching a glob, as text for the model."""
+    rel = _rel_target(repo_root, path)
+    if not os.path.exists(os.path.join(repo_root, rel)):
+        return f"ERROR: {path!r} does not exist in this repo -- list_project_dir(repo, '.') to see what does"
+    if not glob or not glob.strip():
+        return "ERROR: glob is empty (e.g. '**/*.css' or '*Chart*.tsx')"
+    code, out = _rg(["--files", "-g", glob, "--", rel], repo_root)
+    if code == 2:
+        return f"ERROR: find failed: {out.strip()[:300]}"
+    files = sorted(ln for ln in out.splitlines() if ln.strip())
+    if not files:
+        return f"No files match {glob!r} under {rel!r}. Globs are matched against the path relative to the repo root; try '**/{glob.lstrip('*/')}' or a wider path."
+    shown = files[:_FIND_CAP]
+    head = f"{len(files)} file(s) match {glob!r} under {rel!r}"
+    if len(files) > len(shown):
+        head += f", showing {len(shown)}"
+    return head + ":\n" + "\n".join(shown)
+
+
 def make_planning_tools(
     existing_plan: str | None = None,
     allowed_repos: list[str] | None = None,
@@ -305,6 +416,12 @@ def make_planning_tools(
     # build_planning_agent), so this counts reads within a single turn and
     # resets naturally on the next one.
     read_counts: dict[tuple[str, str], int] = {}
+    # Repo search: identical-call counter and last result (the repeat guard),
+    # plus the per-turn budget. See search_project below and this module's
+    # run_search/run_find for why each exists.
+    search_seen: dict[tuple, int] = {}
+    search_last: dict[tuple, str] = {}
+    search_calls = {"n": 0}
 
     # Seeded with whatever the session already has saved. A planning agent is
     # rebuilt from scratch on EVERY turn, so a plan_ref that always started at
@@ -492,6 +609,86 @@ def make_planning_tools(
         plan_ref["markdown"] = markdown
         return "Plan saved. The user can now see it and use \"Build Now\" whenever they're ready."
 
+    def _search_gate(key: tuple) -> str | None:
+        """The two things that made the old grep loop: a budget so a turn
+        cannot search instead of writing, and a repeat guard so an unchanged
+        query cannot be re-run in the hope of a different answer."""
+        budget = _rs.as_int("planning_search_budget")
+        search_calls["n"] += 1
+        if search_calls["n"] > budget:
+            return (
+                f"ERROR: this turn's search budget ({budget} searches) is spent. You have found what "
+                f"searching will find -- save the plan now with save_plan, listing anything still open "
+                f"as an open question, rather than searching further."
+            )
+        seen = search_seen[key] = search_seen.get(key, 0) + 1
+        if seen == 2 and key in search_last:
+            return (
+                "IDENTICAL to a search you already ran this turn -- the repo has not changed, so the "
+                "result is the same:\n" + search_last[key][:800] + "\n(Change the pattern, path or glob, "
+                "or read one of the files it returned.)"
+            )
+        if seen > 2:
+            return (
+                f"ERROR: you have run this exact search {seen} times this turn. It will not answer "
+                f"differently. Change the pattern, narrow or widen `path`, use `fixed=True` for a "
+                f"literal, or read a file it already returned."
+            )
+        return None
+
+    @tool
+    @tool_errors_to_text
+    def search_project(repo: str, pattern: str, path: str = ".", glob: str | None = None, fixed: bool = False, max_results: int = 40) -> str:
+        """Search the real repo with ripgrep. `pattern` is a regex (set `fixed=True`
+        for a literal string); `path` narrows to a directory ("frontend/src");
+        `glob` narrows to files ("*.tsx", "**/*.css"). Returns `file:line: text`
+        hits, capped per file and overall. SEARCH FIRST, then read only the window
+        a hit points to with read_project_file(offset=..., limit=...). A search
+        with no hits tells you how many files it scanned and what to change --
+        do not rerun it unchanged."""
+        redirect = _own_space_redirect(path)
+        if redirect:
+            return redirect
+        try:
+            repo_root = _project_root(repo, allowed_repos)
+        except ValueError as e:
+            return f"ERROR: {e}"
+        key = ("search", repo, pattern, path, glob or "", bool(fixed))
+        gate = _search_gate(key)
+        if gate:
+            return gate
+        try:
+            result = run_search(repo_root, pattern, path=path, glob=glob, fixed=fixed, max_results=max_results)
+        except PathEscapeError as e:
+            return f"ERROR: {e}"
+        search_last[key] = result
+        return result
+
+    @tool
+    @tool_errors_to_text
+    def find_files(repo: str, glob: str, path: str = ".") -> str:
+        """List the repo files matching a glob ("**/*.css", "*Chart*.tsx"),
+        .gitignore-aware (node_modules, dist and build output never appear).
+        `path` narrows the search to a directory. Cheaper than list_project_dir
+        for "where are all the X files" questions."""
+        redirect = _own_space_redirect(path)
+        if redirect:
+            return redirect
+        try:
+            repo_root = _project_root(repo, allowed_repos)
+        except ValueError as e:
+            return f"ERROR: {e}"
+        key = ("find", repo, glob, path)
+        gate = _search_gate(key)
+        if gate:
+            return gate
+        try:
+            result = run_find(repo_root, glob, path=path)
+        except PathEscapeError as e:
+            return f"ERROR: {e}"
+        search_last[key] = result
+        return result
+
     @tool
     @tool_errors_to_text
     def save_brief(goal: str, deliverable: str, out_of_scope: str = "", needs: str = "") -> str:
@@ -525,7 +722,7 @@ def make_planning_tools(
             "/skills/codebase-map/SKILL.md and read only the files the goal needs."
         )
 
-    return [web_search, browse_page, list_project_dir, read_project_file, save_brief, save_plan], plan_ref
+    return [web_search, browse_page, list_project_dir, read_project_file, search_project, find_files, save_brief, save_plan], plan_ref
 
 
 _STOPWORDS = frozenset("""

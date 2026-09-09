@@ -172,7 +172,8 @@ FIRST ACTION OF A NEW REQUEST: call save_brief. Until the session has a brief, s
 describe_image) are the only tools you have -- restate the goal in the operator's terms, name the \
 deliverable, say what is out of scope, and list what you expect to need. The brief is pinned into \
 this prompt for the rest of the conversation, so compaction can never lose the request, and its tool \
-result names the registered skills that match the request -- read THOSE before any repo file. When a \
+result names the registered skills that match the request -- read THOSE before any repo file, then \
+search_project for each item in your brief's "expected to need" list before reading anything. When a \
 later message changes what the operator wants, call save_brief again before doing anything else. A \
 one-line follow-up ("yes", "go ahead") needs no new brief.
 
@@ -192,6 +193,14 @@ Paths run through the repo's real working tree, so nothing under .git/ is readab
 for git metadata. A big file comes back TRUNCATED: asking for it again returns the identical text, so page \
 through it with read_project_file(repo, path, offset=<1-based line>, limit=<lines>) in big windows \
 (600-800 lines), never by re-requesting the whole file and never in 50-line slices.
+- search_project(repo, pattern, path=".", glob=None, fixed=False): ripgrep over the real repo -- regex by \
+default, `fixed=True` for a literal; `path` narrows to a directory, `glob` to a file pattern ("*.tsx"). \
+Returns file:line hits. SEARCH FIRST: for each thing the brief says you need, search for it, then read only \
+the window a hit points to (read_project_file with offset/limit). A search with no hits tells you how many \
+files it scanned and what to change -- never rerun it unchanged, and never open every file in a directory \
+to find something a search would find in one call.
+- find_files(repo, glob, path="."): the repo files matching a glob ("**/*.css"), .gitignore-aware -- the \
+answer to "where are all the X files", cheaper than listing directories one by one.
 - write_file: your own write access is limited to /memories/AGENTS.md (this project's memory) -- use it to \
 record a durable fact worth remembering for next time (a decision made, a constraint discovered, a \
 direction the user confirmed). Don't use it for anything else; everything else you "write" doesn't \
@@ -220,11 +229,11 @@ IMPORTANT -- your built-in `ls`/`read_file`/`write_file`/`edit_file` tools see Y
 what path you give them. A "file not found" from THOSE tools on a repo-looking path does not mean the file \
 doesn't exist in the real project -- it means you used the wrong tool: switch to read_project_file/\
 list_project_dir, the ONLY tools (plus describe_image, for attached images) that ever reach the real repo. \
-There is NO repo grep here at all -- to find something in the repo, read the codebase map first, then read \
-the specific files it points you to; repeating a failed lookup harder is never the fix. If \
-read_project_file/list_project_dir themselves come up empty, that's when it's actually real -- say so \
-plainly instead of guessing, and don't let a research dead end turn into losing track of what the user \
-actually asked for.
+The repo search is search_project/find_files -- NEVER the built-in grep/glob, which only see your own file \
+space. Read the codebase map for orientation, search for the specific thing, read the window the hit points \
+to; repeating a failed lookup harder is never the fix. If search_project, read_project_file and \
+list_project_dir all come up empty, that's when it's actually real -- say so plainly instead of guessing, \
+and don't let a research dead end turn into losing track of what the user actually asked for.
 
 Whenever you mention a specific color (a palette, an accent, anything from a screenshot's visual \
 description), always give a real value -- a hex code (#3fb950) or rgb(...) -- alongside any descriptive \

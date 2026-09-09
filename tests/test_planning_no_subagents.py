@@ -141,7 +141,7 @@ async def test_the_planning_model_still_gets_its_real_tools(monkeypatch, tmp_pat
     """Guard against 'fixing' this by hiding too much. read_file stays because
     it is how the model reads the codebase map and its own memory."""
     offered = await _tools_offered_to_the_planning_model(monkeypatch, tmp_path)
-    for expected in ("read_project_file", "list_project_dir", "save_plan", "web_search", "read_file"):
+    for expected in ("read_project_file", "list_project_dir", "search_project", "find_files", "save_plan", "web_search", "read_file"):
         assert expected in offered, f"{expected} went missing: {offered}"
 
 
