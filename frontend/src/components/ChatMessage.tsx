@@ -13,7 +13,10 @@ type Kind = "agent" | "tool-call" | "tool-result" | "system" | "user";
 function classify(entry: LogEntry): Kind {
   if (entry.node === "operator") return "user";
   if (entry.node === "verify_and_ship") return "system";
-  const s = entry.summary;
+  // A heartbeat ("ping") or any entry without text must never take the page
+  // down: the error boundary swallowed the whole planning view on 2026-09-09
+  // when a ping was wrapped as a log entry and reached this with no summary.
+  const s = entry.summary ?? "";
   if (s.startsWith("calling: ")) return "tool-call";
   if (s.startsWith("tool result:")) return "tool-result";
   if (s.startsWith("awaiting approval")) return "system";
@@ -197,6 +200,10 @@ export const TOOL_ICONS: Record<string, string> = {
 function ChatMessageImpl({ entry, prevEntry }: { entry: LogEntry; prevEntry?: LogEntry }) {
   const kind = classify(entry);
   const [open, setOpen] = useState(false);
+
+  // Nothing to show (a heartbeat that slipped into the log, or a malformed
+  // entry): render nothing rather than an empty bubble or a crash.
+  if (!entry.summary && !entry.detail) return null;
 
   if (kind === "user") {
     return (

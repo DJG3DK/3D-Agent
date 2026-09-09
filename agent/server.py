@@ -1901,6 +1901,14 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
             # cost events arrive pre-shaped ({"type": "cost", ...}); log
             # entries need wrapping -- route on the shape.
             is_cost = isinstance(ev, dict) and ev.get("type") == "cost"
+            if isinstance(ev, dict) and ev.get("type") == "ping":
+                # A heartbeat from the turn (nothing worth showing this tick).
+                # The beat above is the point; forward it as a bare ping,
+                # which the client already ignores, and never as a log entry
+                # -- wrapped, it reached the page as an entry with no text
+                # and the error boundary took the whole view down (2026-09-09).
+                _publish_planning(session_id, {"type": "ping"})
+                return
             _publish_planning(
                 session_id,
                 ev if is_cost else {"type": "log_entry", "entry": ev},
