@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useBudgetInput } from "../useDefaultTaskBudget";
 import "./NewTaskPanel.css";
 
 interface Props {
@@ -17,7 +18,7 @@ export function NewTaskPanel({ repos, onSubmit, submitting, error, onClearError 
   // a repo. Derive the effective repo instead so the prop syncs in.
   const [repo, setRepo] = useState("");
   const effectiveRepo = repo || repos[0] || "";
-  const [budget, setBudget] = useState(2.0);
+  const [budget, setBudget] = useBudgetInput();  // seeded from Settings → Default task budget
   const [files, setFiles] = useState<File[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 

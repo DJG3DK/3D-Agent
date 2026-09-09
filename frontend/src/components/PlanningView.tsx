@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useBudgetInput } from "../useDefaultTaskBudget";
 import { JumpToBottom } from "./JumpToBottom";
 import type { AttachmentEntry } from "../api";
 import { archivePlanningSession, createPlanningSession, uploadFiles } from "../api";
@@ -127,7 +128,7 @@ function NewSessionPanel({ repos, onStart, starting }: { repos: string[]; onStar
 
 function BuildNowPanel({ onConfirm }: { onConfirm: (budgetUsd: number) => void }) {
   const [open, setOpen] = useState(false);
-  const [budget, setBudget] = useState(2.0);
+  const [budget, setBudget] = useBudgetInput();  // seeded from Settings → Default task budget
   if (!open) {
     return (
       <button className="planning-build-btn" onClick={() => setOpen(true)}>
