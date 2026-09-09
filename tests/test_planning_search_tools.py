@@ -4,10 +4,14 @@ budget, a repeat guard, and zero-hit results that say what to change."""
 
 import subprocess
 
+import shutil
+
 import pytest
 
 import agent.runtime_settings as rs
 from agent.tools.planning_tools import make_planning_tools, run_find, run_search
+
+pytestmark = pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is not installed (the planner's search needs it; install.sh installs it)")
 
 
 @pytest.fixture

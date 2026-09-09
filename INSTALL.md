@@ -19,6 +19,7 @@ takes about 15 minutes, most of it waiting for dependencies.
 | **Linux host** you control | The agent runs shell commands and manages git worktrees on this box |
 | **Python 3.12+** | The agent itself |
 | **Node 24+** | The dashboard build and the two review services |
+| **ripgrep** (`rg`) | The planner's repo search (`apt install ripgrep`, `pacman -S ripgrep`, `dnf install ripgrep`); `install.sh` installs it where it can |
 | **Docker** | Every command the agent runs happens inside a container. Without it, the first tool call of the first task fails |
 | **PostgreSQL 14+** | Conversation checkpoints, memory, users. **Required** — without it the agent retries its connection pool forever and never starts serving. On Arch/CachyOS you must also `initdb` before first start; Debian/Ubuntu do that for you |
 | **An OpenRouter API key** | The only paid dependency — [openrouter.ai/keys](https://openrouter.ai/keys) |

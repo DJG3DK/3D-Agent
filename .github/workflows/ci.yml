@@ -40,6 +40,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # The planner's repo search (agent/tools/planning_tools.py) shells
+          # out to ripgrep; its tests run the real binary.
+          sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
 
       - name: Lint (ruff)
         # ruff config landed with the source's ~65 existing noqa codes, which

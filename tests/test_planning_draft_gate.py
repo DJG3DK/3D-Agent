@@ -2,11 +2,15 @@
 A planning turn may read a bounded number of files before it must save a
 plan; paged reads never come back smaller than 500 lines."""
 
+import shutil
+
 import pytest
 
 import agent.runtime_settings as rs
 import agent.tools.planning_tools as planning_tools
 from agent.tools.planning_tools import make_planning_tools
+
+pytestmark = pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is not installed (the planner's search needs it; install.sh installs it)")
 
 
 @pytest.fixture

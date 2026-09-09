@@ -113,6 +113,7 @@ need git    "required to create per-project worktrees"
 need python3 "the agent runs on Python 3.12+"
 need node   "the dashboard build and the review services need Node 24+"
 need docker "the agent's bash/edit tools run inside a container; without it the FIRST tool call of the first task fails"
+need rg     "the planner's repo search shells out to ripgrep (apt/pacman/dnf package: ripgrep)"
 
 PY_OK=$(python3 -c 'import sys; print(1 if sys.version_info >= (3,12) else 0)' 2>/dev/null || echo 0)
 [ "$PY_OK" = "1" ] || { warn "python3 is $(python3 -V 2>&1 | cut -d" " -f2); 3.12+ required"; missing=1; }
