@@ -180,10 +180,14 @@ def test_mid_pass_hydrate_falls_back_to_the_meta_mirror():
     assert [p["description"] for p in snap["plan"]] == ["step one", "step two"]
 
 
-def test_a_checkpointed_plan_always_wins_over_the_mirror():
-    snap = _apply_plan_fallback({"plan": [{"id": "0", "description": "from checkpoint"}]},
-                                {"latest_todos": _todos("stale mirror")})
-    assert snap["plan"][0]["description"] == "from checkpoint"
+def test_the_live_mirror_wins_over_the_checkpointed_plan():
+    """Reversed 2026-09-09. The checkpoint's list is written only when a pass
+    RETURNS; the mirror is written on every todos event. A resumed task's
+    coordinator wrote a fresh 3-item list, and a refresh snapped the strip
+    back to the previous pass's 15 items because the checkpoint "won"."""
+    snap = _apply_plan_fallback({"plan": [{"id": "0", "description": "from the pass before"}]},
+                                {"latest_todos": _todos("live step")})
+    assert snap["plan"][0]["description"] == "live step"
 
 
 def test_no_mirror_and_no_checkpoint_plan_stays_none():

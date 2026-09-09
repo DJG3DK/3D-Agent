@@ -1012,13 +1012,24 @@ def _state_snapshot_for_frontend(values: dict) -> dict:
 
 
 def _apply_plan_fallback(snapshot: dict | None, meta_value: dict) -> dict | None:
-    """Mid-pass, the checkpoint has no latest_todos yet (it is written only
-    when a work pass RETURNS) -- fall back to the live mirror the todos
-    handler keeps in the task meta, so the plan strip survives refreshes and
-    task switches instead of vanishing until the pass ends (reported live
-    2026-08-28). A checkpointed plan always wins over the mirror."""
-    if snapshot is not None and snapshot.get("plan") is None and meta_value.get("latest_todos"):
-        snapshot = {**snapshot, "plan": _todos_to_plan(meta_value.get("latest_todos"))}
+    """The plan strip reads the LIVE mirror when there is one. The checkpoint's
+    latest_todos is written only when a work pass RETURNS; the todos handler
+    mirrors every todos event into the task meta as it happens. So mid-pass
+    the mirror is never older than the checkpoint, and after a pass ends the
+    two agree -- there is no moment at which the checkpoint is fresher.
+
+    Two live reports drove this. 2026-08-28: mid-pass the checkpoint had no
+    list yet and the strip vanished on every refresh, so the mirror was added
+    as a fallback. 2026-09-09: a resumed task's coordinator wrote a new
+    3-item list, the strip showed it, and a refresh snapped back to the
+    15-item list from the pass before -- because "a checkpointed plan always
+    wins" preferred the stale one. Mirror first, checkpoint when there is no
+    mirror (tasks from before the mirror existed)."""
+    if snapshot is None:
+        return None
+    mirrored = meta_value.get("latest_todos")
+    if mirrored:
+        return {**snapshot, "plan": _todos_to_plan(mirrored)}
     return snapshot
 
 
