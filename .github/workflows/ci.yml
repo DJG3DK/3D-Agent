@@ -131,6 +131,7 @@ jobs:
         run: |
           node tests/test_projects_config_merge.js
           node tests/test_reviewer_preexisting.js
+          node tests/test_preflight.js
 
   shell:
     name: Shell — installer and cron scripts

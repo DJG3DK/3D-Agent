@@ -51,6 +51,7 @@ try {
 // See services/shared/projects-config.js: projects.json supplies onboarded
 // projects (deploy section), these built-ins stay authoritative.
 const { loadProjects } = require('../shared/projects-config');
+const { runPreflight, formatPreflightError } = require('./preflight');
 
 const PROJECTS = loadProjects(BUILTIN_PROJECTS, { section: 'deploy' });
 
@@ -277,6 +278,15 @@ app.post('/api/projects/:name/merge', requireControlSecret, async (req, res) => 
 app.post('/api/projects/:name/restart', requireControlSecret, async (req, res) => {
     const p = projectOr404(req, res); if (!p) return;
     const built = [];
+    // Build steps that reach out to a live dependency (a prerender reading
+    // the catalog from the running API) fail with an unhelpful error and
+    // look like a code problem when that dependency is down. Check the
+    // project's declared preflight URLs first and report that as its own
+    // stage -- see preflight.js.
+    const preflightFailures = await runPreflight(p.preflight);
+    if (preflightFailures.length) {
+        return res.status(500).json({ ok: false, error: formatPreflightError(preflightFailures), stage: 'preflight', built });
+    }
     try {
         for (const step of p.build) {
             const dir = path.join(p.live, step.dir);

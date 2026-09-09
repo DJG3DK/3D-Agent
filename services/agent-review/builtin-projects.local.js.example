@@ -25,5 +25,14 @@ module.exports = {
       { dir: '.', cmd: 'npm', args: ['install', '--no-audit', '--no-fund'] },
       { dir: '.', cmd: 'npm', args: ['run', 'build'] },
     ],
+
+    // OPTIONAL. URLs that must answer 2xx before any build step runs, for
+    // builds that depend on a live process (a prerender that reads the
+    // catalog from the running API, say). A failure is reported as stage
+    // "preflight" and escalates to a human instead of being handed to the
+    // agent as a compile error. `why` is free text shown in the failure.
+    preflight: [
+      { url: 'http://127.0.0.1:3000/health', why: 'the prerender step reads the catalog from the live API' },
+    ],
   },
 };

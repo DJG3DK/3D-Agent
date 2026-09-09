@@ -14,7 +14,7 @@ if that verdict is `READY` — fast-forwards the work into live and pushes it.
 | `GET /api/projects/:name/status` | what the agent branch has that live doesn't, and whether it fast-forwards |
 | `GET /api/projects/:name/diff` | the full diff, three-dot from the merge base |
 | `POST /api/projects/:name/merge` | fast-forward into live, then push to `origin` |
-| `POST /api/projects/:name/restart` | restart that project's pm2 apps |
+| `POST /api/projects/:name/restart` | run the project's build steps, then restart its pm2 apps. Optional `preflight` URLs (see the example config) are checked first; a failure there is stage `preflight` and no build step runs |
 | `GET /api/review/status`, `POST /api/review/check/:name` | reviewer state and a manual trigger |
 | `GET /api/router/*` | model-router usage, stats and balance |
 
