@@ -84,6 +84,7 @@ from agent.deep_agent import (
     route_local_path,
 )
 from agent.middleware.hidden_tools import HiddenToolsMiddleware
+from agent.middleware.repeat_guard import RepeatCallGuardMiddleware
 from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddleware, BudgetTracker
 from agent.middleware.pinned_brief import BriefFirstMiddleware, PinnedBriefMiddleware
 from agent.model_config import resolve_alias
@@ -375,6 +376,7 @@ async def build_planning_agent(
             # sandbox behind it in this agent, delete has nothing it should
             # ever delete.
             HiddenToolsMiddleware("task", "grep", "glob", "execute", "delete"),
+            RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time
             # Brief first, then pinned: the request is written down before any
             # file is read, and stays in the system message through every
             # compaction (agent/middleware/pinned_brief.py).

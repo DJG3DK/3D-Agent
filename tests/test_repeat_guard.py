@@ -1,0 +1,88 @@
+"""RepeatCallGuardMiddleware: the same tool call with the same result is
+answered from cache on the third try and refused from the fourth
+(2026-09-09: fourteen identical bash calls in a row on a Kimi build)."""
+
+from types import SimpleNamespace
+
+import pytest
+from langchain_core.messages import ToolMessage
+
+import agent.deep_agent as da
+import agent.planning_chat as pc
+from agent.middleware.repeat_guard import RepeatCallGuardMiddleware
+
+
+def _req(name, args, i):
+    return SimpleNamespace(tool_call={"name": name, "args": args, "id": f"{name}:{i}"})
+
+
+class _Handler:
+    def __init__(self, results=None):
+        self.calls = 0
+        self.results = results  # callable(i) -> content, or None for constant
+
+    async def __call__(self, request):
+        self.calls += 1
+        content = self.results(self.calls) if self.results else "same output"
+        return ToolMessage(content=content, tool_call_id=request.tool_call["id"])
+
+
+async def test_third_identical_call_is_served_from_cache_and_fourth_refused():
+    mw = RepeatCallGuardMiddleware()
+    h = _Handler()
+    r1 = await mw.awrap_tool_call(_req("bash", {"command": "grep x"}, 1), h)
+    r2 = await mw.awrap_tool_call(_req("bash", {"command": "grep x"}, 2), h)
+    assert h.calls == 2 and r1.content == r2.content == "same output"
+    r3 = await mw.awrap_tool_call(_req("bash", {"command": "grep x"}, 3), h)
+    assert h.calls == 2, "the third identical call must not execute"
+    assert r3.status == "error" and r3.content.startswith("REPEATED CALL") and "same output" in r3.content
+    r4 = await mw.awrap_tool_call(_req("bash", {"command": "grep x"}, 4), h)
+    assert h.calls == 2 and r4.content.startswith("ERROR:") and "loop" in r4.content
+
+
+async def test_a_call_whose_result_changes_is_never_blocked():
+    mw = RepeatCallGuardMiddleware()
+    h = _Handler(results=lambda i: f"attempt {i}")
+    for i in range(1, 7):
+        r = await mw.awrap_tool_call(_req("bash", {"command": "npm test"}, i), h)
+        assert r.content == f"attempt {i}"
+    assert h.calls == 6, "a flaky or polling command keeps running"
+
+
+async def test_a_different_call_in_between_resets_the_run():
+    mw = RepeatCallGuardMiddleware()
+    h = _Handler()
+    for i in range(2):
+        await mw.awrap_tool_call(_req("bash", {"command": "grep x"}, i), h)
+    await mw.awrap_tool_call(_req("bash", {"command": "grep y"}, 10), h)
+    r = await mw.awrap_tool_call(_req("bash", {"command": "grep x"}, 11), h)
+    assert r.content == "same output" and h.calls == 4
+
+
+@pytest.mark.parametrize("name", ["write_todos", "save_plan", "ask_user"])
+async def test_non_idempotent_tools_are_exempt(name):
+    mw = RepeatCallGuardMiddleware()
+    h = _Handler()
+    for i in range(6):
+        await mw.awrap_tool_call(_req(name, {"x": 1}, i), h)
+    assert h.calls == 6
+
+
+def test_sync_path_matches_async_semantics():
+    mw = RepeatCallGuardMiddleware()
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return ToolMessage(content="same", tool_call_id=request.tool_call["id"])
+
+    for i in range(3):
+        r = mw.wrap_tool_call(_req("read", {"path": "a.js"}, i), handler)
+    assert calls["n"] == 2 and r.content.startswith("REPEATED CALL")
+
+
+def test_guard_is_attached_to_every_build_seat_and_to_planning():
+    import inspect
+    src = inspect.getsource(da)
+    assert src.count("RepeatCallGuardMiddleware()") == 4, "coordinator + investigator + test-writer + general-purpose"
+    assert "RepeatCallGuardMiddleware()" in inspect.getsource(pc)

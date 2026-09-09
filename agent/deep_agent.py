@@ -35,6 +35,7 @@ warnings.filterwarnings(
 )
 from agent import runtime_settings as _rs
 from agent.middleware.hidden_tools import HiddenToolsMiddleware
+from agent.middleware.repeat_guard import RepeatCallGuardMiddleware
 from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddleware, BudgetTracker
 from agent.middleware.model_pin import PlanCodeModelMiddleware
 from agent.tools.agent_tools import make_agent_tools
@@ -1038,6 +1039,7 @@ async def build_deep_agent(
             # cleaning up dead modules gets "not found" four times before it
             # thinks of `rm` (observed 2026-09-08). bash rm is the real one.
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
+            RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)
             BudgetGuardMiddleware(tracker),
             ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
@@ -1072,6 +1074,7 @@ async def build_deep_agent(
             # shell here, and built-in execute has no sandbox behind this
             # backend, so it can only error or mislead.
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
+            RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)
             BudgetGuardMiddleware(tracker),
             ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
@@ -1110,6 +1113,7 @@ async def build_deep_agent(
             # shell here, and built-in execute has no sandbox behind this
             # backend, so it can only error or mislead.
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
+            RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)
             BudgetGuardMiddleware(tracker),
             ModelCallLimitMiddleware(run_limit=_rs.as_int("model_call_run_limit"), exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=_rs.as_int("tool_call_run_limit"), exit_behavior="error"),
@@ -1134,7 +1138,8 @@ async def build_deep_agent(
             skills_summary=skills_summary,
         ),
         middleware=[
-            HiddenToolsMiddleware("glob", "grep", "execute", "delete"),  # see subagent specs' comment
+            HiddenToolsMiddleware("glob", "grep", "execute", "delete"),
+            RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time (2026-09-09)  # see subagent specs' comment
             BudgetGuardMiddleware(tracker),
             # Planner on the thread's first turn, coder after -- see model_pin.py.
             PlanCodeModelMiddleware(planner_model, coordinator_model),
