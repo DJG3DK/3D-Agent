@@ -42,6 +42,17 @@ from langchain.agents.middleware.types import AgentMiddleware
 DEFAULT_EXEMPT = frozenset({"write_todos", "save_plan", "save_brief", "ask_user", "task", "describe_image"})
 CACHED_AT = 3      # the Nth identical call is answered from cache
 REFUSED_AT = 4     # and from here on refused
+# A model that keeps issuing the SAME refused call is no longer steering:
+# each refusal is still a model call, and on 2026-09-09 a Kimi coder ran
+# through forty of them in a row ($0.04 each) after the guard had stopped
+# executing anything. Past this many consecutive refusals the pass ends with
+# RepeatLoopError -- the work node escalates with the reason, the operator
+# resumes on a different seat.
+BREAK_AT = 8
+
+
+class RepeatLoopError(RuntimeError):
+    """Raised by the guard when a model repeats a refused call BREAK_AT times."""
 _RESULT_PREVIEW = 1_200
 
 
@@ -87,6 +98,13 @@ class RepeatCallGuardMiddleware(AgentMiddleware):
         # results must match each other.
         stable = len(run["results"]) >= 2 and run["results"][-1] == run["results"][-2]
         if run["n"] >= REFUSED_AT and stable:
+            if run["n"] >= REFUSED_AT + BREAK_AT:
+                raise RepeatLoopError(
+                    f"stuck in a tool loop: `{tool_call.get('name')}` with identical arguments requested "
+                    f"{run['n']} times in a row with an unchanging result, {BREAK_AT} of them after the guard "
+                    f"refused to run it. The model is no longer steering; ending this pass so the task can be "
+                    f"resumed on a different seat."
+                )
             return self._refusal(tool_call, run)
         if run["n"] >= CACHED_AT and stable and run["last"] is not None:
             return self._cached(tool_call, run)

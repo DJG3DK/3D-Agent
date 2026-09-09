@@ -86,3 +86,16 @@ def test_guard_is_attached_to_every_build_seat_and_to_planning():
     src = inspect.getsource(da)
     assert src.count("RepeatCallGuardMiddleware()") == 4, "coordinator + investigator + test-writer + general-purpose"
     assert "RepeatCallGuardMiddleware()" in inspect.getsource(pc)
+
+
+async def test_a_long_run_of_refused_calls_ends_the_pass():
+    """40 refusals in a row on 2026-09-09: the guard was cheap but the model
+    kept paying for each one. Past BREAK_AT refusals it raises instead."""
+    import pytest
+    from agent.middleware.repeat_guard import BREAK_AT, REFUSED_AT, RepeatLoopError
+    mw = RepeatCallGuardMiddleware()
+    h = _Handler()
+    with pytest.raises(RepeatLoopError, match="stuck in a tool loop"):
+        for i in range(REFUSED_AT + BREAK_AT + 1):
+            await mw.awrap_tool_call(_req("bash", {"command": "pnpm config get --location"}, i), h)
+    assert h.calls == 2, "nothing executed after the second identical call"
