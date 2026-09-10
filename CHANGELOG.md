@@ -1,5 +1,156 @@
 # Changelog
 
+## v0.4.0 — a planner that keeps the brief, a Kimi seat for frontend work, costs as the router bills them (pre-release)
+
+**2026-09-10**
+
+Twenty-eight commits on top of v0.3.0. The headline is that a planning
+turn no longer loses the request it was given, that frontend work can go
+to a different model than everything else, and that the budget guard
+counts what the router actually billed.
+
+### Planning that keeps the brief, and searches before it reads
+
+A hard plan on 2026-09-08 spent 68 model calls reading the repo before
+writing a line; the context grew to 169k tokens, was compacted, and the
+operator's request — the oldest thing in the window — went first. The
+planner now works the other way round:
+
+- **The brief comes first and stays pinned.** `save_brief` is the only
+  tool a new session can call until a brief exists; the brief rides in
+  the system message on every call after that, so compaction cannot touch
+  it, and it persists with the session so follow-up turns do not re-force
+  it. Saving the brief also matches the request against the project's
+  skills and names the architecture skills to read before any file.
+- **Search, then read the window a hit points to.** `search_project`
+  (ripgrep, capped per file and overall) and `find_files` (the
+  `.gitignore`-aware file list) against the real repo. Loop-proofed from
+  the start: an identical search is answered from cache and refused on the
+  third; zero hits come back with what was scanned and what to change; a
+  per-turn search budget ends searching with "write the plan from what you
+  have". Both are dials under **Settings → Runtime limits**.
+- **The draft gate.** After N repo reads without a saved plan (default 50)
+  file reads close with "save a draft now" and reopen once a plan is
+  saved. A gate-forced save replies with what comes next — the budget has
+  reset, take the open questions, finish the plan — rather than "the user
+  can now use Build Now", which one planner read as "done". Paged reads
+  return at least 500 lines whatever `limit` asks; eight reads of a
+  1,100-line component become two, with no cooperation from the model.
+- **What changed lately, and what may be stale.** The cartographer builds
+  a model-free `recent-changes` skill (the newest 30 commits with their
+  files) and keeps a freshness ledger: a memory fact that cites a file
+  which changed after the fact was first seen is flagged, and the flags
+  ride into both agents' memory blocks.
+- **Pull requests.** With an optional fine-grained `GITHUB_TOKEN` the
+  planner and coder can read a pull request — description, checks, review
+  comments, diff — host-side and read-only. The sandbox never sees the
+  token. "See PR 12 and fix the audit issues" is now a task.
+
+### A frontend seat, pinned to Kimi
+
+The operator wanted Kimi k3 on frontend work and DeepSeek everywhere
+else. `agent/frontend_route.py` decides, with a reason: the choice on the
+form beats everything; then the classifier's ui-styling category; then any
+named backend path or keyword (a migration, a schema, an endpoint) routes
+general ahead of any file count; then a two-thirds majority of frontend
+paths; then two distinct keywords. Planning sessions decide on their first
+message and stay put. On a frontend task the coordinator and the
+investigator use `agent-coder-frontend`; the test-writer keeps its own
+pin. The New Task form, Build Now and the new-session panel carry an
+Auto / Frontend / General selector, and tasks and sessions show a route
+badge with the reason on hover — silent routing is how an expensive run
+happens. Both frontend seats are managed roles on the Models page.
+
+### Costs as the router bills them
+
+A planning turn was ended at "$8.09 spent against an $8.00 ceiling" when
+OpenRouter had billed $1.72: the guard priced calls from token counts
+against a rate table that was missing one model's cache-read discount,
+and the 4.7x estimate was the last word. Every router row now carries the
+proxy's call id and OpenRouter's billed cost; the budget tracker carries a
+call at its estimate only until the router's line for that id appears,
+and enforces the ceiling against the billed figure. Fallback rates come
+from OpenRouter's live catalog, a pin the catalog does not list by name is
+resolved through the per-model endpoints, and the table reloads when
+`config.yaml` changes under a running agent. The Build Now popup and the
+New Task form seed their budget from the Settings default instead of a
+hard-coded $2.
+
+### Loops end, and bad history never reaches a provider
+
+- **A repeat-call guard on every tool.** The third identical call whose
+  two predecessors matched the same result is answered from cache; the
+  fourth and later are refused; after eight refusals in a row the pass
+  ends with an escalation naming the looping tool, so the task can resume
+  on a different seat instead of paying for forty refusals. A call whose
+  result changes (a poll, a flaky test) is never blocked.
+- **Malformed tool calls are stripped from every model request.** A
+  truncated `write_todos` from one model was serialised as a tool call
+  whose arguments were not JSON, and a stricter provider refused every
+  later turn of that task — 37 times — while the fallback silently
+  planned instead. The checkpoint is untouched; the request is cleaned.
+
+### The gate and the deploy tell code problems from infrastructure
+
+- **Pre-existing failures do not block.** A check that fails on the
+  branch is re-run on a worktree at the base commit; one that fails there
+  too is marked pre-existing, does not force NEEDS_FIXES, and is listed
+  for the agent with an instruction not to chase it.
+- **Deploy preflight.** A project can declare URLs that must answer before
+  any build step runs. A failure is its own stage and escalates to a
+  human with the dependency named, rather than being handed to the agent
+  as a compile error. Found the hard way: a storefront prerender that
+  reads the catalog from an API which had been dead for days.
+- **Resume works without a top-up.** The resume panel only shows the
+  budget field when a task is nearly out of money and sends zero
+  otherwise; the endpoint rejected zero, so a task that stopped for any
+  reason other than cost could not be resumed from the dashboard.
+
+### A passkey gate for a public admin panel
+
+`services/llm-router/auth-gate` puts a WebAuthn passkey in front of the
+LiteLLM admin UI when it is on a public hostname: nginx consults it via
+`auth_request`, bearer requests pass through for LiteLLM to judge,
+everything else needs a session minted by a passkey ceremony. Sessions
+are server-side SHA-256 hashes in a 0600 state file; enrolment is a
+single-use 30-minute token. Opt-in, and configured entirely from `.env`.
+
+### Fixes
+
+- **Summarization fired before every model call.** The trigger OR'd a
+  message-count clause that the token-sized keep window satisfied on its
+  own after every compaction. Triggers are tokens-only now, and a test
+  refuses any trigger the keep window can satisfy by itself.
+- **A compaction could silence the live stream.** Both publishers tracked
+  how many messages they had sent; after a compaction the list was
+  shorter than that count and nothing was published until it regrew. A
+  coder calling every 40 seconds read as "no movement for 20 minutes".
+  Messages are tracked by identity, and a quiet tick sends a heartbeat
+  the stall watchdog can see.
+- **The plan strip snapped back on refresh** to the list frozen when the
+  previous pass ended; the live mirror wins now.
+- **Build Now was dead for a long plan.** The goal field was capped at
+  20,000 characters and a plan came to 20,364; every click was a silent
+  422. The cap is 80,000 and a failed start is shown beside the button.
+- **The Build Now strip ran off the edge on a phone**, with the confirm
+  button unreachable. It wraps.
+- **ripgrep is a prerequisite.** CI installs it, the installer warns with
+  the package name, and the search tests skip without it.
+- Failure rows in the router log carry the exception text; the
+  cartographer and both frontend seats have fallbacks.
+
+### Known limits
+
+- The preflight only checks what a project declares; a build step with an
+  undeclared live dependency still fails as a build error.
+- The half-open-socket gap for task streams noted in v0.3.0 remains.
+
+### Requirements
+
+Linux, Python 3.12+, Node 24+, Docker, PostgreSQL 14+, an OpenRouter API
+key, and now **ripgrep** for the planner's search tools. pm2 optional.
+**879 Python tests, 173 frontend tests** pass on this release.
+
 ## v0.3.0 — runtime limits in the console, one save bar everywhere, planning that stops for the right reasons (pre-release)
 
 **2026-09-02**
