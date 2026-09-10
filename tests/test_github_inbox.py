@@ -17,9 +17,9 @@ def _config():
 
 class FakeGitHub:
     """Just enough of the API surface discover() touches."""
-    def __init__(self, prs=(), reviews=None, alerts=(), checks=(), default_branch="main", fail=()):
+    def __init__(self, prs=(), reviews=None, alerts=(), checks=(), default_branch="main", fail=(), workflow_runs=()):
         self.prs, self.reviews_by, self.alerts, self.checks = list(prs), reviews or {}, list(alerts), list(checks)
-        self.default_branch, self.fail = default_branch, set(fail)
+        self.default_branch, self.fail, self.workflow_runs_list = default_branch, set(fail), list(workflow_runs)
 
     async def open_prs(self, slug):
         if "prs" in self.fail:
@@ -38,7 +38,14 @@ class FakeGitHub:
         return {"default_branch": self.default_branch}
 
     async def check_runs(self, slug, ref):
+        if "checks" in self.fail:
+            raise PermissionError("Checks: read is missing")
         return self.checks
+
+    async def workflow_runs(self, slug, branch):
+        if "actions" in self.fail:
+            raise PermissionError("Actions: read is missing")
+        return self.workflow_runs_list
 
 
 def _pr(n, login, title="bump", sha="abc123def456789"):
@@ -263,3 +270,21 @@ async def test_poll_project_skips_without_a_token_or_a_remote(monkeypatch):
 
 async def _async_none(*a, **k):
     return None
+
+
+@pytest.mark.asyncio
+async def test_ci_failures_fall_back_to_actions_runs_when_check_runs_are_refused():
+    tip, older = "aaaaaaaaaaaa1234", "bbbbbbbbbbbb5678"
+    gh = FakeGitHub(fail={"checks"}, workflow_runs=[
+        {"id": 1, "name": "CI", "conclusion": "failure", "head_sha": tip, "html_url": "https://gh/run/1", "display_title": "fix: thing", "event": "push", "run_number": 40},
+        {"id": 2, "name": "Deploy", "conclusion": "success", "head_sha": tip},
+        {"id": 3, "name": "CI", "conclusion": "failure", "head_sha": older},   # not the tip: history, not work
+    ])
+    items = await gi.discover(gh, "proj", "o/proj", _proj(ci_failures="propose"))
+    assert [i.key for i in items] == [f"ci:{tip[:12]}:CI"]
+    assert "fix: thing" in items[0].summary and "#40" in items[0].summary
+
+    # Neither permission: the source is empty and the others are untouched.
+    gh = FakeGitHub(fail={"checks", "actions"}, prs=[_pr(1, "dependabot[bot]")])
+    items = await gi.discover(gh, "proj", "o/proj", _proj(ci_failures="propose", dependabot_prs="propose"))
+    assert [i.key for i in items] == ["pr:1"]

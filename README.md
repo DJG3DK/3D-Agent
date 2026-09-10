@@ -273,7 +273,7 @@ only; the inbox is a tab of its own). Four sources, each with its own policy per
 | Dependabot pull requests | open PRs by `dependabot[bot]` (widen to any bot, or anyone) |
 | Dependabot security alerts | open alerts on the repo's security tab (needs *Dependabot alerts: read*) |
 | Review comments requesting changes | an open PR with a `CHANGES_REQUESTED` review still standing |
-| Failing checks on the default branch | a check run that concluded failure on the tip of `main` (needs *Checks: read*) |
+| Failing checks on the default branch | a check run that concluded failure on the tip of `main` (needs *Checks: read* or *Actions: read*) |
 
 Policy is **Off** (listed, nothing else), **Propose** (put it in the inbox and send an approve link)
 or **Auto** (start the task at once, up to the project's cap on open auto tasks). Auto removes only

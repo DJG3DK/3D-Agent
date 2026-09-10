@@ -191,7 +191,7 @@ export function GitHubSettingsCard() {
       <h3 className="gh-h3">Tokens</h3>
       <p className="settings-hint">
         Fine-grained personal access tokens, one per GitHub account or repo set. Repository permissions: Metadata, Pull requests and Contents (read);
-        Dependabot alerts (read) for security alerts; Checks (read) for failing checks. Stored encrypted; the value is never shown again.
+        Dependabot alerts (read) for security alerts; Checks (read) or Actions (read) for failing checks. Stored encrypted; the value is never shown again.
         {data.env_token && " A GITHUB_TOKEN from the server's .env is the fallback for projects without one."}
       </p>
       <ul className="gh-tokens">

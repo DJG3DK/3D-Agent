@@ -100,6 +100,13 @@ class GitHubClient:
         data = await self.get(f"/repos/{slug}/commits/{ref}/check-runs", {"per_page": 50})
         return data.get("check_runs") or []
 
+    async def workflow_runs(self, slug: str, branch: str) -> list[dict]:
+        """GitHub Actions runs on a branch, newest first. Needs "Actions: read"
+        where check_runs needs "Checks: read"; a fine-grained token may have
+        either, so ci_failures tries both."""
+        data = await self.get(f"/repos/{slug}/actions/runs", {"branch": branch, "per_page": 30})
+        return data.get("workflow_runs") or []
+
 
 # ---------------------------------------------------------------------------
 # items
@@ -216,21 +223,50 @@ async def discover(client: GitHubClient, repo: str, slug: str, proj: dict) -> li
         try:
             info = await client.repo(slug)
             branch = info.get("default_branch") or "main"
-            for run in await client.check_runs(slug, branch):
-                if run.get("conclusion") not in ("failure", "timed_out"):
-                    continue
-                sha = (run.get("head_sha") or "")[:12]
-                name = run.get("name") or "check"
-                items.append(Item(
-                    key=f"ci:{sha}:{name}", kind="ci_failures", repo=repo,
-                    title=f"{name} failed on {branch} @ {sha[:7]}", url=run.get("html_url") or "",
-                    fingerprint=f"{sha}:{run.get('id')}",
-                    summary=(run.get("output") or {}).get("title") or run.get("conclusion") or "",
-                ))
+            items.extend(await _ci_failures(client, repo, slug, branch))
         except Exception as e:  # noqa: BLE001
             logger.warning("github inbox: %s ci_failures failed: %s", repo, e)
 
     return items
+
+
+async def _ci_failures(client: GitHubClient, repo: str, slug: str, branch: str) -> list[Item]:
+    """Failed runs on the tip of `branch`: check runs when the token may read
+    them, else the newest Actions workflow runs. Only the latest commit that
+    has runs counts -- a failure three commits back is history, not work."""
+    out: list[Item] = []
+    try:
+        runs = await client.check_runs(slug, branch)
+        for run in runs:
+            if run.get("conclusion") not in ("failure", "timed_out"):
+                continue
+            sha = (run.get("head_sha") or "")[:12]
+            name = run.get("name") or "check"
+            out.append(Item(
+                key=f"ci:{sha}:{name}", kind="ci_failures", repo=repo,
+                title=f"{name} failed on {branch} @ {sha[:7]}", url=run.get("html_url") or "",
+                fingerprint=f"{sha}:{run.get('id')}",
+                summary=(run.get("output") or {}).get("title") or run.get("conclusion") or "",
+            ))
+        return out
+    except PermissionError as e:
+        logger.info("github inbox: %s check-runs refused (%s); trying Actions runs", repo, str(e)[:80])
+    runs = await client.workflow_runs(slug, branch)
+    if not runs:
+        return out
+    tip = runs[0].get("head_sha") or ""
+    for run in runs:
+        if run.get("head_sha") != tip or run.get("conclusion") not in ("failure", "timed_out"):
+            continue
+        sha = tip[:12]
+        name = run.get("name") or "workflow"
+        out.append(Item(
+            key=f"ci:{sha}:{name}", kind="ci_failures", repo=repo,
+            title=f"{name} failed on {branch} @ {sha[:7]}", url=run.get("html_url") or "",
+            fingerprint=f"{sha}:{run.get('id')}",
+            summary=f"{run.get('display_title') or ''} ({run.get('event') or 'run'} #{run.get('run_number')})".strip(),
+        ))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +571,18 @@ async def _can(client: GitHubClient, path: str, params: dict) -> bool | None:
         return None
 
 
+async def _can_ci(client: GitHubClient, slug: str) -> bool | None:
+    """Either "Checks: read" (check runs) or "Actions: read" (workflow runs)
+    is enough for the failing-checks source."""
+    checks = await _can(client, f"/repos/{slug}/commits/HEAD/check-runs", {"per_page": 1})
+    if checks:
+        return True
+    actions = await _can(client, f"/repos/{slug}/actions/runs", {"per_page": 1})
+    if actions:
+        return True
+    return False if (checks is False or actions is False) else None
+
+
 async def probe_token(token: str, projects: dict[str, dict]) -> dict:
     """Who the token is, which configured projects it can see, and what it
     may do there. Fine-grained tokens list only their selected repos."""
@@ -559,7 +607,7 @@ async def probe_token(token: str, projects: dict[str, dict]) -> dict:
         out["repos"].append(entry)
         if entry["project"]:
             entry["dependabot_alerts"] = await _can(client, f"/repos/{slug}/dependabot/alerts", {"per_page": 1})
-            entry["checks"] = await _can(client, f"/repos/{slug}/commits/HEAD/check-runs", {"per_page": 1})
+            entry["checks"] = await _can_ci(client, slug)
             out["matched"].append(entry)
     # A project whose slug the token did not list may still be reachable
     # (classic tokens list everything; fine-grained ones only selected).
@@ -573,7 +621,7 @@ async def probe_token(token: str, projects: dict[str, dict]) -> dict:
             out["matched"].append({
                 "slug": slug, "project": name, "push": bool(perms.get("push")), "pull": True,
                 "dependabot_alerts": await _can(client, f"/repos/{slug}/dependabot/alerts", {"per_page": 1}),
-                "checks": await _can(client, f"/repos/{slug}/commits/HEAD/check-runs", {"per_page": 1}),
+                "checks": await _can_ci(client, slug),
             })
         except Exception:  # noqa: BLE001
             pass
