@@ -2,6 +2,8 @@
 slug resolution from the checkout's remote, formatting of what the model
 sees, the no-token case, and wiring into both agents."""
 
+import pytest
+
 import agent.tools.github_tools as gh
 from agent.tools.github_tools import (
     format_pull_request, format_pull_request_list, make_github_tools, repo_slug_from_remote,
@@ -117,3 +119,36 @@ def test_planner_and_coder_get_the_tools_only_with_a_token():
     # with GITHUB_TOKEN as the fallback (agent/tools/github_tools.token_source).
     assert "make_github_tools(token_source(config))" in inspect.getsource(da)
     assert "make_github_tools(token_source(config), allowed_repos)" in inspect.getsource(pc)
+
+
+class _FakeStore:
+    def __init__(self, items):
+        self._items = items
+
+    async def asearch(self, ns, limit=100):
+        from types import SimpleNamespace
+        return [SimpleNamespace(key=k, value=v) for k, v in self._items.items()] if ns == ("github_inbox", "a") else []
+
+
+@pytest.mark.asyncio
+async def test_the_inbox_tool_lists_open_items_with_the_patched_version(monkeypatch):
+    from agent.tools.github_tools import make_github_inbox_tool
+    monkeypatch.setattr("agent.tools.github_tools.PROJECTS", {"a": {"live": "/x", "sandbox": "/y"}}, raising=False)
+    store = _FakeStore({
+        "alert:9": {"key": "alert:9", "kind": "security_alerts", "repo": "a", "number": 9, "state": "proposed", "updated_at": 2,
+                    "title": "[HIGH] sharp: libheif", "summary": "sharp < 0.35.4 -> patched in 0.35.4 (pnpm-lock.yaml)", "url": "https://gh/a/9"},
+        "pr:7": {"key": "pr:7", "kind": "dependabot_prs", "repo": "a", "number": 7, "state": "task_created", "task_id": "abcdef123", "updated_at": 1,
+                 "title": "bump sharp", "summary": "dependabot[bot]: dep -> main", "url": "https://gh/pr/7"},
+        "pr:3": {"key": "pr:3", "kind": "dependabot_prs", "repo": "a", "number": 3, "state": "dismissed", "updated_at": 3, "title": "old", "summary": "", "url": ""},
+    })
+    tool_ = make_github_inbox_tool(store, ["a"])
+    out = await tool_.ainvoke({"repo": "a"})
+    assert out.startswith("2 open GitHub inbox item(s) for a:")
+    assert "[security alert] #9 [HIGH] sharp: libheif -- state: proposed" in out
+    assert "patched in 0.35.4" in out
+    assert "task: abcdef12" in out
+    assert "old" not in out                                   # dismissed is not open
+    assert "old" in await tool_.ainvoke({"repo": "a", "state": "all"})
+    assert (await tool_.ainvoke({"repo": "b"})).startswith("ERROR")
+    empty = await tool_.ainvoke({"repo": "a", "state": "snoozed"})
+    assert "no snoozed items" in empty

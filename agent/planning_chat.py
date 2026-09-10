@@ -90,7 +90,7 @@ from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddle
 from agent.middleware.pinned_brief import BriefFirstMiddleware, PinnedBriefMiddleware
 from agent.model_config import resolve_alias
 from agent.tools.agent_tools import make_agent_tools
-from agent.tools.github_tools import make_github_tools, token_source
+from agent.tools.github_tools import make_github_inbox_tool, make_github_tools, token_source
 from agent.tools.planning_tools import make_planning_tools
 from deepagents.backends import StoreBackend
 
@@ -204,6 +204,9 @@ files it scanned and what to change -- never rerun it unchanged, and never open 
 to find something a search would find in one call.
 - find_files(repo, glob, path="."): the repo files matching a glob ("**/*.css"), .gitignore-aware -- the \
 answer to "where are all the X files", cheaper than listing directories one by one.
+- github_inbox_items(repo): the GitHub inbox -- every Dependabot PR, security alert (with the patched version), \
+  review and failing check the poller found. When the request mentions the inbox or "the alerts", read this FIRST and \
+  put every item in the brief; it is the exact list.
 - github_pull_request(repo, number, part="all") / github_pull_requests(repo, state="open"): read a GitHub pull \
 request (description, checks, review comments with file:line, diff) or list them. When the request names a \
 PR, read it FIRST -- the review comments are the findings a fix has to address -- and put each finding in \
@@ -311,6 +314,8 @@ async def build_planning_agent(
     tool_by_name = {t.name: t for t in project_tools}
     skills_manifest = await load_skills_manifest(repo, store)
     github_tools = make_github_tools(token_source(config), allowed_repos)
+    # The inbox reads the store, not GitHub, so it is there with or without a token.
+    github_tools = [*github_tools, make_github_inbox_tool(store, allowed_repos)]
     planning_tools, plan_ref = make_planning_tools(
         existing_plan, allowed_repos, existing_brief=existing_brief, skills_manifest=skills_manifest,
     )

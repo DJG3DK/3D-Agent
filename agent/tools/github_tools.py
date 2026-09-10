@@ -232,3 +232,61 @@ def token_source(config) -> TokenSource:
     if not github_settings.any_token(settings, config):
         return None
     return lambda repo: github_settings.token_for(github_settings.current(), config, repo)
+
+
+_INBOX_KIND = {
+    "dependabot_prs": "Dependabot PR", "security_alerts": "security alert",
+    "review_requests": "review requesting changes", "ci_failures": "failing check",
+}
+
+
+def format_inbox(repo: str, items: list[dict], state: str) -> str:
+    if not items:
+        return f"The GitHub inbox has no {state} items for {repo}."
+    lines = [f"{len(items)} {state} GitHub inbox item(s) for {repo}:"]
+    for it in items:
+        head = f"- [{_INBOX_KIND.get(it.get('kind'), it.get('kind'))}] "
+        if it.get("number"):
+            head += f"#{it['number']} "
+        lines.append(head + f"{it.get('title')} -- state: {it.get('state')}")
+        if it.get("summary"):
+            lines.append(f"    {it['summary']}")
+        if it.get("url"):
+            lines.append(f"    {it['url']}")
+        if it.get("task_id"):
+            lines.append(f"    task: {it['task_id'][:8]}")
+    return "\n".join(lines)
+
+
+def make_github_inbox_tool(store, allowed_repos: list[str] | None = None):
+    """Read the GitHub inbox (agent/github_inbox.py) for a project: what the
+    poller found -- Dependabot PRs, security alerts with the patched version,
+    reviews, failing checks -- and what state each is in. Host-side read of
+    the store; nothing here reaches GitHub."""
+    from agent import github_inbox
+
+    @tool
+    @tool_errors_to_text
+    async def github_inbox_items(repo: str, state: str = "open") -> str:
+        """List the project's GitHub inbox: the Dependabot pull requests,
+        Dependabot security alerts (package, vulnerable range, patched
+        version, manifest), reviews requesting changes and failing checks
+        the poller found on GitHub, each with its state. `state` is "open"
+        (proposed, seen, snoozed or already turned into a task -- the
+        default), "all", or one state name. Use it whenever a request says
+        "the alerts in the inbox" or "fix what GitHub flagged": it is the
+        exact list, so the plan can name every item instead of guessing
+        from the lockfile."""
+        if repo not in PROJECTS or (allowed_repos is not None and repo not in allowed_repos):
+            return f"ERROR: unknown or inaccessible repo {repo!r}"
+        items = list((await github_inbox.list_items(store, repo)).values())
+        open_states = ("proposed", "seen", "snoozed", "task_created")
+        if state == "open":
+            items = [i for i in items if i.get("state") in open_states]
+        elif state != "all":
+            items = [i for i in items if i.get("state") == state]
+        order = {"security_alerts": 0, "ci_failures": 1, "review_requests": 2, "dependabot_prs": 3}
+        items.sort(key=lambda i: (order.get(i.get("kind"), 9), -(i.get("updated_at") or 0)))
+        return format_inbox(repo, items, state)
+
+    return github_inbox_items
