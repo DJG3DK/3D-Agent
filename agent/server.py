@@ -187,17 +187,18 @@ async def _drain_planning_turns(timeout: float = 15.0) -> None:
 _INITIAL_PASSWORD_PATH = Path(__file__).resolve().parent.parent / ".initial-admin-password"
 
 
-def _write_initial_password(password: str) -> Path:
-    """The first admin password, readable only by the account running the
-    agent. Falls back to the log line's own hint if the file cannot be
-    written, without ever printing the password."""
+def _store_initial_password(password: str) -> None:
+    """The first admin password, encrypted with AUTH_SECRET_KEY (the same
+    AES-GCM construction as the TOTP secrets) into a 0600 file beside the
+    repo. `scripts/show_initial_password.py` decrypts it once for the
+    operator. Neither the log nor the disk ever holds it in clear."""
     try:
+        enc = auth._encrypt_totp_secret(config, password)
         _INITIAL_PASSWORD_PATH.touch(mode=0o600, exist_ok=True)
         _INITIAL_PASSWORD_PATH.chmod(0o600)
-        _INITIAL_PASSWORD_PATH.write_text(password + "\n")
-    except OSError:
-        logger.exception("could not write the initial admin password to %s", _INITIAL_PASSWORD_PATH)
-    return _INITIAL_PASSWORD_PATH
+        _INITIAL_PASSWORD_PATH.write_text(enc + "\n")
+    except Exception:  # noqa: BLE001 -- the account exists either way; say so in the log
+        logger.exception("could not store the initial admin password at %s", _INITIAL_PASSWORD_PATH)
 
 
 @asynccontextmanager
@@ -216,11 +217,11 @@ async def lifespan(app: FastAPI):
             # are copied, shipped and grepped, and a password in one is a
             # password in every copy. Written once to a 0600 file beside the
             # repo instead; the log says where.
-            where = _write_initial_password(generated_password)
+            _store_initial_password(generated_password)
             logger.warning(
-                "Seeded initial admin account %s. Its one-time password is in %s "
-                "(mode 0600; must be changed on first login, then delete the file).",
-                config.admin_email, where,
+                "Seeded initial admin account %s. Its one-time password is stored encrypted; "
+                "run `.venv/bin/python scripts/show_initial_password.py` to read it "
+                "(must be changed on first login).", config.admin_email,
             )
         # Both checkpointer and store passed to .compile() -- store isn't
         # actually read via LangGraph's own node-kwarg injection here (see

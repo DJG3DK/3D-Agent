@@ -165,12 +165,15 @@ def safe_relative(rel: str, base: str, *, must_exist: bool = True) -> str:
     if os.path.isabs(rel):
         raise ProvisioningError(f"{rel!r} must be relative to the project root")
     base_real = os.path.realpath(base)
-    joined = os.path.normpath(os.path.realpath(os.path.join(base_real, rel)))
-    # Spelled out as normpath + startswith (not only _is_within) so a static
-    # analyser sees the sanitiser before the filesystem call below.
-    if joined != base_real and not joined.startswith(base_real + os.sep):
+    if rel.strip("/") in ("", "."):
+        return rel.strip("/")          # the project root itself: nothing to contain
+    joined = os.path.normpath(os.path.join(base_real, rel))
+    # The plain normpath + startswith shape, so a static analyser sees the
+    # sanitiser before the filesystem call below (_is_within on the real
+    # path covers symlinks on top of it).
+    if not joined.startswith(base_real + os.sep):
         raise ProvisioningError(f"{rel!r} escapes the project directory")
-    if not _is_within(joined, base):
+    if not _is_within(os.path.realpath(joined), base):
         raise ProvisioningError(f"{rel!r} escapes the project directory")
     if must_exist and not os.path.exists(joined):
         raise ProvisioningError(f"{rel!r} does not exist in the project")

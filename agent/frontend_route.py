@@ -69,7 +69,10 @@ FRONTEND_KEYWORDS = (
 # engine split a run of "-" characters between the repeated group and the
 # tail in many ways (CodeQL py/polynomial-redos, 2026-09-10); with "/" as the
 # only way to enter another segment there is one parse per input.
-_PATH_TOKEN = re.compile(r"(?<![\w/])([\w.@-]+(?:/[\w.@-]+)+|[\w@-]+\.(?:tsx|jsx|css|scss|less|html|vue|svelte))(?![\w/])")
+# Possessive (++): once a run of name characters is consumed it is never
+# given back, so a long run of "-" that ends without "/" or an extension
+# fails in one step instead of being re-split at every length.
+_PATH_TOKEN = re.compile(r"(?<![\w/])([\w.@-]++(?:/[\w.@-]++)++|[\w@-]++\.(?:tsx|jsx|css|scss|less|html|vue|svelte))(?![\w/])")
 
 
 @dataclass(frozen=True)

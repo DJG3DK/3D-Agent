@@ -19,8 +19,6 @@ both call the same module.
 """
 
 import argparse
-import json
-import re
 import sys
 from pathlib import Path
 
@@ -52,19 +50,6 @@ def _choose(items, assume_yes: bool, label: str) -> list[str]:
             print(f"      ! {c.warning}")
         chosen.append(c.value) if (c.enabled if assume_yes else _ask(f"include {c.value}?", c.enabled)) else None
     return chosen
-
-
-_SECRET_KEY = re.compile(r"secret|token|password|passwd|api_key|apikey|private", re.I)
-
-
-def _redacted(value):
-    """The entry for the operator's eyes: any key that names a secret is
-    masked. The real values are already on disk in projects.json."""
-    if isinstance(value, dict):
-        return {k: ("***" if _SECRET_KEY.search(str(k)) and isinstance(v, str) else _redacted(v)) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redacted(v) for v in value]
-    return value
 
 
 def main() -> int:
@@ -136,7 +121,11 @@ def main() -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     print(f"  config    wrote {name} to {_PROJECTS_CONFIG_PATH}")
-    print(json.dumps(_redacted(entry), indent=2))
+    print(f"  live      {report.live}")
+    print(f"  sandbox   {report.sandbox}")
+    print(f"  pm2 apps  {', '.join(apps) or '-'}")
+    print(f"  checks    {', '.join(c['name'] for c in checks) or '-'}")
+    print(f"  secrets   {len(secrets)} file(s) (names in {_PROJECTS_CONFIG_PATH})")
     print("\nNext:")
     print(f"  .venv/bin/python scripts/run_cartographer.py {name}   # build its codebase map")
     print("  .venv/bin/python scripts/seed_memory.py               # seed project memory")
