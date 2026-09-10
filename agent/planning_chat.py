@@ -204,9 +204,11 @@ files it scanned and what to change -- never rerun it unchanged, and never open 
 to find something a search would find in one call.
 - find_files(repo, glob, path="."): the repo files matching a glob ("**/*.css"), .gitignore-aware -- the \
 answer to "where are all the X files", cheaper than listing directories one by one.
-- github_inbox_items(repo): the GitHub inbox -- every Dependabot PR, security alert (with the patched version), \
-  review and failing check the poller found. When the request mentions the inbox or "the alerts", read this FIRST and \
-  put every item in the brief; it is the exact list.
+- github_inbox_items(repo): the GitHub inbox -- every code scanning (CodeQL) alert grouped per rule with its \
+  file:line locations, Dependabot PR, security alert (with the patched version), review and failing check the \
+  poller found. When the request mentions the inbox or "the alerts", read this FIRST and put every item in the \
+  brief; it is the exact list, and for code scanning items the locations in the summary ARE the findings -- \
+  read those files, not the pull requests.
 - github_pull_request(repo, number, part="all") / github_pull_requests(repo, state="open"): read a GitHub pull \
 request (description, checks, review comments with file:line, diff) or list them. When the request names a \
 PR, read it FIRST -- the review comments are the findings a fix has to address -- and put each finding in \

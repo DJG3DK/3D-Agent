@@ -237,6 +237,7 @@ def token_source(config) -> TokenSource:
 _INBOX_KIND = {
     "dependabot_prs": "Dependabot PR", "security_alerts": "security alert",
     "review_requests": "review requesting changes", "ci_failures": "failing check",
+    "code_scanning": "Code scanning alert",
 }
 
 
@@ -268,10 +269,12 @@ def make_github_inbox_tool(store, allowed_repos: list[str] | None = None):
     @tool
     @tool_errors_to_text
     async def github_inbox_items(repo: str, state: str = "open") -> str:
-        """List the project's GitHub inbox: the Dependabot pull requests,
-        Dependabot security alerts (package, vulnerable range, patched
-        version, manifest), reviews requesting changes and failing checks
-        the poller found on GitHub, each with its state. `state` is "open"
+        """List the project's GitHub inbox: code scanning (CodeQL) alerts
+        grouped one item per rule (every file:line and message), the
+        Dependabot pull requests, Dependabot security alerts (package,
+        vulnerable range, patched version, manifest), reviews requesting
+        changes and failing checks the poller found on GitHub, each with
+        its state. `state` is "open"
         (proposed, seen, snoozed or already turned into a task -- the
         default), "all", or one state name. Use it whenever a request says
         "the alerts in the inbox" or "fix what GitHub flagged": it is the
@@ -285,7 +288,7 @@ def make_github_inbox_tool(store, allowed_repos: list[str] | None = None):
             items = [i for i in items if i.get("state") in open_states]
         elif state != "all":
             items = [i for i in items if i.get("state") == state]
-        order = {"security_alerts": 0, "ci_failures": 1, "review_requests": 2, "dependabot_prs": 3}
+        order = {"code_scanning": 0, "security_alerts": 1, "ci_failures": 2, "review_requests": 3, "dependabot_prs": 4}
         items.sort(key=lambda i: (order.get(i.get("kind"), 9), -(i.get("updated_at") or 0)))
         return format_inbox(repo, items, state)
 
