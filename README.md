@@ -96,6 +96,7 @@ Outbound mail is optional and only used for password resets.
 - [Planning Chat](#planning-chat)
 - [Dashboard](#dashboard)
 - [Telegram alerts](#telegram-alerts)
+- [GitHub inbox](#github-inbox)
 - [Memory](#memory)
 - [Model routing](#model-routing)
 - [Auth](#auth)
@@ -240,8 +241,8 @@ connecting doesn't disconnect the first.
 - **Task identity** — the task header carries click-to-copy `id:` and `commit:` chips, so "which
   task are we talking about" has a definite answer; every tool bubble in task and planning streams
   is timestamped, so stale scrollback and live activity are distinguishable at a glance.
-- **Settings** — themed sections (Account & access / Agent behavior / Notifications / API keys &
-  integrations) in a responsive two-up grid; the API-keys panel is one card per credential group
+- **Settings** — themed sections (Account & access / Agent behavior / Notifications / GitHub /
+  API keys & integrations) in a responsive two-up grid; the API-keys panel is one card per credential group
   (Model routing, Tracing, Email) with a single panel-wide save.
 
 ## Telegram alerts
