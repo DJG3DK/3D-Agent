@@ -37,3 +37,21 @@ async def send_password_reset_email(config: Config, to_email: str, code: str) ->
         password=config.smtp_pass,
         start_tls=True,
     )
+
+
+async def send_plain_email(config: Config, to_email: str, subject: str, body: str) -> None:
+    """One plain-text email over the same SMTP settings. Used by the GitHub
+    inbox for approve links; raises on failure so the caller can log it."""
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = config.smtp_from
+    msg["To"] = to_email
+    msg.set_content(body)
+    await aiosmtplib.send(
+        msg,
+        hostname=config.smtp_host,
+        port=config.smtp_port,
+        username=config.smtp_user,
+        password=config.smtp_pass,
+        start_tls=True,
+    )

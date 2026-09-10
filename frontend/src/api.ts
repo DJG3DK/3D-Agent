@@ -843,3 +843,127 @@ export async function saveRuntimeSettings(values: Record<string, number>): Promi
   }
   return res.json();
 }
+
+// --- GitHub integration (agent/github_settings.py, agent/github_inbox.py) ---
+
+export type GitHubMode = "off" | "propose" | "auto";
+export type GitHubSource = "dependabot_prs" | "security_alerts" | "review_requests" | "ci_failures";
+
+export interface GitHubProjectSettings {
+  token: string | null;
+  policies: Record<GitHubSource, GitHubMode>;
+  budget_usd: number;
+  max_open_auto: number;
+  authors: "dependabot" | "bots" | "anyone";
+  route: "auto" | "frontend" | "general";
+}
+
+export interface GitHubSettings {
+  poll_interval_min: number;
+  public_url: string;
+  notify: { telegram: boolean; email: boolean; email_to: string };
+  /** name -> hint/date only; the token value never leaves the server. */
+  tokens: Record<string, { hint: string; created_at: number | null }>;
+  projects: Record<string, GitHubProjectSettings>;
+}
+
+export interface GitHubSettingsResponse {
+  settings: GitHubSettings;
+  sources: Record<GitHubSource, { label: string; help: string }>;
+  modes: GitHubMode[];
+  author_filters: string[];
+  env_token: boolean;
+  projects: string[];
+}
+
+export interface GitHubSettingsPatch {
+  poll_interval_min?: number;
+  public_url?: string;
+  notify?: { telegram: boolean; email: boolean; email_to: string };
+  add_tokens?: Record<string, string>;
+  remove_tokens?: string[];
+  projects?: Record<string, Partial<GitHubProjectSettings> & { policies?: Partial<Record<GitHubSource, GitHubMode>> }>;
+}
+
+export async function getGitHubSettings(): Promise<GitHubSettingsResponse> {
+  const res = await apiFetch(`${API_BASE}/settings/github`);
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export async function saveGitHubSettings(patch: GitHubSettingsPatch): Promise<{ settings: GitHubSettings }> {
+  const res = await apiFetch(`${API_BASE}/settings/github`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export interface GitHubTokenProbe {
+  ok: boolean;
+  error?: string;
+  warning?: string;
+  login?: string | null;
+  repos: { slug: string; project: string | null; push: boolean; pull: boolean }[];
+  matched: { slug: string; project: string | null; push: boolean; pull: boolean; dependabot_alerts?: boolean | null; checks?: boolean | null }[];
+}
+
+/** Test a stored token by name, or a pasted one before it is saved. */
+export async function testGitHubToken(arg: { name?: string; token?: string }): Promise<GitHubTokenProbe> {
+  const res = await apiFetch(`${API_BASE}/settings/github/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(arg),
+  }, 30_000);
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export type GitHubItemState = "seen" | "proposed" | "task_created" | "dismissed" | "snoozed" | "resolved";
+
+export interface GitHubInboxItem {
+  key: string;
+  kind: GitHubSource;
+  repo: string;
+  title: string;
+  url: string;
+  number: number | null;
+  author: string | null;
+  summary: string;
+  state: GitHubItemState;
+  mode: GitHubMode;
+  reason: string;
+  task_id: string | null;
+  created_at: number;
+  updated_at: number;
+  snoozed_until: number | null;
+}
+
+export interface GitHubInboxResponse {
+  items: GitHubInboxItem[];
+  last_poll: { at: number; results: { repo: string; found?: number; proposed?: number; created?: number; resolved?: number; skipped?: string; error?: string }[] } | null;
+}
+
+export async function getGitHubInbox(): Promise<GitHubInboxResponse> {
+  const res = await apiFetch(`${API_BASE}/github/inbox`);
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export async function actOnGitHubItem(repo: string, key: string, action: "approve" | "dismiss" | "snooze", days?: number): Promise<{ item: GitHubInboxItem; task_id: string | null }> {
+  const res = await apiFetch(`${API_BASE}/github/inbox/${encodeURIComponent(repo)}/${encodeURIComponent(key)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(days !== undefined ? { days } : {}),
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+export async function pollGitHubNow(): Promise<{ results: GitHubInboxResponse["last_poll"] extends infer T ? (T extends { results: infer R } ? R : never) : never }> {
+  const res = await apiFetch(`${API_BASE}/github/poll`, { method: "POST" }, 120_000);
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}

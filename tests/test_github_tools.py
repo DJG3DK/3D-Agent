@@ -12,6 +12,10 @@ def test_slug_from_ssh_and_https_remotes():
     assert repo_slug_from_remote("git@github.com:DJG3DK/3d-bot.git") == "DJG3DK/3d-bot"
     assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent") == "DJG3DK/3D-Agent"
     assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent.git\n") == "DJG3DK/3D-Agent"
+    # A deploy key per project means an SSH host alias per project (2026-09-10:
+    # two of three live projects resolved to no slug at all until this).
+    assert repo_slug_from_remote("git@github-3dsteals:DJG3DK/3DSteals.com.git") == "DJG3DK/3DSteals.com"
+    assert repo_slug_from_remote("ssh://git@github.com-work/owner/repo.git") == "owner/repo"
     assert repo_slug_from_remote("git@gitlab.com:x/y.git") is None
     assert repo_slug_from_remote("") is None
 
@@ -109,5 +113,7 @@ def test_planner_and_coder_get_the_tools_only_with_a_token():
     import inspect
     import agent.deep_agent as da
     import agent.planning_chat as pc
-    assert "make_github_tools(getattr(config, \"github_token\", None)" in inspect.getsource(da)
-    assert "make_github_tools(getattr(config, \"github_token\", None), allowed_repos)" in inspect.getsource(pc)
+    # Both seats resolve the token per project through Settings -> GitHub,
+    # with GITHUB_TOKEN as the fallback (agent/tools/github_tools.token_source).
+    assert "make_github_tools(token_source(config))" in inspect.getsource(da)
+    assert "make_github_tools(token_source(config), allowed_repos)" in inspect.getsource(pc)

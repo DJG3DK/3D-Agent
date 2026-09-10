@@ -24,7 +24,7 @@ from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 from agent.config import Config, PROJECTS
 from agent.frontend_route import CODER_ROLE
-from agent.tools.github_tools import make_github_tools
+from agent.tools.github_tools import make_github_tools, token_source
 from agent.memory_freshness import memory_with_freshness
 
 # langchain-openai cannot attach response headers on the structured-output
@@ -977,7 +977,7 @@ async def build_deep_agent(
     # GitHub PR tools (read-only, host-side, only when a token is configured):
     # the coordinator, the investigator and the general-purpose seat all read
     # PRs; the test-writer has no use for them.
-    github_tools = make_github_tools(getattr(config, "github_token", None))
+    github_tools = make_github_tools(token_source(config))
     project_tools = [*project_tools, *github_tools]
     read_only_tools = [tool_by_name["read"], tool_by_name["bash"], tool_by_name["describe_image"], *github_tools]
     if db_tool is not None:

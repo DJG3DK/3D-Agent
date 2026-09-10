@@ -28,6 +28,11 @@ PUBLIC_ROUTES = {
     ("POST", "/api/auth/logout"),           # must work with a dead session
     ("POST", "/api/auth/forgot-password"),  # by definition pre-auth
     ("POST", "/api/auth/reset-password"),   # ditto, guarded by the emailed code
+    # The approve link from a Telegram/email alert: the operator is on a phone
+    # with no session. Guarded by the HMAC-signed, expiring, single-use token in
+    # the URL (agent/github_inbox.py); the GET only renders a button, the POST acts.
+    ("GET", "/api/github/approve"),
+    ("POST", "/api/github/approve"),
 }
 
 
@@ -136,6 +141,8 @@ EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{u
     ('GET', '/api/auth/users', 'require_full_auth'),
     ('GET', '/api/consolidation/status', 'require_full_auth'),
     ('GET', '/api/env-config', 'require_full_auth'),
+    ('GET', '/api/github/approve', None),
+    ('GET', '/api/github/inbox', 'require_full_auth'),
     ('GET', '/api/model-config', 'require_full_auth'),
     ('GET', '/api/model-config/catalog', 'require_full_auth'),
     ('GET', '/api/model-config/endpoints', 'require_full_auth'),
@@ -145,9 +152,7 @@ EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{u
     ('GET', '/api/projects/{name}/deploy-key', 'require_full_auth'),
     ('GET', '/api/repos', 'require_full_auth'),
     ('GET', '/api/router-balance', 'require_full_auth'),
-    # Admin-only inside the handler via auth.require_admin, the same shape the
-    # users routes use -- the dependency is require_full_auth, the role check
-    # lives in the body.
+    ('GET', '/api/settings/github', 'require_full_auth'),
     ('GET', '/api/settings/runtime', 'require_full_auth'),
     ('GET', '/api/stats', 'require_full_auth'),
     ('GET', '/api/tasks', 'require_full_auth'),
@@ -170,6 +175,9 @@ EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{u
     ('POST', '/api/auth/users', 'require_full_auth'),
     ('POST', '/api/env-config', 'require_full_auth'),
     ('POST', '/api/env-config/restart', 'require_full_auth'),
+    ('POST', '/api/github/approve', None),
+    ('POST', '/api/github/inbox/{repo}/{key}/{action}', 'require_full_auth'),
+    ('POST', '/api/github/poll', 'require_full_auth'),
     ('POST', '/api/model-config', 'require_full_auth'),
     ('POST', '/api/model-config/probe-forced-tool-call', 'require_full_auth'),
     ('POST', '/api/model-config/providers', 'require_full_auth'),
@@ -183,6 +191,8 @@ EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{u
     ('POST', '/api/projects/{name}/deploy-key', 'require_full_auth'),
     ('POST', '/api/projects/{name}/deploy-key/generate', 'require_full_auth'),
     ('POST', '/api/projects/{name}/deploy-key/test', 'require_full_auth'),
+    ('POST', '/api/settings/github', 'require_full_auth'),
+    ('POST', '/api/settings/github/test', 'require_full_auth'),
     ('POST', '/api/settings/runtime', 'require_full_auth'),
     ('POST', '/api/tasks', 'require_full_auth'),
     ('POST', '/api/tasks/{task_id}/approve', 'require_full_auth'),

@@ -6,6 +6,7 @@ opening a fresh connection per request would be wasteful and race-prone).
 """
 
 import asyncio
+import html
 import contextlib
 import json
 import logging
@@ -43,12 +44,14 @@ from agent import model_config
 from agent.model_config import resolve_alias
 from agent.classify import classify_task, TaskClassification, TEST_REMINDER_NOTE
 from agent import runtime_settings
+from agent import github_inbox, github_settings
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.frontend_route import RouteDecision, classify_frontend, normalize_override
 from agent.planning_chat import build_planning_agent, classify_planning_difficulty, planning_thread_config, run_planning_turn, _translate_message as _translate_planning_message
 from agent import auth
 from agent.auth import SESSION_COOKIE_NAME, User, check_repo_access
-from agent.notify import notify_operators_bg, send_telegram, task_alert, watch_services
+from agent.notify import notify_operators, notify_operators_bg, send_telegram, task_alert, watch_services
+from agent.mailer import send_plain_email
 
 config = load_config()
 install_langsmith(config)  # no-ops cleanly if LANGSMITH_TRACING isn't set -- see observability.py
@@ -209,6 +212,7 @@ async def lifespan(app: FastAPI):
         )
         # Stored runtime limits, before anything can build an agent with them.
         await runtime_settings.load(app.state.store)
+        await github_settings.load(app.state.store)
 
         # Pre-warm the model-usage cache in the background so the first
         # Analytics page load after a restart doesn't pay the cold
@@ -243,9 +247,13 @@ async def lifespan(app: FastAPI):
         # itself is excluded from the poll (its restart resets this watcher)
         # and announces itself with the startup line below instead.
         service_watch_task = asyncio.create_task(watch_services(auth_pool))
+        # GitHub inbox poller (Settings -> GitHub). Sleeps until a project
+        # switches a source on; see _github_poll_loop.
+        github_poll_task = asyncio.create_task(_github_poll_loop())
         notify_operators_bg(auth_pool, "🔄 agent backend restarted (deploys land this way; "
                             "orphaned tasks auto-resume, planning turns re-send)")
         yield
+        github_poll_task.cancel()
         service_watch_task.cancel()
         auto_resume_task.cancel()
         # Drain in-flight planning turns BEFORE this `async with` block exits
@@ -638,6 +646,263 @@ async def set_runtime_settings(req: RuntimeSettingsRequest, user: User = Depends
         raise HTTPException(400, str(e)) from e
     logger.info("runtime settings updated by user %s: %s", user.id, sorted(req.values))
     return {"ok": True, "values": values}
+
+
+# ---------------------------------------------------------------------------
+# GitHub integration: settings, inbox, approve links, poller
+# (agent/github_settings.py, agent/github_inbox.py)
+# ---------------------------------------------------------------------------
+
+class GitHubSettingsPatch(BaseModel):
+    poll_interval_min: int | None = None
+    public_url: str | None = None
+    notify: dict | None = None
+    add_tokens: dict[str, str] | None = None
+    remove_tokens: list[str] | None = None
+    projects: dict[str, dict] | None = None
+
+
+class GitHubTokenTestRequest(BaseModel):
+    name: str | None = None      # a stored token
+    token: str | None = None     # or a pasted one, before saving
+
+
+@app.get("/api/settings/github")
+async def get_github_settings(user: User = Depends(require_full_auth)):
+    """Admin-only. Tokens come back as name + hint + date, never the value."""
+    auth.require_admin(user)
+    settings = github_settings.current()
+    return {
+        "settings": github_settings.public_view(settings),
+        "sources": github_settings.SOURCES,
+        "modes": list(github_settings.MODES),
+        "author_filters": list(github_settings.AUTHOR_FILTERS),
+        "env_token": bool(getattr(config, "github_token", None)),
+        "projects": [name for name in PROJECTS],
+    }
+
+
+@app.post("/api/settings/github")
+async def set_github_settings(req: GitHubSettingsPatch, user: User = Depends(require_full_auth)):
+    auth.require_admin(user)
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        saved = await github_settings.save(app.state.store, config, patch)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    logger.info("github settings updated by user %s: %s", user.id, sorted(patch))
+    _github_poll_wake.set()
+    return {"ok": True, "settings": github_settings.public_view(saved)}
+
+
+@app.post("/api/settings/github/test")
+async def test_github_token(req: GitHubTokenTestRequest, user: User = Depends(require_full_auth)):
+    """Who the token is and which projects it reaches. Works on a pasted
+    token before it is saved, or on a stored one by name."""
+    auth.require_admin(user)
+    raw = (req.token or "").strip()
+    if not raw and req.name:
+        entry = github_settings.current()["tokens"].get(req.name)
+        if not entry:
+            raise HTTPException(404, f"no stored token named {req.name!r}")
+        raw = github_settings.decrypt_token(config, entry["enc"])
+    if not raw and getattr(config, "github_token", None):
+        raw = config.github_token
+    if not raw:
+        raise HTTPException(400, "no token to test")
+    return await github_inbox.probe_token(raw, PROJECTS)
+
+
+@app.get("/api/github/inbox")
+async def github_inbox_list(repo: str | None = None, user: User = Depends(require_full_auth)):
+    repos = [repo] if repo else [r for r in PROJECTS if user.can_access(r)]
+    if repo:
+        check_repo_access(user, repo)
+    items = []
+    for r in repos:
+        items.extend((await github_inbox.list_items(app.state.store, r)).values())
+    items.sort(key=lambda i: i.get("updated_at", 0), reverse=True)
+    return {"items": items, "last_poll": _github_last_poll}
+
+
+class InboxActionRequest(BaseModel):
+    days: float | None = None    # snooze length
+
+
+async def _github_open_auto_count(repo: str) -> int:
+    """Auto-created tasks that are still running or parked on a human."""
+    n = 0
+    for it in await app.state.store.asearch(("tasks", repo), limit=100):
+        v = it.value
+        if v.get("origin") == "github" and v.get("status") in ("running", "escalated", "awaiting_approval", "awaiting_merge"):
+            n += 1
+    return n
+
+
+async def _github_create_task(repo: str, goal: str, budget: float, route: str) -> str:
+    """Inbox tasks run under the admin account's command policy and always
+    keep the merge review: the operator asked that everything created this
+    way still goes through the gate and their final look."""
+    admin = await auth.get_user_by_email(app.state.auth_pool, config.admin_email)
+    out = await _start_task(
+        goal, repo, budget, route,
+        auto_approve_commands=bool(admin and admin.get("auto_approve_commands")),
+        require_merge_review=True,
+        origin="github",
+    )
+    return out["task_id"]
+
+
+async def _github_notify(text: str, repo: str) -> None:
+    settings = github_settings.current()
+    if settings["notify"].get("telegram", True):
+        await notify_operators(app.state.auth_pool, text, repo)
+    if settings["notify"].get("email"):
+        to = settings["notify"].get("email_to") or config.admin_email
+        try:
+            await send_plain_email(config, to, f"[3D-Agent] GitHub inbox: {repo}", text)
+        except Exception:  # noqa: BLE001 -- best-effort, like every alert
+            logger.exception("github inbox: email to %s failed", to)
+
+
+async def _github_act(repo: str, key: str, action: str, *, nonce: str | None = None, days: float | None = None) -> dict:
+    """Approve / dismiss / snooze one inbox item. `nonce` is set when the
+    request came through a signed link and must match the item's current
+    nonce, which is what makes a link single-use."""
+    items = await github_inbox.list_items(app.state.store, repo)
+    item = items.get(key)
+    if not item:
+        raise HTTPException(404, "that item is no longer in the inbox")
+    if nonce is not None and item.get("approval_nonce") != nonce:
+        raise HTTPException(409, "this link was already used")
+    if action == "approve":
+        if item.get("state") == "task_created" and item.get("task_id"):
+            return {"ok": True, "already": True, "task_id": item["task_id"], "item": item}
+        if item.get("state") not in ("proposed", "snoozed", "seen"):
+            raise HTTPException(409, f"item is {item.get('state')}; nothing to approve")
+        task_id = await github_inbox.create_task_for_item(item, github_settings.current(), config, _github_create_task)
+        item.update({"state": "task_created", "task_id": task_id, "reason": "approved by operator", "approval_nonce": None})
+    elif action == "dismiss":
+        item.update({"state": "dismissed", "reason": "dismissed by operator", "approval_nonce": None})
+    elif action == "snooze":
+        until = time.time() + max(0.05, float(days or 1.0)) * 86400
+        item.update({"state": "snoozed", "snoozed_until": until, "reason": f"snoozed until {time.strftime('%Y-%m-%d', time.gmtime(until))}"})
+    else:
+        raise HTTPException(400, "unknown action")
+    await github_inbox.put_item(app.state.store, item)
+    return {"ok": True, "item": item, "task_id": item.get("task_id")}
+
+
+@app.post("/api/github/inbox/{repo}/{key}/{action}")
+async def github_inbox_action(repo: str, key: str, action: str, req: InboxActionRequest | None = None,
+                              user: User = Depends(require_full_auth)):
+    if repo not in PROJECTS:
+        raise HTTPException(404, "unknown repo")
+    check_repo_access(user, repo)
+    return await _github_act(repo, key, action, days=(req.days if req else None))
+
+
+@app.post("/api/github/poll")
+async def github_poll_now(user: User = Depends(require_full_auth)):
+    auth.require_admin(user)
+    return {"results": await _github_poll_once()}
+
+
+_APPROVE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3D-Agent · GitHub inbox</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;background:#0f1220;color:#e6e8f0;margin:0;padding:24px}
+.card{max-width:560px;margin:8vh auto;background:#181c30;border:1px solid #2a3050;border-radius:12px;padding:24px}
+h1{font-size:18px;margin:0 0 12px}p{margin:8px 0}.muted{color:#9aa3c0}.err{color:#ff8a8a}
+button{font:inherit;font-weight:700;border:0;border-radius:8px;padding:12px 18px;cursor:pointer;margin-top:12px}
+.go{background:#3fb950;color:#06210c}.no{background:#2a3050;color:#e6e8f0;margin-left:8px}</style></head>
+<body><div class="card">{body}</div></body></html>"""
+
+
+def _approve_html(body: str) -> Response:
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(_APPROVE_PAGE.replace("{body}", body))
+
+
+def _esc(s: str) -> str:
+    return html.escape(str(s or ""))
+
+
+@app.get("/api/github/approve")
+async def github_approve_page(t: str = ""):
+    """The link from Telegram/email. Shows what would happen and a button;
+    the button POSTs. A GET never acts -- messengers fetch links for previews."""
+    try:
+        data = github_inbox.verify_approval(config, t)
+    except ValueError as e:
+        return _approve_html(f"<h1>Link problem</h1><p class=err>{_esc(e)}</p>")
+    items = await github_inbox.list_items(app.state.store, data["r"])
+    item = items.get(data["k"])
+    if not item:
+        return _approve_html("<h1>Gone</h1><p class=muted>That item is no longer in the inbox.</p>")
+    if item.get("approval_nonce") != data["n"]:
+        state = item.get("state")
+        return _approve_html(f"<h1>Already handled</h1><p class=muted>This item is <b>{_esc(state)}</b>"
+                             + (f" (task {_esc(item.get('task_id', '')[:8])})" if item.get("task_id") else "") + ".</p>")
+    verb = "Start a task for" if data["a"] == "approve" else "Dismiss"
+    budget = github_settings.project_settings(github_settings.current(), data["r"])["budget_usd"]
+    body = (f"<h1>{verb} this?</h1><p><b>{_esc(item.get('title'))}</b></p><p class=muted>{_esc(item.get('summary'))}</p>"
+            f"<p class=muted>{_esc(data['r'])} · {_esc(item.get('kind'))}"
+            + (f" · budget ${budget:.2f}, through the normal review gate" if data["a"] == "approve" else "") + "</p>"
+            # action="" posts back to this same URL, whatever prefix nginx serves it under.
+            f"<form method=post action=\"\"><input type=hidden name=t value=\"{_esc(t)}\">"
+            f"<button class=go type=submit>{'Approve and start' if data['a'] == 'approve' else 'Dismiss'}</button></form>")
+    return _approve_html(body)
+
+
+@app.post("/api/github/approve")
+async def github_approve_submit(request: Request):
+    form = await request.form()
+    t = str(form.get("t") or "")
+    try:
+        data = github_inbox.verify_approval(config, t)
+        result = await _github_act(data["r"], data["k"], data["a"], nonce=data["n"])
+    except ValueError as e:
+        return _approve_html(f"<h1>Link problem</h1><p class=err>{_esc(e)}</p>")
+    except HTTPException as e:
+        return _approve_html(f"<h1>Not done</h1><p class=err>{_esc(e.detail)}</p>")
+    if data["a"] == "approve":
+        tid = result.get("task_id") or ""
+        return _approve_html(f"<h1>Task started</h1><p>{_esc(result['item'].get('title'))}</p>"
+                             f"<p class=muted>Task {_esc(tid[:8])} is running on {_esc(data['r'])}. It will ask for your merge approval when the review is ready.</p>")
+    return _approve_html(f"<h1>Dismissed</h1><p class=muted>{_esc(result['item'].get('title'))}</p>")
+
+
+_github_poll_wake = asyncio.Event()
+_github_last_poll: dict | None = None
+
+
+async def _github_poll_once() -> list[dict]:
+    global _github_last_poll
+    results = await github_inbox.poll_all(
+        app.state.store, config,
+        create_task=_github_create_task, notify=_github_notify, open_auto_count=_github_open_auto_count,
+    )
+    _github_last_poll = {"at": time.time(), "results": results}
+    return results
+
+
+async def _github_poll_loop(startup_delay: float = 20.0) -> None:
+    """Runs forever; polls every poll_interval_min while any project has a
+    source switched on, and wakes early when settings change."""
+    await asyncio.sleep(startup_delay)
+    while True:
+        settings = github_settings.current()
+        interval = max(2, int(settings.get("poll_interval_min", 10))) * 60
+        if github_settings.enabled_projects(settings):
+            try:
+                await _github_poll_once()
+            except Exception:  # noqa: BLE001 -- the loop must survive anything
+                logger.exception("github inbox: poll pass failed")
+        try:
+            await asyncio.wait_for(_github_poll_wake.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+        _github_poll_wake.clear()
 
 
 class UpdateMergeReviewRequest(BaseModel):
@@ -2175,18 +2440,20 @@ async def stream_planning_session(ws: WebSocket, session_id: str):
             del _planning_subscribers[session_id]  # audit M-34
 
 
-@app.post("/api/tasks", status_code=201)
-async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_auth)):
-    if req.repo not in PROJECTS:
-        raise HTTPException(400, f"unknown repo {req.repo!r}, must be one of {list(PROJECTS)}")
-    check_repo_access(user, req.repo)
-    # audit M-33: reject a whitespace-only goal (Field min_length=1 still lets a
-    # lone space through), matching send_planning_message's own check.
-    goal = req.goal.strip()
+async def _start_task(
+    goal: str, repo: str, budget_usd: float | None, route: str, *,
+    auto_approve_commands: bool, require_merge_review: bool,
+    attachments: list[dict] | None = None, origin: str | None = None,
+) -> dict:
+    """Classify, route and launch a task. The New Task form, Build Now and the
+    GitHub inbox all come through here so a task is the same thing whoever
+    started it: same classifier, same route decision, same budget default.
+    `origin` is recorded on the task meta ("github" for inbox tasks)."""
+    goal = goal.strip()
     if not goal:
         raise HTTPException(422, "goal must not be empty")
     task_id = str(uuid.uuid4())
-    budget = req.budget_usd or runtime_settings.value("default_task_budget_usd")
+    budget = budget_usd or runtime_settings.value("default_task_budget_usd")
     # Classified on the clean, operator-typed goal -- not the attachments
     # note appended below, which is boilerplate for the model, not signal
     # about what kind of task this is.
@@ -2199,8 +2466,9 @@ async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_
     except TimeoutError:
         logger.warning("task classification exceeded 8s; starting with fallback classification")
         classification = TaskClassification(category="other", needs_tests=False)
-    if req.attachments:
-        goal = goal + _attachments_note([a.model_dump() for a in req.attachments])
+    raw_goal = goal
+    if attachments:
+        goal = goal + _attachments_note(attachments)
     if classification.needs_tests:
         # An explicit directive, not a hope: the coordinator's system prompt
         # already tells it to delegate test-writing "when the task calls for
@@ -2211,18 +2479,37 @@ async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_
         goal = goal + TEST_REMINDER_NOTE
     # Which coder seat (agent/frontend_route.py): the operator's toggle, else
     # the category, the named paths, then keywords. Decided once, here.
-    decision = classify_frontend(req.goal, classification.category, normalize_override(req.route))
+    decision = classify_frontend(raw_goal, classification.category, normalize_override(route))
+    if origin:
+        # write_task_meta merges, so this survives _stream_graph's own first
+        # write whichever lands first.
+        await write_task_meta(app.state.store, repo, task_id, origin=origin)
     _running_tasks[task_id] = asyncio.create_task(
         _run_task(
-            task_id, goal, req.repo, budget, classification.category,
+            task_id, goal, repo, budget, classification.category,
             # Snapshot of the creator's own settings -- see outer_state.py.
-            auto_approve_commands=user.auto_approve_commands,
-            require_merge_review=user.require_merge_review,
+            auto_approve_commands=auto_approve_commands,
+            require_merge_review=require_merge_review,
             route=decision.route, route_reason=decision.reason,
         )
     )
     return {"task_id": task_id, "category": classification.category, "needs_tests": classification.needs_tests,
             "route": decision.route, "route_reason": decision.reason}
+
+
+@app.post("/api/tasks", status_code=201)
+async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_auth)):
+    if req.repo not in PROJECTS:
+        raise HTTPException(400, f"unknown repo {req.repo!r}, must be one of {list(PROJECTS)}")
+    check_repo_access(user, req.repo)
+    # audit M-33: reject a whitespace-only goal (Field min_length=1 still lets a
+    # lone space through), matching send_planning_message's own check.
+    return await _start_task(
+        req.goal, req.repo, req.budget_usd, req.route,
+        auto_approve_commands=user.auto_approve_commands,
+        require_merge_review=user.require_merge_review,
+        attachments=[a.model_dump() for a in req.attachments] if req.attachments else None,
+    )
 
 
 @app.get("/api/tasks")

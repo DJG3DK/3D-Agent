@@ -90,7 +90,7 @@ from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddle
 from agent.middleware.pinned_brief import BriefFirstMiddleware, PinnedBriefMiddleware
 from agent.model_config import resolve_alias
 from agent.tools.agent_tools import make_agent_tools
-from agent.tools.github_tools import make_github_tools
+from agent.tools.github_tools import make_github_tools, token_source
 from agent.tools.planning_tools import make_planning_tools
 from deepagents.backends import StoreBackend
 
@@ -310,7 +310,7 @@ async def build_planning_agent(
     project_tools, _ = make_agent_tools(repo_root)
     tool_by_name = {t.name: t for t in project_tools}
     skills_manifest = await load_skills_manifest(repo, store)
-    github_tools = make_github_tools(getattr(config, "github_token", None), allowed_repos)
+    github_tools = make_github_tools(token_source(config), allowed_repos)
     planning_tools, plan_ref = make_planning_tools(
         existing_plan, allowed_repos, existing_brief=existing_brief, skills_manifest=skills_manifest,
     )

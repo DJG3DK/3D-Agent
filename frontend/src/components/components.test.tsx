@@ -118,6 +118,7 @@ describe("MobileNav", () => {
     onAnalytics: vi.fn(),
     onModels: vi.fn(),
     onSettings: vi.fn(),
+    onGitHub: vi.fn(),
   });
 
   it("hides admin-only destinations from a non-admin", () => {

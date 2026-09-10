@@ -10,6 +10,7 @@ import { Icon } from "./components/Icon";
 import { NewTaskPanel } from "./components/NewTaskPanel";
 import { PlanningView } from "./components/PlanningView";
 import { SettingsPage } from "./components/SettingsPage";
+import { GitHubInboxView } from "./components/GitHubInboxView";
 import { SetupTotpPage } from "./components/SetupTotpPage";
 import { Sidebar } from "./components/Sidebar";
 import { TaskView } from "./components/TaskView";
@@ -23,7 +24,7 @@ const AnalyticsView = lazy(() =>
 import { useTaskStream } from "./useTaskStream";
 import "./App.css";
 
-type View = "new-task" | "task" | "analytics" | "models" | "planning" | "users" | "settings";
+type View = "new-task" | "task" | "analytics" | "models" | "planning" | "users" | "settings" | "github";
 
 function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser; onLogout: () => void; onUserChanged: (u: CurrentUser) => void }) {
   const [repos, setRepos] = useState<string[]>([]);
@@ -114,6 +115,7 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
     : view === "planning" ? "Planning"
     : view === "users" ? "Users"
     : view === "settings" ? "Settings"
+    : view === "github" ? "GitHub inbox"
     : "New task";
 
   return (
@@ -148,6 +150,10 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
         }}
         onSettings={() => {
           setView("settings");
+          setMobilePane("main");
+        }}
+        onGitHub={() => {
+          setView("github");
           setMobilePane("main");
         }}
         onSelectPlanning={(s) => {
@@ -207,6 +213,19 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
         )}
         {view === "users" && user.role === "admin" && <UsersPanel repos={repos} />}
         {view === "settings" && <SettingsPage user={user} onUserChanged={onUserChanged} />}
+        {view === "github" && (
+          <GitHubInboxView
+            isAdmin={user.role === "admin"}
+            onOpenTask={(taskId) => {
+              const t = tasks.find((x) => x.task_id === taskId);
+              if (t) {
+                setSelected(t);
+                setView("task");
+                setMobilePane("main");
+              }
+            }}
+          />
+        )}
         {view === "planning" && (
           <PlanningView
             key={selectedPlanningSession?.session_id ?? "new"}
@@ -234,6 +253,7 @@ function AuthenticatedApp({ user, onLogout, onUserChanged }: { user: CurrentUser
         onAnalytics={() => { setView("analytics"); setMobilePane("main"); }}
         onModels={() => { setView("models"); setMobilePane("main"); }}
         onSettings={() => { setView("settings"); setMobilePane("main"); }}
+        onGitHub={() => { setView("github"); setMobilePane("main"); }}
       />
     </div>
   );

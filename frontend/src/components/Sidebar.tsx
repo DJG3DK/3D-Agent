@@ -33,7 +33,7 @@ interface Props {
   selectedTaskId: string | null;
   planningSessions: PlanningSessionMeta[];
   selectedPlanningSessionId: string | null;
-  view: "new-task" | "task" | "analytics" | "models" | "planning" | "users" | "settings";
+  view: "new-task" | "task" | "analytics" | "models" | "planning" | "users" | "settings" | "github";
   user: CurrentUser;
   onSelect: (task: TaskMeta) => void;
   onNewTask: () => void;
@@ -41,6 +41,7 @@ interface Props {
   onModels: () => void;
   onUsers: () => void;
   onSettings: () => void;
+  onGitHub: () => void;
   onSelectPlanning: (session: PlanningSessionMeta) => void;
   onNewPlanning: () => void;
   onDeleted: (taskId: string) => void;
@@ -168,6 +169,7 @@ export function Sidebar({
   onModels,
   onUsers,
   onSettings,
+  onGitHub,
   onSelectPlanning,
   onNewPlanning,
   onDeleted,
@@ -365,6 +367,10 @@ export function Sidebar({
             </button>
           </>
         )}
+        <button className={`analytics-nav-btn ${view === "github" ? "active" : ""}`} onClick={onGitHub}>
+          <Icon name="github" size={15} />
+          <span>GitHub</span>
+        </button>
         {/* Was the same ⚙ glyph as Models — two nav items with identical icons.
             A cpu for the model pins, a cog for settings. */}
         <button className={`analytics-nav-btn ${view === "settings" ? "active" : ""}`} onClick={onSettings}>

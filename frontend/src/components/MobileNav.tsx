@@ -11,7 +11,7 @@ import "./MobileNav.css";
  * "Tasks" is not a view — it returns to the list pane, which is what the task
  * list actually is on mobile. That is why it takes `pane` as well as `view`.
  */
-export type NavView = "new-task" | "task" | "analytics" | "models" | "planning" | "users" | "settings";
+export type NavView = "new-task" | "task" | "analytics" | "models" | "planning" | "users" | "settings" | "github";
 
 interface Tab {
   key: string;
@@ -24,7 +24,7 @@ interface Tab {
 }
 
 export function MobileNav({
-  view, pane, isAdmin, onTasks, onNewTask, onAnalytics, onModels, onSettings,
+  view, pane, isAdmin, onTasks, onNewTask, onAnalytics, onModels, onSettings, onGitHub,
 }: {
   view: NavView;
   pane: "list" | "main";
@@ -34,6 +34,7 @@ export function MobileNav({
   onAnalytics: () => void;
   onModels: () => void;
   onSettings: () => void;
+  onGitHub: () => void;
 }) {
   const tabs: Tab[] = [
     { key: "tasks", label: "Tasks", icon: "tasks",
@@ -44,6 +45,8 @@ export function MobileNav({
       match: (v, p) => p === "main" && v === "analytics", go: onAnalytics },
     { key: "models", label: "Models", icon: "cpu", admin: true,
       match: (v, p) => p === "main" && v === "models", go: onModels },
+    { key: "github", label: "GitHub", icon: "github",
+      match: (v, p) => p === "main" && v === "github", go: onGitHub },
     { key: "settings", label: "Settings", icon: "settings",
       match: (v, p) => p === "main" && v === "settings", go: onSettings },
   ];

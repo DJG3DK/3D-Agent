@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from collections.abc import Callable
 
 import httpx
 from langchain_core.tools import tool
@@ -33,7 +34,10 @@ _TIMEOUT = 20
 _DIFF_CAP = 60_000        # chars of diff handed to the model
 _COMMENT_CAP = 40         # review comments shown
 _LIST_CAP = 30            # PRs listed
-_REMOTE_RE = re.compile(r"(?:git@github\.com:|https?://github\.com/)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+# A deploy key per project means an SSH host alias per project in ~/.ssh/config
+# ("git@github-3dsteals:owner/repo.git" -- see agent/deploy_keys.py), so any
+# host containing "github" counts, not only github.com itself.
+_REMOTE_RE = re.compile(r"(?:git@[\w.-]*github[\w.-]*:|ssh://git@[\w.-]*github[\w.-]*/|https?://(?:www\.)?github\.com/)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 
 
 def repo_slug_from_remote(url: str) -> str | None:
@@ -151,11 +155,20 @@ def format_pull_request_list(slug: str, prs: list, state: str) -> str:
     return "\n".join(lines)
 
 
-def make_github_tools(token: str | None, allowed_repos: list[str] | None = None) -> list:
+TokenSource = str | Callable[[str], str | None] | None
+
+
+def make_github_tools(token: TokenSource, allowed_repos: list[str] | None = None) -> list:
     """The two read-only PR tools, or an empty list when no token is set (the
-    prompts only mention them when they exist)."""
+    prompts only mention them when they exist).
+
+    `token` is a string (the GITHUB_TOKEN env fallback) or a callable that
+    returns the token for a given project -- Settings -> GitHub stores one
+    per project, and the tools resolve it per call so a token added from the
+    dashboard works on the next call without a restart."""
     if not token:
         return []
+    resolve_token = token if callable(token) else (lambda _repo: token)
 
     def _slug_for(repo: str) -> str:
         if repo not in PROJECTS or (allowed_repos is not None and repo not in allowed_repos):
@@ -164,6 +177,12 @@ def make_github_tools(token: str | None, allowed_repos: list[str] | None = None)
         if not slug:
             raise ValueError(f"{repo!r} has no GitHub origin remote, so it has no pull requests here")
         return slug
+
+    def _token_for(repo: str) -> str:
+        tok = resolve_token(repo)
+        if not tok:
+            raise PermissionError(f"no GitHub token is configured for {repo!r} (Settings -> GitHub)")
+        return tok
 
     @tool
     @tool_errors_to_text
@@ -177,7 +196,7 @@ def make_github_tools(token: str | None, allowed_repos: list[str] | None = None)
         refer to."""
         try:
             slug = _slug_for(repo)
-            data = fetch_pull_request(token, slug, int(number))
+            data = fetch_pull_request(_token_for(repo), slug, int(number))
         except (ValueError, LookupError, PermissionError) as e:
             return f"ERROR: {e}"
         except httpx.HTTPError as e:
@@ -194,7 +213,7 @@ def make_github_tools(token: str | None, allowed_repos: list[str] | None = None)
         try:
             slug = _slug_for(repo)
             state = state if state in ("open", "closed", "all") else "open"
-            prs = _get(token, f"/repos/{slug}/pulls", params={"state": state, "per_page": 50, "sort": "updated", "direction": "desc"})
+            prs = _get(_token_for(repo), f"/repos/{slug}/pulls", params={"state": state, "per_page": 50, "sort": "updated", "direction": "desc"})
         except (ValueError, LookupError, PermissionError) as e:
             return f"ERROR: {e}"
         except httpx.HTTPError as e:
@@ -202,3 +221,14 @@ def make_github_tools(token: str | None, allowed_repos: list[str] | None = None)
         return format_pull_request_list(slug, prs, state)
 
     return [github_pull_request, github_pull_requests]
+
+
+def token_source(config) -> TokenSource:
+    """Per-project resolver: the project's stored token from Settings ->
+    GitHub, else GITHUB_TOKEN. Falsy when neither exists, so the tools are
+    absent rather than present-and-broken."""
+    from agent import github_settings
+    settings = github_settings.current()
+    if not github_settings.any_token(settings, config):
+        return None
+    return lambda repo: github_settings.token_for(github_settings.current(), config, repo)

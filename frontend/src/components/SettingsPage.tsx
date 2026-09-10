@@ -6,6 +6,7 @@ import type { CurrentUser } from "../types";
 import "./SettingsPage.css";
 import { ApiKeysPanel } from "./ApiKeysPanel";
 import { ProjectsPanel } from "./ProjectsPanel";
+import { GitHubSettingsCard } from "./GitHubSettingsCard";
 
 interface Props {
   user: CurrentUser;
@@ -254,6 +255,17 @@ export function SettingsPage({ user, onUserChanged }: Props) {
             boundary. */}
         {user.role === "admin" && <ProjectsPanel />}
       </div>
+
+      {/* GitHub: tokens, approve-link delivery and per-project policies for
+          the inbox. Admin only, gated server-side as well. */}
+      {user.role === "admin" && (
+        <>
+          <h3 className="settings-section-label">GitHub</h3>
+          <div className="settings-grid">
+            <GitHubSettingsCard />
+          </div>
+        </>
+      )}
 
       {user.role === "admin" && <ApiKeysPanel />}
 

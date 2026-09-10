@@ -263,6 +263,35 @@ endpoint can leak it). Every alert carries details **and cost so far**:
 Alerts are best-effort by construction (`agent/notify.py`): a Telegram outage can never break or
 slow the thing it is alerting about.
 
+## GitHub inbox
+
+The agent can pick work up from GitHub instead of waiting to be told (**Settings → GitHub**, admin
+only; the inbox is a tab of its own). Four sources, each with its own policy per project:
+
+| source | what it is |
+|---|---|
+| Dependabot pull requests | open PRs by `dependabot[bot]` (widen to any bot, or anyone) |
+| Dependabot security alerts | open alerts on the repo's security tab (needs *Dependabot alerts: read*) |
+| Review comments requesting changes | an open PR with a `CHANGES_REQUESTED` review still standing |
+| Failing checks on the default branch | a check run that concluded failure on the tip of `main` (needs *Checks: read*) |
+
+Policy is **Off** (listed, nothing else), **Propose** (put it in the inbox and send an approve link)
+or **Auto** (start the task at once, up to the project's cap on open auto tasks). Auto removes only
+the click that starts a task: it still runs the review gate, and it always keeps the operator's
+final merge approval. Each project also sets the budget per inbox task and which coder seat it goes to.
+
+Approve links go out over Telegram and, optionally, email. The link is public but carries a signed,
+expiring (48 h), single-use token; it opens a confirmation page with one button, and only the button's
+POST acts — a GET never does, because messengers fetch links for previews. Without a dashboard URL
+configured, alerts say to open the inbox instead.
+
+Tokens are fine-grained PATs stored encrypted with the same key as TOTP secrets; the dashboard sees a
+name, the last four characters and a **Test** button that reports which projects the token reaches and
+whether it may read alerts. A project without a token falls back to `GITHUB_TOKEN` from `.env`. The
+poller runs inside the backend every *poll interval* minutes (default 10) while any source is on; a
+PR is proposed once, a dismissed one stays dismissed until its head commit changes, and one that closes
+on GitHub is marked resolved.
+
 ## Memory
 
 Each project has its own persistent memory file, `/memories/AGENTS.md`, backed by the same Postgres

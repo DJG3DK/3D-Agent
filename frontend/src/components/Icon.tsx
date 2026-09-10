@@ -10,7 +10,7 @@ export type IconName =
   | "tasks" | "plus" | "chart" | "cpu" | "settings" | "users" | "logout"
   | "chevronLeft" | "chevronRight" | "chevronDown" | "check" | "x" | "alert"
   | "clock" | "play" | "stop" | "refresh" | "search" | "send" | "brain"
-  | "gitBranch" | "shield" | "menu" | "dollar" | "spinner";
+  | "gitBranch" | "shield" | "menu" | "dollar" | "spinner" | "github";
 
 const P: Record<IconName, React.ReactNode> = {
   tasks: <><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" /></>,
@@ -33,6 +33,7 @@ const P: Record<IconName, React.ReactNode> = {
   search: <><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></>,
   send: <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />,
   brain: <><path d="M9.5 3a3 3 0 0 0-3 3 3 3 0 0 0-1.5 5.6A3 3 0 0 0 6.5 17 3 3 0 0 0 12 19V4.5A1.5 1.5 0 0 0 10.5 3z" /><path d="M14.5 3a3 3 0 0 1 3 3 3 3 0 0 1 1.5 5.6A3 3 0 0 1 17.5 17 3 3 0 0 1 12 19" /></>,
+  github: <><path d="M9 19c-4.5 1.5-4.5-2.5-6-3" /><path d="M15 21v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1-.3-3.4 1.3a11.7 11.7 0 0 0-6.2 0C6.6 2.8 5.6 3.1 5.6 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4.2 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21" /></>,
   gitBranch: <><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7M18 10.5c0 4-6 2.5-6 7.5" /></>,
   shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />,
   menu: <path d="M3 6h18M3 12h18M3 18h18" />,

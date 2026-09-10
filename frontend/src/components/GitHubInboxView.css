@@ -1,0 +1,34 @@
+@import "./GitHubSettingsCard.css";
+
+.ghi { flex: 1; overflow-y: auto; padding: 20px 24px; }
+.ghi-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.ghi-title { margin: 0; font-size: 18px; }
+.ghi-sub { margin: 4px 0 0; font-size: 13px; color: var(--text-faint); }
+.ghi-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ghi-toggle { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); }
+.ghi-notice { font-size: 13px; padding: 8px 12px; border-radius: var(--radius-sm); background: rgba(88, 166, 255, 0.1); margin-bottom: 10px; }
+.ghi-empty { padding: 30px 12px; text-align: center; color: var(--text-dim); }
+.ghi-empty-hint { font-size: 12.5px; color: var(--text-faint); max-width: 520px; margin: 6px auto 0; }
+.ghi-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.ghi-item { border: 1px solid var(--border); border-radius: var(--radius, 10px); padding: 12px 14px; background: var(--surface, transparent); }
+.ghi-item--proposed { border-color: rgba(210, 153, 34, 0.6); }
+.ghi-item--task_created { border-color: rgba(63, 185, 80, 0.5); }
+.ghi-item--dismissed, .ghi-item--resolved { opacity: 0.65; }
+.ghi-item-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11.5px; margin-bottom: 4px; }
+.ghi-kind { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.06); color: var(--text-dim); }
+.ghi-kind--security_alerts { background: rgba(229,83,75,0.15); color: #ff8a8a; }
+.ghi-kind--dependabot_prs { background: rgba(88,166,255,0.15); color: #79b8ff; }
+.ghi-repo { color: var(--text-faint); font-weight: 600; }
+.ghi-state { color: var(--text-faint); }
+.ghi-state--proposed { color: #e3b341; font-weight: 600; }
+.ghi-state--task_created { color: var(--green); font-weight: 600; }
+.ghi-when { margin-left: auto; color: var(--text-faint); }
+.ghi-item-title { display: block; font-weight: 600; color: var(--text); text-decoration: none; font-size: 14px; }
+.ghi-item-title:hover { text-decoration: underline; }
+.ghi-summary { font-size: 12.5px; color: var(--text-dim); margin-top: 3px; }
+.ghi-reason { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+.ghi-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+.ghi-task { font-size: 12px; color: var(--text-faint); }
+@media (max-width: 768px) {
+  .ghi { padding: 14px 12px; }
+}
