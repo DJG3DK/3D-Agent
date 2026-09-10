@@ -23,7 +23,9 @@ const entry = (over: Partial<LogEntry> = {}): LogEntry =>
     ...over,
   }) as LogEntry;
 
-beforeEach(() => getConsolidationStatus.mockReset());
+beforeEach(() => {
+  getConsolidationStatus.mockReset();
+});
 
 describe("LogEntryCard", () => {
   it("labels the coordinator's own work entries", () => {

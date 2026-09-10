@@ -14,7 +14,9 @@ vi.mock("../api", async (importOriginal) => {
   };
 });
 
-beforeEach(() => getTaskDiff.mockReset());
+beforeEach(() => {
+  getTaskDiff.mockReset();
+});
 
 describe("DiffPanel", () => {
   const props = () => ({

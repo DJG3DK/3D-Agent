@@ -23,7 +23,9 @@ const question = (): PendingApproval => ({
   review_configs: [{ action_name: "ask_user", allowed_decisions: ["respond"] }],
 });
 
-beforeEach(() => approveTask.mockReset());
+beforeEach(() => {
+  approveTask.mockReset();
+});
 
 describe("ApprovalCard — sensitive actions", () => {
   it("prefers the human-written description when there is one", () => {

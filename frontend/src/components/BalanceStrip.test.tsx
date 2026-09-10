@@ -8,7 +8,9 @@ vi.mock("../api", async (importOriginal) => {
   return { ...actual, getRouterBalance: () => getRouterBalance() };
 });
 
-beforeEach(() => getRouterBalance.mockReset());
+beforeEach(() => {
+  getRouterBalance.mockReset();
+});
 
 describe("BalanceStrip", () => {
   it("renders nothing for a non-admin and never calls the admin-only endpoint", () => {
