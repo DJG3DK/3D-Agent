@@ -22,7 +22,7 @@ import "./GitHubSettingsCard.css";
  * Poll now act immediately: they read, they change nothing.
  */
 
-const SOURCE_ORDER: GitHubSource[] = ["dependabot_prs", "security_alerts", "review_requests", "ci_failures"];
+const SOURCE_ORDER: GitHubSource[] = ["dependabot_prs", "security_alerts", "code_scanning", "review_requests", "ci_failures"];
 const ENV_TOKEN = "__env__";
 
 const MODE_HELP: Record<GitHubMode, string> = {
@@ -44,7 +44,7 @@ function draftOf(s: GitHubSettings, projects: string[]): Draft {
     const p = s.projects[name];
     out.projects[name] = p
       ? { ...p, policies: { ...p.policies } }
-      : { token: null, policies: { dependabot_prs: "off", security_alerts: "off", review_requests: "off", ci_failures: "off" }, budget_usd: 3, max_open_auto: 2, authors: "dependabot", route: "auto" };
+      : { token: null, policies: { dependabot_prs: "off", security_alerts: "off", code_scanning: "off", review_requests: "off", ci_failures: "off" }, budget_usd: 3, max_open_auto: 2, authors: "dependabot", route: "auto" };
   }
   return out;
 }

@@ -847,7 +847,7 @@ export async function saveRuntimeSettings(values: Record<string, number>): Promi
 // --- GitHub integration (agent/github_settings.py, agent/github_inbox.py) ---
 
 export type GitHubMode = "off" | "propose" | "auto";
-export type GitHubSource = "dependabot_prs" | "security_alerts" | "review_requests" | "ci_failures";
+export type GitHubSource = "dependabot_prs" | "security_alerts" | "review_requests" | "ci_failures" | "code_scanning";
 
 export interface GitHubProjectSettings {
   token: string | null;

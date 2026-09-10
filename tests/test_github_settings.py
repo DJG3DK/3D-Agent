@@ -76,3 +76,14 @@ def test_normalize_fills_every_gap_so_callers_never_branch_on_absence():
     assert s["projects"]["p"]["budget_usd"] == gs.DEFAULT_PROJECT["budget_usd"]
     assert set(s["projects"]["p"]["policies"]) == set(gs.SOURCES)
     assert s["notify"] == {"telegram": True, "email": False, "email_to": ""}
+
+
+def test_code_scanning_inherits_the_dependabot_alert_mode_until_set_explicitly():
+    # Projects configured before the source existed keep working the way the
+    # operator expects: CodeQL alerts follow the Dependabot-alert policy.
+    s = gs.normalize({"projects": {"p": {"policies": {"security_alerts": "propose"}},
+                                   "q": {"policies": {"security_alerts": "auto", "code_scanning": "off"}},
+                                   "r": {"policies": {"dependabot_prs": "auto"}}}})
+    assert s["projects"]["p"]["policies"]["code_scanning"] == "propose"
+    assert s["projects"]["q"]["policies"]["code_scanning"] == "off"        # explicit wins
+    assert s["projects"]["r"]["policies"]["code_scanning"] == "off"        # nothing to inherit

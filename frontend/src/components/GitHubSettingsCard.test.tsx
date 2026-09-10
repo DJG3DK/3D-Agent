@@ -25,7 +25,7 @@ function response(over: Partial<GitHubSettingsResponse["settings"]> = {}): GitHu
     settings: {
       poll_interval_min: 10, public_url: "", notify: { telegram: true, email: false, email_to: "" },
       tokens: { main: { hint: "…abcd", created_at: 1_700_000_000 } },
-      projects: { proj: { token: "main", policies: { dependabot_prs: "off", security_alerts: "off", review_requests: "off", ci_failures: "off" }, budget_usd: 3, max_open_auto: 2, authors: "dependabot", route: "auto" } },
+      projects: { proj: { token: "main", policies: { dependabot_prs: "off", security_alerts: "off", code_scanning: "off", review_requests: "off", ci_failures: "off" }, budget_usd: 3, max_open_auto: 2, authors: "dependabot", route: "auto" } },
       ...over,
     },
     sources: {
@@ -33,6 +33,7 @@ function response(over: Partial<GitHubSettingsResponse["settings"]> = {}): GitHu
       security_alerts: { label: "Dependabot security alerts", help: "" },
       review_requests: { label: "Review comments requesting changes", help: "" },
       ci_failures: { label: "Failing checks on the default branch", help: "" },
+      code_scanning: { label: "Code scanning alerts (CodeQL)", help: "" },
     },
     modes: ["off", "propose", "auto"],
     author_filters: ["dependabot", "bots", "anyone"],

@@ -17,9 +17,17 @@ def _config():
 
 class FakeGitHub:
     """Just enough of the API surface discover() touches."""
-    def __init__(self, prs=(), reviews=None, alerts=(), checks=(), default_branch="main", fail=(), workflow_runs=()):
+    def __init__(self, prs=(), reviews=None, alerts=(), checks=(), default_branch="main", fail=(), workflow_runs=(), code_alerts=()):
         self.prs, self.reviews_by, self.alerts, self.checks = list(prs), reviews or {}, list(alerts), list(checks)
         self.default_branch, self.fail, self.workflow_runs_list = default_branch, set(fail), list(workflow_runs)
+        self.code_alerts = list(code_alerts)
+
+    async def code_scanning_alerts(self, slug):
+        if "code" in self.fail:
+            raise PermissionError("Code scanning alerts: read is missing")
+        if "code-404" in self.fail:
+            raise LookupError("no analysis found")
+        return self.code_alerts
 
     async def open_prs(self, slug):
         if "prs" in self.fail:
@@ -290,3 +298,55 @@ async def test_ci_failures_fall_back_to_actions_runs_when_check_runs_are_refused
     gh = FakeGitHub(fail={"checks", "actions"}, prs=[_pr(1, "dependabot[bot]")])
     items = await gi.discover(gh, "proj", "o/proj", _proj(ci_failures="propose", dependabot_prs="propose"))
     assert [i.key for i in items] == ["pr:1"]
+
+
+def _code_alert(n, rule_id, sev, path, line, msg="tainted", sha="cafebabe0000", tool="CodeQL"):
+    return {"number": n, "state": "open", "html_url": f"https://gh/code/{n}",
+            "rule": {"id": rule_id, "security_severity_level": sev, "description": f"{rule_id} description"},
+            "tool": {"name": tool},
+            "most_recent_instance": {"commit_sha": sha, "message": {"text": msg},
+                                     "location": {"path": path, "start_line": line}}}
+
+
+@pytest.mark.asyncio
+async def test_code_scanning_alerts_group_by_rule_and_scope_to_the_repo():
+    gh = FakeGitHub(code_alerts=[
+        _code_alert(1, "js/double-escaping", "high", "apps/a/x.ts", 10),
+        _code_alert(2, "js/double-escaping", "high", "apps/b/y.ts", 20),
+        _code_alert(3, "js/request-forgery", "critical", "apps/api/z.ts", 30, msg="URL from supplier"),
+        {**_code_alert(4, "js/request-forgery", "critical", "old.ts", 1), "state": "fixed"},   # not open: ignored
+    ])
+    items = await gi.discover(gh, "proj", "o/proj", _proj(code_scanning="propose"))
+    assert [i.key for i in items] == ["code:js.request-forgery", "code:js.double-escaping"]   # critical first
+    by = {i.key: i for i in items}
+    assert by["code:js.double-escaping"].title == "[HIGH] js/double-escaping: js/double-escaping description (2 locations)"
+    assert by["code:js.double-escaping"].number is None
+    assert "#1 apps/a/x.ts:10" in by["code:js.double-escaping"].summary and "#2 apps/b/y.ts:20" in by["code:js.double-escaping"].summary
+    assert "URL from supplier" in by["code:js.request-forgery"].summary
+    assert by["code:js.request-forgery"].url == "https://github.com/o/proj/security/code-scanning?query=is%3Aopen+rule%3Ajs/request-forgery"
+    assert all(i.repo == "proj" for i in items)
+    assert "/" not in by["code:js.double-escaping"].key.split(":", 1)[1]   # key is one URL path segment
+
+    # fixing one of two locations changes the fingerprint; fixing both removes the item
+    before = by["code:js.double-escaping"].fingerprint
+    gh.code_alerts = gh.code_alerts[1:]
+    after = {i.key: i for i in await gi.discover(gh, "proj", "o/proj", _proj(code_scanning="propose"))}
+    assert after["code:js.double-escaping"].fingerprint != before
+    gh.code_alerts = [gh.code_alerts[1]]
+    assert "code:js.double-escaping" not in {i.key for i in await gi.discover(gh, "proj", "o/proj", _proj(code_scanning="propose"))}
+
+    # a repository that never ran code scanning (404) is quiet; a missing permission hides only this source
+    gh.fail.add("code-404")
+    assert await gi.discover(gh, "proj", "o/proj", _proj(code_scanning="propose")) == []
+    gh.fail = {"code"}
+    assert [i.key for i in await gi.discover(gh, "proj", "o/proj", _proj(code_scanning="propose", dependabot_prs="propose"))] == []
+    assert await gi.discover(gh, "proj", "o/proj", _proj()) == []   # off: never fetched
+
+
+def test_code_scanning_goal_scopes_the_task_to_this_repository_and_forbids_suppression():
+    item = gi.code_scanning_items([_code_alert(7, "js/path-injection", "high", "apps/api/c.ts", 189)], "proj", "o/proj")[0]
+    goal = gi.build_goal(item)
+    assert "THIS repository" in goal and "do not look for or touch other projects" in goal
+    assert "no dismissing alerts on GitHub" in goal and "#7 apps/api/c.ts:189" in goal
+    assert "security/code-scanning?query=is%3Aopen+rule%3Ajs/path-injection" in goal
+    assert gi.proposal_text(item, None, None, 3.0).startswith("🐙 GitHub: Code scanning alert on proj")

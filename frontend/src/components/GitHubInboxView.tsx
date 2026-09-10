@@ -17,6 +17,7 @@ const KIND_LABEL: Record<GitHubInboxItem["kind"], string> = {
   security_alerts: "Security alert",
   review_requests: "Changes requested",
   ci_failures: "Failing check",
+  code_scanning: "Code scanning",
 };
 
 const STATE_LABEL: Record<GitHubItemState, string> = {
@@ -47,6 +48,11 @@ export function GitHubInboxView({ isAdmin, onOpenTask }: { isAdmin: boolean; onO
   const [busy, setBusy] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // Items from every project share one list; the filter narrows it to one
+  // repository so a decision is never made against the wrong project's
+  // alerts. Tasks were always scoped to the item's own repo -- this makes
+  // the view say so.
+  const [repoFilter, setRepoFilter] = useState<string>("");
 
   const load = useCallback(async () => {
     try {
@@ -67,13 +73,16 @@ export function GitHubInboxView({ isAdmin, onOpenTask }: { isAdmin: boolean; onO
     return () => clearInterval(t);
   }, [load]);
 
+  const repos = useMemo(() => [...new Set(items.map((i) => i.repo))].sort(), [items]);
+
   const shown = useMemo(() => {
-    const list = showAll ? items : items.filter((i) => ACTIVE.includes(i.state));
+    const scoped = repoFilter ? items.filter((i) => i.repo === repoFilter) : items;
+    const list = showAll ? scoped : scoped.filter((i) => ACTIVE.includes(i.state));
     const rank: Record<GitHubItemState, number> = { proposed: 0, task_created: 1, snoozed: 2, seen: 3, dismissed: 4, resolved: 5 };
     return [...list].sort((a, b) => rank[a.state] - rank[b.state] || b.updated_at - a.updated_at);
-  }, [items, showAll]);
+  }, [items, showAll, repoFilter]);
 
-  const waiting = items.filter((i) => i.state === "proposed").length;
+  const waiting = items.filter((i) => i.state === "proposed" && (!repoFilter || i.repo === repoFilter)).length;
 
   async function act(item: GitHubInboxItem, action: "approve" | "dismiss" | "snooze", days?: number) {
     setBusy(item.key);
@@ -110,11 +119,20 @@ export function GitHubInboxView({ isAdmin, onOpenTask }: { isAdmin: boolean; onO
         <div>
           <h2 className="ghi-title">GitHub inbox</h2>
           <p className="ghi-sub">
-            {waiting > 0 ? `${waiting} item${waiting === 1 ? "" : "s"} waiting for your decision.` : "Nothing waiting on you."}
+            {waiting > 0 ? `${waiting} item${waiting === 1 ? "" : "s"} waiting for your decision${repoFilter ? ` on ${repoFilter}` : ""}.` : "Nothing waiting on you."}
             {lastPoll ? ` Last poll ${ago(lastPoll)}.` : " Not polled since the last restart."}
           </p>
         </div>
         <div className="ghi-controls">
+          {repos.length > 1 && (
+            <label className="ghi-toggle">
+              project
+              <select className="ghi-repo-filter" value={repoFilter} onChange={(e) => setRepoFilter(e.target.value)} aria-label="Filter by project">
+                <option value="">all projects</option>
+                {repos.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </label>
+          )}
           <label className="ghi-toggle">
             <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
             show dismissed &amp; resolved
@@ -150,7 +168,7 @@ export function GitHubInboxView({ isAdmin, onOpenTask }: { isAdmin: boolean; onO
               <a className="ghi-item-title" href={item.url || undefined} target="_blank" rel="noreferrer">
                 {item.number ? `#${item.number} ` : ""}{item.title}
               </a>
-              {item.summary && <div className="ghi-summary">{item.summary}</div>}
+              {item.summary && <div className="ghi-summary ghi-summary--multiline">{item.summary}</div>}
               {item.reason && <div className="ghi-reason">{item.reason}</div>}
               <div className="ghi-actions">
                 {item.task_id && (

@@ -63,6 +63,13 @@ SOURCES: dict[str, dict[str, str]] = {
         "help": "A check run that concluded failure on the tip of the default branch. The task "
                 "reads the failing check and fixes what broke.",
     },
+    "code_scanning": {
+        "label": "Code scanning alerts (CodeQL)",
+        "help": "Open alerts from the repository's Security → Code scanning page, one inbox item per "
+                "rule so a task fixes every location of the same finding together. Needs the token's "
+                "'Code scanning alerts: read' permission. The task fixes the cause in this repository "
+                "only; it never dismisses the alert on GitHub.",
+    },
 }
 
 AUTHOR_FILTERS = ("dependabot", "bots", "anyone")
@@ -129,6 +136,13 @@ def _merge_project(raw: dict | None) -> dict[str, Any]:
     for name in SOURCES:
         if pol.get(name) in MODES:
             out["policies"][name] = pol[name]
+    # code_scanning arrived after projects were configured. A project that
+    # already lets the inbox handle Dependabot alerts gets the same mode for
+    # CodeQL alerts until the operator sets it explicitly -- they are the same
+    # kind of work (a security finding on this repository) and the operator
+    # asked for the ability on every repo. Persisted on the next save.
+    if "code_scanning" not in pol and pol.get("security_alerts") in MODES:
+        out["policies"]["code_scanning"] = pol["security_alerts"]
     return out
 
 

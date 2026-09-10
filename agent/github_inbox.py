@@ -96,6 +96,18 @@ class GitHubClient:
     async def dependabot_alerts(self, slug: str) -> list[dict]:
         return await self.get(f"/repos/{slug}/dependabot/alerts", {"state": "open", "per_page": 50})
 
+    async def code_scanning_alerts(self, slug: str) -> list[dict]:
+        """Open code scanning (CodeQL etc.) alerts. A first full analysis can
+        produce a few hundred; three pages is the ceiling before the inbox
+        stops being an inbox."""
+        out: list[dict] = []
+        for page in (1, 2, 3):
+            batch = await self.get(f"/repos/{slug}/code-scanning/alerts", {"state": "open", "per_page": 100, "page": page})
+            out.extend(batch)
+            if len(batch) < 100:
+                break
+        return out
+
     async def check_runs(self, slug: str, ref: str) -> list[dict]:
         data = await self.get(f"/repos/{slug}/commits/{ref}/check-runs", {"per_page": 50})
         return data.get("check_runs") or []
@@ -227,6 +239,71 @@ async def discover(client: GitHubClient, repo: str, slug: str, proj: dict) -> li
         except Exception as e:  # noqa: BLE001
             logger.warning("github inbox: %s ci_failures failed: %s", repo, e)
 
+    if policies.get("code_scanning", "off") != "off":
+        try:
+            items.extend(code_scanning_items(await client.code_scanning_alerts(slug), repo, slug))
+        except LookupError as e:
+            # 404 here means code scanning has never run on this repository
+            # (no workflow, or default setup still pending) -- not a fault.
+            logger.info("github inbox: %s has no code scanning results yet: %s", repo, e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("github inbox: %s code_scanning failed: %s", repo, e)
+
+    return items
+
+
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "error": 1, "warning": 2, "note": 3}
+_MAX_LOCATIONS_IN_SUMMARY = 12
+
+
+def _alert_severity(alert: dict) -> str:
+    rule = alert.get("rule") or {}
+    return str(rule.get("security_severity_level") or rule.get("severity") or "unknown").lower()
+
+
+def code_scanning_items(alerts: list[dict], repo: str, slug: str) -> list[Item]:
+    """One item per rule, not per alert. Five `js/double-escaping` findings
+    are one piece of work (the same helper, fixed once), and a task that sees
+    all the locations fixes the cause rather than the first symptom. The key
+    is the rule id with '/' folded to '.', because the key travels in a URL
+    path segment. The fingerprint covers every open alert's number, commit
+    and location, so a partial fix re-decides the item and a complete fix
+    resolves it."""
+    by_rule: dict[str, list[dict]] = {}
+    for a in alerts:
+        if a.get("state") not in (None, "open"):
+            continue
+        rule_id = str((a.get("rule") or {}).get("id") or "unknown-rule")
+        by_rule.setdefault(rule_id, []).append(a)
+    items: list[Item] = []
+    for rule_id, group in by_rule.items():
+        group.sort(key=lambda a: int(a.get("number") or 0))
+        first = group[0]
+        rule = first.get("rule") or {}
+        tool = ((first.get("tool") or {}).get("name")) or "code scanning"
+        sev = min((_alert_severity(a) for a in group), key=lambda s: _SEVERITY_RANK.get(s, 9))
+        locs = []
+        for a in group:
+            inst = a.get("most_recent_instance") or {}
+            loc = inst.get("location") or {}
+            msg = str((inst.get("message") or {}).get("text") or "").strip().replace("\n", " ")
+            path = loc.get("path") or "?"
+            line = loc.get("start_line")
+            locs.append((a.get("number"), f"{path}:{line}" if line else path, msg, (inst.get("commit_sha") or "")[:12]))
+        fp = hashlib.sha1("|".join(f"{n}:{where}:{sha}" for n, where, _, sha in locs).encode()).hexdigest()[:12]
+        lines = [f"{tool} · {sev} · {len(group)} open alert{'s' if len(group) != 1 else ''} for rule {rule_id}"]
+        for n, where, msg, _ in locs[:_MAX_LOCATIONS_IN_SUMMARY]:
+            lines.append(f"#{n} {where}" + (f" — {msg[:160]}" if msg else ""))
+        if len(locs) > _MAX_LOCATIONS_IN_SUMMARY:
+            lines.append(f"… and {len(locs) - _MAX_LOCATIONS_IN_SUMMARY} more (see the alerts page)")
+        desc = rule.get("description") or rule.get("name") or rule_id
+        items.append(Item(
+            key=f"code:{rule_id.replace('/', '.')}", kind="code_scanning", repo=repo, number=None,
+            title=f"[{sev.upper()}] {rule_id}: {desc}" + (f" ({len(group)} locations)" if len(group) > 1 else ""),
+            url=f"https://github.com/{slug}/security/code-scanning?query=is%3Aopen+rule%3A{rule_id}",
+            fingerprint=fp, summary="\n".join(lines),
+        ))
+    items.sort(key=lambda i: (_SEVERITY_RANK.get(i.title[1:i.title.index(']')].lower(), 9), i.key))
     return items
 
 
@@ -408,6 +485,19 @@ _GOAL_TEMPLATES = {
         "output at {url}, reproduce the failure locally, fix the cause (not the check), and run the "
         "full suite before finishing."
     ),
+    "code_scanning": (
+        "Fix the code scanning finding {title} in THIS repository.\n\n{summary}\n\n"
+        "Every location above is an open alert on this repository's Security → Code scanning page ({url}); "
+        "the alerts belong to this repository only — do not look for or touch other projects. "
+        "For each location: read the surrounding code, understand why the query flags it, and fix "
+        "the cause (validate or constrain the input, use the safe API, or restructure the flow) with "
+        "the smallest change that makes the finding untrue. Do not silence it: no lgtm/codeql "
+        "suppression comments, no dismissing alerts on GitHub, no deleting the code path unless it is "
+        "genuinely dead. Where several locations share a helper, fix the helper once. Keep behaviour "
+        "identical for legitimate input, add or extend a test where the fix is testable, and run the "
+        "project's full test suite, typecheck and lint before finishing. In the commit message list "
+        "the alert numbers addressed."
+    ),
 }
 
 
@@ -439,6 +529,7 @@ async def pr_text_for(token: str, slug: str, number: int) -> str | None:
 _KIND_LABEL = {
     "dependabot_prs": "Dependabot PR", "security_alerts": "Security alert",
     "review_requests": "Review requests changes", "ci_failures": "Failing check",
+    "code_scanning": "Code scanning alert",
 }
 
 
@@ -616,6 +707,7 @@ async def probe_token(token: str, projects: dict[str, dict]) -> dict:
         out["repos"].append(entry)
         if entry["project"]:
             entry["dependabot_alerts"] = await _can(client, f"/repos/{slug}/dependabot/alerts", {"per_page": 1})
+            entry["code_scanning"] = await _can(client, f"/repos/{slug}/code-scanning/alerts", {"per_page": 1})
             entry["checks"] = await _can_ci(client, slug)
             out["matched"].append(entry)
     # A project whose slug the token did not list may still be reachable
@@ -630,6 +722,7 @@ async def probe_token(token: str, projects: dict[str, dict]) -> dict:
             out["matched"].append({
                 "slug": slug, "project": name, "push": bool(perms.get("push")), "pull": True,
                 "dependabot_alerts": await _can(client, f"/repos/{slug}/dependabot/alerts", {"per_page": 1}),
+                "code_scanning": await _can(client, f"/repos/{slug}/code-scanning/alerts", {"per_page": 1}),
                 "checks": await _can_ci(client, slug),
             })
         except Exception:  # noqa: BLE001

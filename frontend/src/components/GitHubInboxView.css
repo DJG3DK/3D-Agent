@@ -18,6 +18,9 @@
 .ghi-kind { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.06); color: var(--text-dim); }
 .ghi-kind--security_alerts { background: rgba(229,83,75,0.15); color: #ff8a8a; }
 .ghi-kind--dependabot_prs { background: rgba(88,166,255,0.15); color: #79b8ff; }
+.ghi-kind--code_scanning { background: rgba(163,113,247,0.18); color: #c9a3ff; }
+.ghi-repo-filter { margin-left: 6px; background: var(--bg-elev, #161b22); color: inherit; border: 1px solid var(--border, #30363d); border-radius: 6px; padding: 2px 6px; font: inherit; }
+.ghi-summary--multiline { white-space: pre-line; }
 .ghi-repo { color: var(--text-faint); font-weight: 600; }
 .ghi-state { color: var(--text-faint); }
 .ghi-state--proposed { color: #e3b341; font-weight: 600; }
