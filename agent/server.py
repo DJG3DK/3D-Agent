@@ -184,6 +184,22 @@ async def _drain_planning_turns(timeout: float = 15.0) -> None:
         logger.error("shutdown: planning turn %r did not tear down within %.0fs", t.get_name(), timeout)
 
 
+_INITIAL_PASSWORD_PATH = Path(__file__).resolve().parent.parent / ".initial-admin-password"
+
+
+def _write_initial_password(password: str) -> Path:
+    """The first admin password, readable only by the account running the
+    agent. Falls back to the log line's own hint if the file cannot be
+    written, without ever printing the password."""
+    try:
+        _INITIAL_PASSWORD_PATH.touch(mode=0o600, exist_ok=True)
+        _INITIAL_PASSWORD_PATH.chmod(0o600)
+        _INITIAL_PASSWORD_PATH.write_text(password + "\n")
+    except OSError:
+        logger.exception("could not write the initial admin password to %s", _INITIAL_PASSWORD_PATH)
+    return _INITIAL_PASSWORD_PATH
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with open_checkpointer(config) as checkpointer, open_store(config) as store, auth.open_auth_pool(config) as auth_pool:
@@ -196,9 +212,15 @@ async def lifespan(app: FastAPI):
             # has zero users -- must_change_password=True forces a real
             # password to replace this on first login, so it's not a
             # standing secret sitting in the log after that.
+            # Not logged (CodeQL py/clear-text-logging-sensitive-data): logs
+            # are copied, shipped and grepped, and a password in one is a
+            # password in every copy. Written once to a 0600 file beside the
+            # repo instead; the log says where.
+            where = _write_initial_password(generated_password)
             logger.warning(
-                "Seeded initial admin account %s with generated password: %s "
-                "(must be changed on first login)", config.admin_email, generated_password,
+                "Seeded initial admin account %s. Its one-time password is in %s "
+                "(mode 0600; must be changed on first login, then delete the file).",
+                config.admin_email, where,
             )
         # Both checkpointer and store passed to .compile() -- store isn't
         # actually read via LangGraph's own node-kwarg injection here (see
@@ -823,6 +845,26 @@ def _approve_html(body: str) -> Response:
     return HTMLResponse(_APPROVE_PAGE.replace("{body}", body))
 
 
+# Fixed wording, looked up by reason: nothing an exception carries reaches
+# the page (CodeQL py/stack-trace-exposure). verify_approval raises
+# ValueError with one of these reason codes as its message.
+_LINK_PROBLEMS = {
+    "malformed": "this link is malformed",
+    "invalid": "this link is not valid for this deployment",
+    "expired": "this link has expired; open the GitHub inbox in the dashboard instead",
+    "unknown": "this link asks for an unknown action",
+}
+_ACT_PROBLEMS = {
+    404: "that item is no longer in the inbox",
+    409: "this link was already used, or the item was already handled",
+    0: "the request could not be completed; open the GitHub inbox in the dashboard",
+}
+
+
+def _link_problem(e: ValueError) -> str:
+    return _LINK_PROBLEMS.get(str(e), _LINK_PROBLEMS["malformed"])
+
+
 def _esc(s: str) -> str:
     return html.escape(str(s or ""))
 
@@ -834,7 +876,7 @@ async def github_approve_page(t: str = ""):
     try:
         data = github_inbox.verify_approval(config, t)
     except ValueError as e:
-        return _approve_html(f"<h1>Link problem</h1><p class=err>{_esc(e)}</p>")
+        return _approve_html(f"<h1>Link problem</h1><p class=err>{_link_problem(e)}</p>")
     items = await github_inbox.list_items(app.state.store, data["r"])
     item = items.get(data["k"])
     if not item:
@@ -862,9 +904,9 @@ async def github_approve_submit(request: Request):
         data = github_inbox.verify_approval(config, t)
         result = await _github_act(data["r"], data["k"], data["a"], nonce=data["n"])
     except ValueError as e:
-        return _approve_html(f"<h1>Link problem</h1><p class=err>{_esc(e)}</p>")
+        return _approve_html(f"<h1>Link problem</h1><p class=err>{_link_problem(e)}</p>")
     except HTTPException as e:
-        return _approve_html(f"<h1>Not done</h1><p class=err>{_esc(e.detail)}</p>")
+        return _approve_html(f"<h1>Not done</h1><p class=err>{_ACT_PROBLEMS.get(e.status_code, _ACT_PROBLEMS[0])}</p>")
     if data["a"] == "approve":
         tid = result.get("task_id") or ""
         return _approve_html(f"<h1>Task started</h1><p>{_esc(result['item'].get('title'))}</p>"
@@ -1143,7 +1185,8 @@ async def upload_files(repo: str, files: list[UploadFile] = File(...), user: Use
                 entry["pages"] = pages
             except Exception as e:  # noqa: BLE001 -- a scanned/encrypted pdf shouldn't fail the upload
                 entry["extracted_text"] = None
-                entry["note"] = f"text extraction failed ({e}) -- possibly scanned; no text layer"
+                logger.info("uploads: text extraction failed for %s: %s", entry.get("name"), e)
+                entry["note"] = "text extraction failed -- possibly scanned; no text layer"
         manifest.append(entry)
     return {"repo": repo, "files": manifest}
 
@@ -3890,6 +3933,16 @@ async def provision_project_endpoint(req: ProvisionProjectRequest, user: User = 
 
     steps: list[dict] = []
 
+    def _public_error(e: Exception) -> str:
+        """What a step may say about a failure: a ProvisioningError's own
+        message (written for the operator), otherwise a pointer to the log
+        -- an arbitrary exception's text is not for the response (CodeQL
+        py/stack-trace-exposure)."""
+        if isinstance(e, provisioning.ProvisioningError):
+            return e.detail
+        logger.exception("provisioning step failed")
+        return "failed -- see the server log"
+
     def _step(label: str, ok: bool, detail: str = "") -> None:
         steps.append({"step": label, "ok": ok, "detail": detail})
 
@@ -3905,7 +3958,7 @@ async def provision_project_endpoint(req: ProvisionProjectRequest, user: User = 
         await asyncio.to_thread(provisioning.write_project_entry, _PROJECTS_CONFIG_PATH, name, entry)
         _step("config", True, f"wrote {name} to projects.json")
     except (provisioning.ProvisioningError, OSError, ValueError) as e:
-        _step("config", False, str(e))
+        _step("config", False, _public_error(e))
         return {"ok": False, "steps": steps}
 
     # Load the new entry into the RUNNING process. Without this the project
@@ -3932,13 +3985,13 @@ async def provision_project_endpoint(req: ProvisionProjectRequest, user: User = 
         await seed_memory(name, app.state.store, starter)
         _step("memory", True, "seeded starter project memory")
     except Exception as e:  # noqa: BLE001 -- reported, never fatal
-        _step("memory", False, str(e))
+        _step("memory", False, _public_error(e))
 
     try:
         summary = await cartographer.run_cartographer(config, name, app.state.store, force=True)
         _step("codebase-map", True, str(summary)[:300])
     except Exception as e:  # noqa: BLE001
-        _step("codebase-map", False, f"{e} -- run scripts/run_cartographer.py {name} later")
+        _step("codebase-map", False, f"{_public_error(e)} -- run scripts/run_cartographer.py {name} later")
 
     if req.grant_access and user.allowed_repos is not None:
         try:
@@ -3946,7 +3999,7 @@ async def provision_project_endpoint(req: ProvisionProjectRequest, user: User = 
                                           [*user.allowed_repos, name])
             _step("access", True, f"granted {user.email} access to {name}")
         except Exception as e:  # noqa: BLE001
-            _step("access", False, str(e))
+            _step("access", False, _public_error(e))
 
     return {
         "ok": True,
@@ -4148,7 +4201,8 @@ async def consolidation_status(user: User = Depends(require_full_auth)):
     except FileNotFoundError:
         pass
     except Exception as e:  # noqa: BLE001
-        payload["marker_error"] = str(e)[:200]
+        logger.warning("consolidation status: marker unreadable: %s", e)
+        payload["marker_error"] = "marker file unreadable -- see the server log"
 
     # Stale = no run in over 48h. The job is nightly, so one missed night is
     # worth surfacing rather than waiting for someone to read a log.
@@ -4159,7 +4213,8 @@ async def consolidation_status(user: User = Depends(require_full_auth)):
             payload["age_hours"] = round(age_h, 1)
             payload["stale"] = age_h > 48
         except Exception as e:  # noqa: BLE001
-            payload["stale_error"] = f"could not parse ran_at: {e}"[:200]
+            logger.warning("consolidation status: could not parse ran_at: %s", e)
+            payload["stale_error"] = "could not parse ran_at -- see the server log"
 
     try:
         # to_thread, and only the tail: this log is never rotated, so
@@ -4393,6 +4448,25 @@ if FRONTEND_DIST.is_dir():
     # named, unlike Starlette's plain Route, which folds HEAD in for free. A
     # bare @app.get therefore 405s every HEAD -- including the one a link-
     # preview crawler sends to size an og:image before fetching it.
+    dist_root = os.path.normpath(str(FRONTEND_DIST.resolve()))
+
+    def _dist_root_file(full_path: str) -> Path | None:
+        """A real file directly inside dist/, or None. One path segment only
+        (a favicon, the apple-touch icon, og-preview.png): anything with a
+        separator or a dot-segment is not a root file, and the normalised
+        path must still sit under dist after joining -- the check static
+        analysers look for (CodeQL py/path-injection), on top of the
+        is_relative_to containment."""
+        if not full_path or "/" in full_path or "\\" in full_path or full_path in (".", ".."):
+            return None
+        joined = os.path.normpath(os.path.join(dist_root, full_path))
+        if not joined.startswith(dist_root + os.sep):
+            return None
+        candidate = Path(joined)
+        if not candidate.is_file() or candidate.parent != Path(dist_root):
+            return None
+        return candidate
+
     @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
     async def spa_fallback(full_path: str, request: Request):
         # Real files at the dist root — favicons, the apple-touch icon — are
@@ -4401,32 +4475,27 @@ if FRONTEND_DIST.is_dir():
         # 200 text/html and the tab never showed an icon (silently: a 200 with
         # the wrong body looks fine in every log). Resolved-and-contained check
         # rather than trusting the path: `..` segments must not escape dist.
-        if full_path:
-            candidate = (FRONTEND_DIST / full_path).resolve()
-            if (
-                candidate.is_file()
-                and candidate.is_relative_to(FRONTEND_DIST.resolve())
-                and candidate.parent == FRONTEND_DIST.resolve()
-            ):
-                # Stable names, so freshness has to come from revalidation
-                # rather than a lifetime: FileResponse already sends etag and
-                # last-modified, and a max-age here would be exactly how long a
-                # replaced icon or og:image outlives its deploy. Replacing the
-                # brand art on the trading bot on 2026-08-29 hit precisely that
-                # -- correct bytes on disk, a day of stale ones in every cache.
-                # stat_result up front: FileResponse only sets etag and
-                # last-modified when it is given one, otherwise it stats
-                # lazily inside __call__ -- and the conditional check below
-                # would then be comparing against headers that do not exist
-                # yet, so every revalidation came back 200 with the full body.
-                response = FileResponse(
-                    candidate,
-                    headers={"cache-control": "public, no-cache"},
-                    stat_result=candidate.stat(),
-                )
-                if _not_modified(request, response):
-                    return Response(status_code=304, headers=dict(response.headers))
-                return response
+        candidate = _dist_root_file(full_path)
+        if candidate is not None:
+            # Stable names, so freshness has to come from revalidation
+            # rather than a lifetime: FileResponse already sends etag and
+            # last-modified, and a max-age here would be exactly how long a
+            # replaced icon or og:image outlives its deploy. Replacing the
+            # brand art on the trading bot on 2026-08-29 hit precisely that
+            # -- correct bytes on disk, a day of stale ones in every cache.
+            # stat_result up front: FileResponse only sets etag and
+            # last-modified when it is given one, otherwise it stats
+            # lazily inside __call__ -- and the conditional check below
+            # would then be comparing against headers that do not exist
+            # yet, so every revalidation came back 200 with the full body.
+            response = FileResponse(
+                candidate,
+                headers={"cache-control": "public, no-cache"},
+                stat_result=candidate.stat(),
+            )
+            if _not_modified(request, response):
+                return Response(status_code=304, headers=dict(response.headers))
+            return response
         return FileResponse(
             FRONTEND_DIST / "index.html",
             headers={"cache-control": "no-store, must-revalidate"},

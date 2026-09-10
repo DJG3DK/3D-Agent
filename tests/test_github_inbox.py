@@ -143,19 +143,20 @@ def test_decide_reproposes_an_expired_snooze():
 
 
 def test_approve_links_are_signed_expiring_and_bound_to_one_item():
+    # verify_approval raises reason CODES; the approve page maps them to wording.
     cfg = _config()
     tok = gi.sign_approval(cfg, "proj", "pr:1", "nonce1", "approve")
     data = gi.verify_approval(cfg, tok)
     assert (data["r"], data["k"], data["n"], data["a"]) == ("proj", "pr:1", "nonce1", "approve")
 
-    with pytest.raises(ValueError, match="expired"):
+    with pytest.raises(ValueError, match="^expired$"):
         gi.verify_approval(cfg, gi.sign_approval(cfg, "proj", "pr:1", "n", "approve", ttl_s=-1))
-    with pytest.raises(ValueError, match="not valid"):
+    with pytest.raises(ValueError, match="^invalid$"):
         gi.verify_approval(_config(), tok)                       # another deployment's key
-    with pytest.raises(ValueError, match="not valid"):
+    with pytest.raises(ValueError, match="^invalid$"):
         body, mac = tok.split(".")
         gi.verify_approval(cfg, body[:-2] + "AA." + mac)          # tampered payload
-    with pytest.raises(ValueError, match="malformed"):
+    with pytest.raises(ValueError, match="^malformed$"):
         gi.verify_approval(cfg, "garbage")
 
     settings = gs.normalize({"public_url": "https://agent.example.com/v2"})

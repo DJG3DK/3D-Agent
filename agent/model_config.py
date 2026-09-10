@@ -537,11 +537,49 @@ _ANTHROPIC_EXTRAS = (
     '          index: -1\n'
 )
 
-_EXTRAS_STRIP = re.compile(
-    r"(?:      # \[managed\][^\n]*\n(?:      #[^\n]*\n)*)?"      # the managed comment, if present
-    r"      additional_drop_params:[^\n]*\n"
-    r"|      cache_control_injection_points:\n(?:        [^\n]*\n|          [^\n]*\n)*"
-)
+def _strip_family_extras(block: str) -> str:
+    """Drop the managed extras from a role block, line by line: the
+    `additional_drop_params` line (with the [managed] comment block right
+    above it, when present) and `cache_control_injection_points` with its
+    indented body. Line-based rather than a regex: the pattern this replaced
+    was flagged for polynomial backtracking on repeated comment lines
+    (CodeQL py/polynomial-redos, 2026-09-10)."""
+    lines = block.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("      # [managed]"):
+            j = i + 1
+            while j < len(lines) and lines[j].startswith("      #"):
+                j += 1
+            if j < len(lines) and lines[j].startswith("      additional_drop_params:"):
+                i = j + 1          # comment block + the line it introduces
+                continue
+            out.append(line)
+            i += 1
+            continue
+        if line.startswith("      additional_drop_params:"):
+            i += 1
+            continue
+        if line.startswith("      cache_control_injection_points:"):
+            i += 1
+            while i < len(lines) and lines[i].startswith("        "):
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "".join(out)
+
+
+def _end_of_first_line_starting(block: str, prefix: str) -> int | None:
+    """Index just past the first line that starts with `prefix`, or None."""
+    pos = 0
+    for line in block.splitlines(keepends=True):
+        if line.startswith(prefix):
+            return pos + len(line)
+        pos += len(line)
+    return None
 
 
 def _is_anthropic(model_id: str) -> bool:
@@ -569,13 +607,12 @@ def _requires_family_extras(model_id: str) -> bool:
 def _normalize_family_extras(block: str, model_id: str) -> str:
     """One role's config block, extras made to match the pinned model's
     family. Pure text-in/text-out so tests can pin every direction."""
-    block = _EXTRAS_STRIP.sub("", block)
+    block = _strip_family_extras(block)
     if _requires_family_extras(model_id):
-        anchor = re.search(r"      extra_body:[^\n]*\n", block)
-        if anchor is None:
-            anchor = re.search(r"      api_key:[^\n]*\n", block)
-        if anchor is not None:
-            i = anchor.end()
+        i = _end_of_first_line_starting(block, "      extra_body:")
+        if i is None:
+            i = _end_of_first_line_starting(block, "      api_key:")
+        if i is not None:
             block = block[:i] + _ANTHROPIC_EXTRAS + block[i:]
     return block
 

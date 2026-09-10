@@ -65,7 +65,11 @@ FRONTEND_KEYWORDS = (
     "sidebar", "font", "color", "colour", "spacing", "mobile", "dark mode", "hover", "tooltip",
 )
 
-_PATH_TOKEN = re.compile(r"(?<![\w/])((?:[\w.@-]+/)+[\w.@-]+|[\w@-]+\.(?:tsx|jsx|css|scss|less|html|vue|svelte))(?![\w/])")
+# Segment-then-separator, not separator-then-segment: "(?:seg/)+seg" let the
+# engine split a run of "-" characters between the repeated group and the
+# tail in many ways (CodeQL py/polynomial-redos, 2026-09-10); with "/" as the
+# only way to enter another segment there is one parse per input.
+_PATH_TOKEN = re.compile(r"(?<![\w/])([\w.@-]+(?:/[\w.@-]+)+|[\w@-]+\.(?:tsx|jsx|css|scss|less|html|vue|svelte))(?![\w/])")
 
 
 @dataclass(frozen=True)

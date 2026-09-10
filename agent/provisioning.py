@@ -64,7 +64,13 @@ CHECK_TIMEOUT_MS_DEFAULT = 300_000
 
 
 class ProvisioningError(Exception):
-    """Raised for an input the operator must fix (bad path, name clash)."""
+    """Raised for an input the operator must fix (bad path, name clash).
+    `detail` is the message as written for the operator; endpoints return
+    that attribute rather than str(e), so only curated text leaves."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(detail)
+        self.detail = detail
 
 
 class PathNotAllowedError(ProvisioningError):
@@ -158,7 +164,12 @@ def safe_relative(rel: str, base: str, *, must_exist: bool = True) -> str:
     """
     if os.path.isabs(rel):
         raise ProvisioningError(f"{rel!r} must be relative to the project root")
-    joined = os.path.realpath(os.path.join(base, rel))
+    base_real = os.path.realpath(base)
+    joined = os.path.normpath(os.path.realpath(os.path.join(base_real, rel)))
+    # Spelled out as normpath + startswith (not only _is_within) so a static
+    # analyser sees the sanitiser before the filesystem call below.
+    if joined != base_real and not joined.startswith(base_real + os.sep):
+        raise ProvisioningError(f"{rel!r} escapes the project directory")
     if not _is_within(joined, base):
         raise ProvisioningError(f"{rel!r} escapes the project directory")
     if must_exist and not os.path.exists(joined):

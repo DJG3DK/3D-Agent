@@ -1384,7 +1384,9 @@ async function reviewProject(project, cfg, routerKey) {
   } catch (err) {
     log(`[${project}] review failed with an internal error: ${err.message}`);
     const state = loadState();
-    if (state[project]?.inProgress?.sha === sha) delete state[project].inProgress;
+    // Own-property check first: `project` came in over HTTP, and a key like
+    // __proto__ must never reach the delete (CodeQL js/prototype-polluting-assignment).
+    if (Object.hasOwn(state, project) && state[project]?.inProgress?.sha === sha) delete state[project].inProgress;
     saveState(state);
     return { started: true, error: err.message };
   } finally {

@@ -355,19 +355,20 @@ def sign_approval(config: Config, repo: str, key: str, nonce: str, action: str =
 
 
 def verify_approval(config: Config, token: str, now: float | None = None) -> dict:
-    """The payload, or ValueError with a reason fit to show on the page."""
+    """The payload, or ValueError whose message is a reason CODE (malformed,
+    invalid, expired, unknown) the page maps to its own wording."""
     try:
         body, mac = token.split(".", 1)
         payload = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
     except Exception as e:  # noqa: BLE001
-        raise ValueError("this link is malformed") from e
+        raise ValueError("malformed") from e
     if not hmac.compare_digest(mac, _mac(config, payload)):
-        raise ValueError("this link is not valid for this deployment")
+        raise ValueError("invalid")
     data = json.loads(payload)
     if data.get("e", 0) < (now or time.time()):
-        raise ValueError("this link has expired; open the GitHub inbox in the dashboard instead")
+        raise ValueError("expired")
     if data.get("a") not in ("approve", "dismiss"):
-        raise ValueError("unknown action")
+        raise ValueError("unknown")
     return data
 
 

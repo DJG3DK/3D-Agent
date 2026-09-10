@@ -18,6 +18,7 @@
  */
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const { execFile } = require('child_process');
 const path = require('path');
 // Installation root, derived from this file's location so the same source
@@ -119,6 +120,11 @@ async function clearReviewState(project) {
 
 const app = express();
 app.use(express.json());
+// Every route here reads or writes files or runs git; nothing on this
+// service should be hammerable even from behind nginx's login gate
+// (CodeQL js/missing-rate-limiting, 2026-09-10). Generous for a dashboard
+// that polls a few endpoints every few seconds, tight against a loop.
+app.use(rateLimit({ windowMs: 60 * 1000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
 
 app.get('/api/projects', (req, res) => {
     res.json(Object.keys(PROJECTS));
