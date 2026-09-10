@@ -279,6 +279,7 @@ async def test_ci_failures_fall_back_to_actions_runs_when_check_runs_are_refused
         {"id": 1, "name": "CI", "conclusion": "failure", "head_sha": tip, "html_url": "https://gh/run/1", "display_title": "fix: thing", "event": "push", "run_number": 40},
         {"id": 2, "name": "Deploy", "conclusion": "success", "head_sha": tip},
         {"id": 3, "name": "CI", "conclusion": "failure", "head_sha": older},   # not the tip: history, not work
+        {"id": 4, "name": "npm_and_yarn in /. for sharp - Update #1", "conclusion": "failure", "head_sha": tip, "event": "dynamic"},  # Dependabot's own job
     ])
     items = await gi.discover(gh, "proj", "o/proj", _proj(ci_failures="propose"))
     assert [i.key for i in items] == [f"ci:{tip[:12]}:CI"]
