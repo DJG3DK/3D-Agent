@@ -320,12 +320,12 @@ model_list:
       # Cost of the swap is real but trivial next to that: the same 14_488-in
       # /3_886-out call goes from ~$0.0013 to ~$0.013. A cent per
       # summarization to stop losing five minutes to it.
-      model: openrouter/google/gemini-3.7-flash
+      model: openrouter/openai/gpt-4.1-nano
       api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"require_parameters": true, "only": ["Google"], "allow_fallbacks": false}}
+      extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.000000375
-      output_cost_per_token: 0.000001875
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000004
   - model_name: agent-coder-frontend
     litellm_params:
       # The coder seat for frontend work (agent/frontend_route.py routes a
@@ -354,12 +354,12 @@ model_list:
       # DeepSeek V4 Pro 0423 (undated slug = the 0423 release). Promoted from
       # planner to coder 2026-08-20 after qwen3-coder showed a 15% edit-miss
       # rate and flubbed an architectural reviewer round.
-      model: openrouter/deepseek/deepseek-v4-pro
+      model: openrouter/deepseek/deepseek-v4-pro-0813
       api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"require_parameters": true, "only": ["StreamLake"], "allow_fallbacks": false}}
+      extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.0000016
-      output_cost_per_token: 0.0000032
+      input_cost_per_token: 0.0000010494
+      output_cost_per_token: 0.0000031482
   - model_name: agent-planner
     litellm_params:
       # Gemini 3.7 Flash (operator dashboard swap 2026-08-28): plans and
@@ -390,12 +390,12 @@ model_list:
       output_cost_per_token: 0.0000019
   - model_name: agent-test-writer
     litellm_params:
-      model: openrouter/deepseek/deepseek-v4-pro
+      model: openrouter/deepseek/deepseek-v4-pro-0813
       api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"require_parameters": true, "only": ["StreamLake"], "allow_fallbacks": false}}
+      extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.00000087
-      output_cost_per_token: 0.00000174
+      input_cost_per_token: 0.0000010494
+      output_cost_per_token: 0.0000031482
   - model_name: agent-reviewer
     litellm_params:
       # The commit reviewer (commit-reviewer/reviewer.js). Added 2026-08-25 —
@@ -612,7 +612,7 @@ model_list:
       # calls, and is still inexpensive.
       model: openrouter/openai/gpt-4o-mini
       api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"require_parameters": true, "only": ["OpenAI"], "allow_fallbacks": false}}
+      extra_body: {"provider": {"require_parameters": true}}
     model_info:
       input_cost_per_token: 0.00000015
       output_cost_per_token: 0.0000006
@@ -645,12 +645,12 @@ model_list:
       # cheaper per token AND the provider does automatic prefix caching, so
       # the high-volume EASY tier's re-sent context bills at the cache-read
       # rate with no cache_control plumbing needed.
-      model: openrouter/deepseek/deepseek-v4-pro
+      model: openrouter/deepseek/deepseek-v4-pro-0813
       api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"require_parameters": true, "only": ["StreamLake"], "allow_fallbacks": false}}
+      extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.00000087
-      output_cost_per_token: 0.00000174
+      input_cost_per_token: 0.0000010494
+      output_cost_per_token: 0.0000031482
   - model_name: agent-planning-chat-hard
     litellm_params:
       # HARD half of the planning-chat pair -- see agent-planning-chat above
@@ -662,7 +662,7 @@ model_list:
       # un-pinned temperature=0 and made hard planning nondeterministic, and
       # the cache injection is Anthropic-specific. If this ever goes back to
       # an Anthropic model, BOTH must return (see commit c00b7dd / 5a10b93).
-      model: openrouter/qwen/qwen3.8-max
+      model: openrouter/qwen/qwen3.8-max-0902
       api_key: os.environ/OPENROUTER_API_KEY
       extra_body: {"provider": {"require_parameters": true}}
     model_info:
@@ -702,7 +702,7 @@ model_list:
       # now deepseek-v4-flash. Every one of those transitions left this
       # comment describing a model that was no longer pinned. If you repin,
       # fix these lines in the same edit.
-      model: openrouter/deepseek/deepseek-v4-flash
+      model: openrouter/~deepseek/deepseek-v4-flash-latest
       api_key: os.environ/OPENROUTER_API_KEY
       # "order" PREFERS DeepInfra rather than requiring it, and fallbacks are
       # on: if the pin is throttled or down, OpenRouter routes to whatever
@@ -710,10 +710,10 @@ model_list:
       # only:[DeepInfra] + allow_fallbacks:false, which is why two 429s a
       # minute apart on 2026-08-31 took the whole demo down -- one provider,
       # no way around it, and no router-level fallback either (see below).
-      extra_body: {"provider": {"require_parameters": true, "order": ["DeepInfra"], "allow_fallbacks": true}}
+      extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.000000088606
-      output_cost_per_token: 0.000000177212
+      input_cost_per_token: 0.00000005
+      output_cost_per_token: 0.00000016
   - model_name: smart-router
     litellm_params:
       model: auto_router/complexity_router
