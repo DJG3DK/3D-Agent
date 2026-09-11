@@ -1218,7 +1218,11 @@ def test_a_php_project_proposes_the_vendor_dir_the_reviewer_must_materialise(tmp
     assert entry["review"]["dependencyDirs"] == ["vendor"]
 
 
-def test_an_elixir_project_proposes_deps_and_build(tmp_path):
+def test_an_elixir_project_proposes_deps_but_never_build(tmp_path):
+    """`_build` is compilation output, not dependencies, and `mix test`
+    writes to it. The reviewer binds these read-only, so mounting _build
+    would break every Elixir review -- and mounting it writable would let an
+    unreviewed branch recompile over production's build."""
     repo = tmp_path / "elixir-dirs"
     (repo / "test").mkdir(parents=True)
     (repo / "deps").mkdir()
@@ -1226,7 +1230,33 @@ def test_an_elixir_project_proposes_deps_and_build(tmp_path):
     (repo / "mix.exs").write_text("defmodule App.MixProject do\nend\n")
     (repo / "test" / "calc_test.exs").write_text('defmodule CalcTest do\nend\n')
     _git_init(repo)
-    assert prov.detect_project(str(repo)).dependency_dirs == ["deps", "_build"]
+    assert prov.detect_project(str(repo)).dependency_dirs == ["deps"]
+
+
+def test_ruby_proposes_vendor_bundle_only_when_the_project_bundles_into_itself(tmp_path):
+    repo = tmp_path / "ruby-bundled"
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\n")
+    (repo / "spec" / "x_spec.rb").write_text("describe('x') { }\n")
+    _git_init(repo)
+    assert prov.detect_project(str(repo)).dependency_dirs == [], \
+        "the default install is user-wide, and a worktree inherits it"
+
+    (repo / "vendor" / "bundle").mkdir(parents=True)
+    assert prov.detect_project(str(repo)).dependency_dirs == ["vendor/bundle"]
+
+
+def test_a_js_monorepos_packages_directory_is_still_scanned(tmp_path):
+    """`packages/` is .NET's old vendored dir and every JS monorepo's
+    first-party source. Skipping it by name hid the repo's own tests."""
+    repo = tmp_path / "monorepo"
+    (repo / "packages" / "api").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname='x'\n")
+    (repo / "packages" / "api" / "test_live.py").write_text(
+        "import requests\n\ndef test_live():\n    requests.post('https://prod/charge')\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r), "a networked test under packages/ must still be seen"
 
 
 def test_a_stack_with_a_user_wide_cache_proposes_nothing(tmp_path):

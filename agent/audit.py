@@ -59,15 +59,32 @@ ACTIONS: dict[str, str] = {
     "settings.merge_review": "changed the final merge review",
     "settings.auto_approve_repos": "changed which projects auto-approve covers",
     "github.source_policy": "changed a GitHub inbox source",
+    "inbox.approve": "approved an inbox item (a task was started)",
+    "inbox.dismiss": "dismissed an inbox item",
+    "inbox.snooze": "snoozed an inbox item",
     "deploy_key.generate": "generated a deploy key",
     "deploy_key.delete": "deleted a deploy key",
 }
 
 
+# Bumped per record, so two writes inside the same microsecond still order.
+_sequence = 0
+
+
 def _key(ts: float) -> str:
     """Sortable by time, unique under concurrency. Zero-padded so string
-    order is time order -- the store has no ORDER BY for us to use."""
-    return f"{int(ts * 1000):015d}-{uuid.uuid4().hex[:8]}"
+    order is time order -- the store has no ORDER BY for us to use, and the
+    trim decides what "newest" means from these keys alone.
+
+    Microseconds, not milliseconds, plus a per-process counter. At
+    millisecond resolution a burst of records shared a key prefix and the
+    random suffix decided their order -- which meant the trim, whose whole
+    job is to keep the newest, kept an arbitrary subset. A burst is exactly
+    when trimming happens.
+    """
+    global _sequence
+    _sequence = (_sequence + 1) % 1_000_000
+    return f"{int(ts * 1_000_000):018d}-{_sequence:06d}-{uuid.uuid4().hex[:6]}"
 
 
 async def record(store, *, actor: str, action: str, target: str | None = None,
@@ -78,6 +95,12 @@ async def record(store, *, actor: str, action: str, target: str | None = None,
     "github-inbox" for something the system did on a policy the operator set
     earlier. Never a session token, never an IP: this page is read by people
     and shown in a dashboard.
+
+    One actor is deliberately not an account: a signed approve link carries
+    no session, so clicking one in Telegram or email is recorded as
+    "signed link" rather than as whoever happens to hold the mailbox. That is
+    the honest answer -- the link is what authorised it -- and it is exactly
+    why those clicks belong in the log at all.
     """
     if action not in ACTIONS:
         # A typo'd action would be invisible in the UI (no label) and
@@ -105,20 +128,68 @@ async def record(store, *, actor: str, action: str, target: str | None = None,
 
 
 async def _maybe_trim(store) -> None:
+    """Keep the newest MAX_RECORDS, and no more.
+
+    The store returns no promised order, and asking it for a window of
+    MAX_RECORDS*2 rows then deleting "the oldest of those" is only correct if
+    that window happens to contain the oldest rows -- with an arbitrary
+    order it could delete recent entries while genuinely old ones sit
+    outside the window forever. So this reads the whole namespace, in pages,
+    and decides on the full set. The keys are time-ordered by construction
+    (see _key), which is what makes "newest" answerable without trusting the
+    order rows arrive in.
+    """
     global _writes_since_trim
     _writes_since_trim += 1
     if _writes_since_trim < _TRIM_EVERY:
         return
     _writes_since_trim = 0
     try:
-        items = await store.asearch(NAMESPACE, limit=MAX_RECORDS * 2)
+        items = await _all(store)
         if len(items) <= MAX_RECORDS:
             return
-        # Oldest first, drop the overflow.
-        for item in sorted(items, key=lambda i: i.value.get("ts", 0))[:len(items) - MAX_RECORDS]:
-            await store.adelete(NAMESPACE, item.key)
+        for key in sorted(i.key for i in items)[:len(items) - MAX_RECORDS]:
+            await store.adelete(NAMESPACE, key)
     except Exception as e:  # noqa: BLE001
         logger.warning("audit: trim failed: %s", e)
+
+
+# One page of a store read. Deliberately larger than MAX_RECORDS so the whole
+# log is normally one call, with paging as the safety net rather than the
+# common path.
+_PAGE = 500
+
+
+# A page that returns nothing new ends the read. Deliberately NOT "a page
+# shorter than the limit ends the read": a store is free to cap a page below
+# whatever was asked for, and treating a short page as the last one made the
+# whole log look two rows long.
+_MAX_PAGES = 64
+
+
+async def _all(store) -> list:
+    """Every record, however many pages that takes."""
+    seen: dict[str, object] = {}
+    offset = 0
+    for _ in range(_MAX_PAGES):
+        try:
+            page = await store.asearch(NAMESPACE, limit=_PAGE, offset=offset)
+        except TypeError:
+            # A store without offset support: one call is all there is.
+            page = await store.asearch(NAMESPACE, limit=MAX_RECORDS * 4)
+            for item in page:
+                seen.setdefault(item.key, item)
+            break
+        fresh = [i for i in page if i.key not in seen]
+        for item in fresh:
+            seen[item.key] = item
+        # No page at all, or nothing this read had not already seen: done.
+        # The second condition is also what stops a store that ignores
+        # `offset` from spinning here forever.
+        if not page or not fresh:
+            break
+        offset += len(page)
+    return list(seen.values())
 
 
 async def recent(store, limit: int = 100) -> list[dict]:
@@ -127,7 +198,7 @@ async def recent(store, limit: int = 100) -> list[dict]:
     if store is None:
         return []
     try:
-        items = await store.asearch(NAMESPACE, limit=max(limit, 1) * 2)
+        items = await _all(store)
     except Exception as e:  # noqa: BLE001
         logger.warning("audit: could not read the log: %s", e)
         return []

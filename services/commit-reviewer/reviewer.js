@@ -325,38 +325,106 @@ async function detectNewCommit(project, cfg) {
 /**
  * Dependency trees the review checkout needs but git does not carry.
  *
- * PHP keeps its dependencies in `vendor/`, Elixir in `deps/` and `_build/`,
- * and both are gitignored -- so a fresh worktree has neither, and
- * `vendor/bin/phpunit` exits 127 with nothing useful to say. That reads as a
- * broken suite rather than as "nothing installed it", which is the same trap
- * node_modules had before it was symlinked.
+ * PHP keeps its dependencies in `vendor/`, Elixir in `deps/`, Ruby (when
+ * bundled with --path) in `vendor/bundle`. All are gitignored, so a fresh
+ * worktree has none of them, and `vendor/bin/phpunit` exits 127 with nothing
+ * useful to say -- which reads as a broken suite rather than as "nothing
+ * installed it".
  *
- * Symlinked from the live checkout, never installed here: an install would
- * execute an untrusted composer.json's scripts, and the entire premise of
- * the review is that this code has not been vetted yet. A symlink resolves
- * the same and runs nothing. Go, Rust, Maven, Gradle and NuGet all use a
- * user-wide cache the worktree inherits, so they need nothing.
+ * Bound READ-ONLY from the live checkout, not symlinked.
  *
- * Returns the directories it linked, for the caller's log and for tests.
+ * The first version of this symlinked, and a symlink into the live tree is
+ * writable: a check that writes -- a test fixture, a compile step, a
+ * package's own cache -- would have edited production's installed
+ * dependencies from inside the one step whose premise is that this code has
+ * not been vetted. That is the same hole the live candle store already has a
+ * read-only remount for, and Linux silently ignores `-o ro` on a plain bind,
+ * so the explicit remount is what makes the flag take effect. A mount that
+ * cannot be made read-only is unmounted rather than left writable.
+ *
+ * Nothing is ever INSTALLED here: an install would execute an untrusted
+ * composer.json's scripts. When a branch changes its dependency manifest,
+ * installChangedDependencies below handles it instead, with the same
+ * no-scripts discipline the npm path already uses.
+ *
+ * Returns { mounted, issues } -- issues are reported as failed setup checks,
+ * never thrown: a project that has not installed yet should fail the check
+ * that needs it, with that check's own message, not the whole review.
  */
-function materializeDependencyDirs(cfg, worktreePath, log = () => {}) {
-  const linked = [];
+async function materializeDependencyDirs(cfg, worktreePath, { log = () => {}, skip = [] } = {}) {
+  const mounted = [];
+  const issues = [];
   for (const rel of cfg.dependencyDirs || []) {
+    if (skip.includes(rel)) continue;          // being installed fresh instead
     const src = path.join(cfg.live, rel);
     const dest = path.join(worktreePath, rel);
     if (!fs.existsSync(src)) {
-      // Not a fault on its own: the project may simply not have installed
-      // yet, and the check that needs it will say so far more clearly than a
-      // setup failure here would.
       log(`${rel} is not present on the live checkout — checks that need it will fail`);
       continue;
     }
-    if (fs.existsSync(dest)) continue;   // the branch brought its own
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.symlinkSync(src, dest);
-    linked.push(rel);
+    if (fs.existsSync(dest)) continue;         // the branch brought its own
+    fs.mkdirSync(dest, { recursive: true });
+    const m = await run('mount', ['--bind', src, dest], '/');
+    if (!m.ok) {
+      issues.push({ name: `deps (${rel})`, ok: false, output: m.output.slice(-2000) });
+      continue;
+    }
+    const ro = await run('mount', ['-o', 'remount,ro,bind', dest], '/');
+    if (!ro.ok) {
+      await run('umount', [dest], '/');
+      issues.push({
+        name: `deps (${rel})`, ok: false,
+        output: `could not remount read-only; unmounted rather than exposing live's installed `
+              + `dependencies writable to an unreviewed branch.\n${ro.output.slice(-1000)}`,
+      });
+      continue;
+    }
+    mounted.push(rel);
   }
-  return linked;
+  return { mounted, issues };
+}
+
+
+/**
+ * A branch that changed its dependency manifest must not be reviewed against
+ * the dependencies live happens to have installed.
+ *
+ * The npm path has always done this (`depsChanged` -> a real install with
+ * --ignore-scripts). PHP and Elixir had no equivalent, so a commit editing
+ * composer.json ran its tests against live's vendor/ and passed or failed
+ * for reasons that had nothing to do with the diff.
+ *
+ * Both installs here are the non-executing kind, which is what makes them
+ * safe on unvetted code:
+ *   composer install --no-scripts --no-plugins   (the exact analogue of npm's
+ *                                                 --ignore-scripts)
+ *   mix deps.get                                 (fetches; compiles nothing)
+ *
+ * Returns the directories that were installed fresh, so the caller knows not
+ * to mount live's copy over them.
+ */
+async function installChangedDependencies(cfg, worktreePath, diffFiles, log = () => {}) {
+  const installed = [];
+  const issues = [];
+  const declared = cfg.dependencyDirs || [];
+
+  if (declared.includes('vendor') && /composer\.(json|lock)/.test(diffFiles)) {
+    log('composer.json/lock changed — installing into the worktree instead of using live\'s vendor');
+    const r = await runSealed('composer',
+      ['install', '--no-interaction', '--no-progress', '--no-scripts', '--no-plugins'],
+      worktreePath, 600_000);
+    if (r.ok) installed.push('vendor');
+    else issues.push({ name: 'composer install', ok: false, output: r.output.slice(-4000) });
+  }
+
+  if (declared.includes('deps') && /mix\.(exs|lock)/.test(diffFiles)) {
+    log('mix.exs/lock changed — fetching this branch\'s dependencies');
+    const r = await runSealed('mix', ['deps.get'], worktreePath, 600_000);
+    if (r.ok) installed.push('deps');
+    else issues.push({ name: 'mix deps.get', ok: false, output: r.output.slice(-4000) });
+  }
+
+  return { installed, issues };
 }
 
 
@@ -531,7 +599,11 @@ async function setupWorktree(project, cfg, sha, base) {
   // review is that this code has not been vetted. A symlink gives the same
   // resolution with no execution. Go, Rust, Maven, Gradle and NuGet all use
   // a user-wide cache instead, so they need nothing here.
-  materializeDependencyDirs(cfg, worktreePath, (m) => log(`[${project}] ${m}`));
+  const talk = (m) => log(`[${project}] ${m}`);
+  const fresh = await installChangedDependencies(cfg, worktreePath, diffFiles, talk);
+  setupIssues.push(...fresh.issues);
+  const deps = await materializeDependencyDirs(cfg, worktreePath, { log: talk, skip: fresh.installed });
+  setupIssues.push(...deps.issues);
 
   // Credentials for the worktree come from REVIEW_SECRETS_ROOT, never from the
   // live checkout. They used to be copied straight out of cfg.live, which meant
@@ -643,6 +715,12 @@ async function cleanupWorktree(cfg, worktreePath) {
   // Same reasoning for the read-only data mounts: a stale mount left behind
   // would point into the live candle store from a deleted directory.
   for (const rel of cfg.readOnlyMounts || []) {
+    await run('umount', [path.join(worktreePath, rel)], '/');
+  }
+  // Same reasoning for the dependency binds: a stale mount left behind points
+  // into live's installed dependencies from a directory that is about to be
+  // deleted, and `worktree remove` would fail on it.
+  for (const rel of cfg.dependencyDirs || []) {
     await run('umount', [path.join(worktreePath, rel)], '/');
   }
   await run('git', ['worktree', 'remove', worktreePath, '--force'], cfg.live);
@@ -1587,6 +1665,6 @@ if (require.main === module) {
 
 module.exports = {
   PROJECTS, setupWorktree, cleanupWorktree, runChecks, runBuildCheck, runDatabaseCheck, runSecretScan,
-  materializeDependencyDirs,
+  materializeDependencyDirs, installChangedDependencies,
   detectNewCommit, reviewWithSonnet, buildAgentMessage, applyBaseline,
 };

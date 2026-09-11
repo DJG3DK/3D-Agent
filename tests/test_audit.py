@@ -103,6 +103,16 @@ def test_keys_sort_in_time_order():
     assert keys == sorted(keys)
 
 
+def test_keys_written_in_the_same_instant_still_order():
+    """A burst is exactly when the trim runs, and at millisecond resolution a
+    burst shared a key prefix -- leaving a random suffix to decide which
+    records counted as newest."""
+    now = 1789000000.000001
+    keys = [audit._key(now) for _ in range(50)]
+    assert keys == sorted(keys), "records written in one instant must still order by write order"
+    assert len(set(keys)) == 50
+
+
 def test_the_log_is_trimmed_rather_than_growing_without_bound(monkeypatch):
     monkeypatch.setattr(audit, "MAX_RECORDS", 5)
     monkeypatch.setattr(audit, "_TRIM_EVERY", 3)
@@ -116,14 +126,26 @@ def test_the_log_is_trimmed_rather_than_growing_without_bound(monkeypatch):
     assert kept[-1] == "23"
 
 
+def _agent_sources() -> str:
+    return "\n".join(p.read_text() for p in (REPO / "agent").rglob("*.py")
+                     if p.name != "audit.py")
+
+
 @pytest.mark.parametrize("action", sorted(audit.ACTIONS))
 def test_every_registered_action_is_recorded_somewhere(action):
     """An action in the table that no call site ever writes is a promise the
     page cannot keep: the operator reads the log, sees no entry, and concludes
-    it did not happen."""
-    sources = "\n".join(p.read_text() for p in (REPO / "agent").rglob("*.py")
-                        if p.name != "audit.py")
-    assert f'"{action}"' in sources, f"{action} is in ACTIONS and nothing records it"
+    it did not happen.
+
+    A call site may build the name -- `f"inbox.{action}"` covers approve,
+    dismiss and snooze in one place -- so a matching prefix counts. The
+    unknown-action guard in audit.py is what catches a family member that
+    does not exist; this catches one nobody writes at all.
+    """
+    sources = _agent_sources()
+    prefix = action.split(".")[0]
+    assert f'"{action}"' in sources or f'action=f"{prefix}.{{' in sources, \
+        f"{action} is in ACTIONS and nothing records it"
 
 
 def test_every_recorded_action_is_in_the_registry():
@@ -138,3 +160,68 @@ def test_every_recorded_action_is_in_the_registry():
             used.add(m.group(1))
     unknown = used - set(audit.ACTIONS)
     assert not unknown, f"recorded but not in ACTIONS (they would be dropped): {sorted(unknown)}"
+
+    # And every dynamic family has at least one member registered, so
+    # `f"inbox.{action}"` cannot survive the whole family being deleted.
+    for m in re.finditer(r'action=f"([a-z_]+)\.\{', _agent_sources()):
+        prefix = m.group(1)
+        assert any(a.startswith(prefix + ".") for a in audit.ACTIONS), \
+            f"{prefix}.* is recorded and no such action is registered"
+
+
+# ---------------------------------------------------------------------------
+# Reading and trimming must not depend on the order rows come back in
+# ---------------------------------------------------------------------------
+
+class ShuffledStore(FakeStore):
+    """A store that returns rows in an order nobody promised -- reversed, and
+    windowed. The real one makes no ordering guarantee either; this one just
+    stops the tests from accidentally relying on insertion order."""
+
+    def __init__(self, page: int = 3):
+        super().__init__()
+        self.page = page
+
+    async def asearch(self, ns, limit=100, offset=0):
+        items = [type("Item", (), {"key": k, "value": v})()
+                 for k, v in reversed(list(self.rows.items()))]
+        window = items[offset:offset + min(limit, self.page)]
+        return window
+
+
+def test_trimming_keeps_the_newest_even_when_the_store_pages_and_shuffles():
+    """The first version asked for a window and deleted the oldest rows IN
+    THAT WINDOW. With an arbitrary order that deletes recent entries while
+    genuinely old ones sit outside the window forever."""
+    store = ShuffledStore(page=3)
+    for i in range(30):
+        asyncio.run(audit.record(store, actor=f"u{i}@x", action="command.approve", detail=str(i)))
+
+    import agent.audit as mod
+    old_max, old_every = mod.MAX_RECORDS, mod._TRIM_EVERY
+    try:
+        mod.MAX_RECORDS, mod._TRIM_EVERY, mod._writes_since_trim = 10, 1, 0
+        asyncio.run(audit.record(store, actor="last@x", action="command.approve", detail="30"))
+        kept = sorted(int(v["detail"]) for v in store.rows.values())
+        assert len(kept) == 10
+        assert kept == list(range(21, 31)), f"the newest ten should survive, got {kept}"
+    finally:
+        mod.MAX_RECORDS, mod._TRIM_EVERY = old_max, old_every
+
+
+def test_recent_sees_every_page_not_just_the_first():
+    store = ShuffledStore(page=2)
+    for i in range(9):
+        asyncio.run(audit.record(store, actor=f"u{i}@x", action="command.approve", detail=str(i)))
+    rows = asyncio.run(audit.recent(store, limit=100))
+    assert len(rows) == 9, "a paging store must not hide older entries from the page"
+    assert rows[0]["detail"] == "8", "still newest first"
+
+
+def test_a_store_without_offset_support_still_works():
+    """FakeStore's asearch takes no offset -- the older shape. Reading must
+    fall back to one call rather than raising TypeError at the operator."""
+    store = FakeStore()
+    for i in range(4):
+        asyncio.run(audit.record(store, actor=f"u{i}@x", action="command.approve", detail=str(i)))
+    assert len(asyncio.run(audit.recent(store))) == 4

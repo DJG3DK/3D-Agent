@@ -80,7 +80,18 @@ The single most common confusion. Every project has up to three copies:
 |---|---|---|
 | `/home/<project>` | **Live.** What the world is running. | Nobody, except the merge step of a deploy (fast-forward only) |
 | `/home/agent-workspaces/<project>` | **Task worktree.** A git worktree of live, on a per-task branch `agent/<task-id>`. Mounted into the sandbox container as `/workspace` | The agent. Every edit a task makes lands here first |
-| `services/commit-reviewer/worktrees/<project>-<sha>` | **Review worktree.** A detached checkout at the exact commit under review, with the project's secret files copied in so checks can run | The reviewer, then deleted |
+| `services/commit-reviewer/worktrees/<project>-<sha>` | **Review worktree.** A detached checkout at the exact commit under review, with the project's secret files copied in and its installed dependencies bound in read-only, so checks can run | The reviewer, then deleted |
+
+A review worktree contains what git contains, which is not enough to run
+anything: `node_modules`, PHP's `vendor/`, Elixir's `deps/` and a bundled
+Ruby project's `vendor/bundle` are all gitignored. The reviewer borrows them
+from the live checkout, **bound read-only** — the code about to run against
+them is by definition unreviewed, and a writable borrow would let it edit
+what production has installed. When the branch changes its own manifest
+(`composer.json`, `mix.exs`, a lockfile) the borrow is wrong anyway, so the
+reviewer installs that stack's dependencies into the worktree instead, with
+scripts and plugins disabled — the same `--ignore-scripts` discipline the npm
+path has always used.
 
 A task's diff is the task worktree against its branch point. The live checkout
 never moves until the gate approves and the operator approves the merge.

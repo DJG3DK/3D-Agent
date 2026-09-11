@@ -221,3 +221,17 @@ def test_security_md_still_documents_the_model():
     goes, the fixture is testing nothing."""
     text = (REPO / "SECURITY.md").read_text().lower()
     assert "injection" in text
+
+
+def test_a_request_with_a_cookie_before_startup_finishes_is_not_a_500():
+    """The 401 path covers a request with no cookie. A request that carries
+    one, arriving in the same window, read `app.state.auth_pool` and answered
+    500 with a KeyError -- a broken server, for a state that is simply not
+    ready. 503 is the answer, and it is the one a monitoring box can act on."""
+    srv.app.dependency_overrides.clear()
+    srv.app.state.auth_pool = None
+    client = TestClient(srv.app)
+    client.cookies.set("agent_session", "looks-real-enough")
+    res = client.get("/api/audit")
+    assert res.status_code == 503
+    assert "Retry-After" in res.headers

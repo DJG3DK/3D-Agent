@@ -731,7 +731,15 @@ async def get_current_user(
     # than a missing login.
     if not agent_session:
         raise HTTPException(401, "not logged in")
-    pool = request.app.state.auth_pool
+    # ...and a request that DOES carry a cookie, arriving in the same window,
+    # would have hit the same KeyError. It is not a 401 (the cookie may be
+    # perfectly good) and it is not a 500 (nothing is broken) -- the database
+    # pool simply is not up yet. 503 with Retry-After is the answer a browser
+    # and a monitoring box both understand, and the dashboard's own reconnect
+    # logic already treats it as "try again shortly".
+    pool = getattr(request.app.state, "auth_pool", None)
+    if pool is None:
+        raise HTTPException(503, "the server is still starting up", headers={"Retry-After": "2"})
     user = await resolve_session(pool, agent_session)
     if not user:
         raise HTTPException(401, "session expired or invalid")

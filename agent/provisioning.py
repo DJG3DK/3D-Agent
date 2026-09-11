@@ -143,7 +143,10 @@ _SKIP_DIRS = {
     ".next", ".turbo", "coverage", ".pytest_cache", ".mypy_cache", "vendor",
     ".cache", "target", ".gradle",
     "deps", "_build",      # Elixir: hex packages and compiled beams
-    "obj", "packages",     # .NET: restore output and old-style package dir
+    "obj",                 # .NET restore output
+    # NOT "packages": .NET's old-style package dir shares its name with a
+    # first-party source directory in every JS monorepo, and skipping it
+    # would hide the repo's own tests from the scan.
     "Pods", "elm-stuff",   # other ecosystems' vendored trees
 }
 
@@ -1018,9 +1021,22 @@ def _add_checks(report: DetectionReport, checks: list[dict], risky: list[Candida
 # Where each stack keeps its installed dependencies, when it keeps them in
 # the project at all. Go, Rust, Maven, Gradle and NuGet all use a user-wide
 # cache that a worktree inherits for free, so they are deliberately absent.
+# Where each stack keeps its installed dependencies, when it keeps them in
+# the project at all. Go, Rust, Maven, Gradle and NuGet all use a user-wide
+# cache that a worktree inherits for free, so they are deliberately absent.
+#
+# `_build` is NOT here, though Elixir keeps it beside deps: it is compilation
+# OUTPUT, not dependencies, and `mix test` writes to it. The reviewer binds
+# these read-only, so mounting _build would break every Elixir review -- and
+# mounting it writable would let an unreviewed branch recompile over
+# production's build. The worktree compiles its own instead.
 _DEPENDENCY_DIRS = {
     "php": ("vendor",),
-    "elixir": ("deps", "_build"),
+    "elixir": ("deps",),
+    # Only when the project bundles into itself (`bundle install --path
+    # vendor/bundle`); the default installs gems user-wide, which a worktree
+    # already inherits.
+    "ruby": ("vendor/bundle",),
 }
 
 

@@ -923,10 +923,16 @@ async def _github_notify(text: str, repo: str) -> None:
             logger.exception("github inbox: email to %s failed", to)
 
 
-async def _github_act(repo: str, key: str, action: str, *, nonce: str | None = None, days: float | None = None) -> dict:
+async def _github_act(repo: str, key: str, action: str, *, nonce: str | None = None,
+                      days: float | None = None, actor: str = "signed link") -> dict:
     """Approve / dismiss / snooze one inbox item. `nonce` is set when the
     request came through a signed link and must match the item's current
-    nonce, which is what makes a link single-use."""
+    nonce, which is what makes a link single-use.
+
+    `actor` is who the audit log will name. It defaults to the link because
+    that is the honest answer for the path with no session behind it:
+    clicking an approve link in Telegram starts a real task, and the log
+    would otherwise show a task appearing with nobody having started it."""
     items = await github_inbox.list_items(app.state.store, repo)
     item = items.get(key)
     if not item:
@@ -948,6 +954,11 @@ async def _github_act(repo: str, key: str, action: str, *, nonce: str | None = N
     else:
         raise HTTPException(400, "unknown action")
     await github_inbox.put_item(app.state.store, item)
+    await audit.record(
+        _audit_store(), actor=actor, action=f"inbox.{action}", target=f"{repo}/{key}",
+        detail=(item.get("title") or "")[:160],
+        extra={"task_id": item.get("task_id")} if item.get("task_id") else None,
+    )
     return {"ok": True, "item": item, "task_id": item.get("task_id")}
 
 
@@ -957,7 +968,7 @@ async def github_inbox_action(repo: str, key: str, action: str, req: InboxAction
     if repo not in PROJECTS:
         raise HTTPException(404, "unknown repo")
     check_repo_access(user, repo)
-    return await _github_act(repo, key, action, days=(req.days if req else None))
+    return await _github_act(repo, key, action, days=(req.days if req else None), actor=user.email)
 
 
 @app.post("/api/github/poll")
