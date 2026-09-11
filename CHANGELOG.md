@@ -6,9 +6,10 @@
 
 The agent can pick work up from GitHub instead of waiting to be told.
 A poller reads each project's open Dependabot pull requests, Dependabot
-security alerts, reviews that request changes, and failing checks on the
-default branch (from check runs or, with only *Actions: read*, from
-workflow runs — Dependabot's own update jobs excluded). Each source has a
+security alerts, code scanning (CodeQL) alerts grouped per rule, reviews
+that request changes, and failing checks on the default branch (from check
+runs or, with only *Actions: read*, from workflow runs — Dependabot's own
+update jobs excluded). Each source has a
 policy per project: **Off**, **Propose** (the item lands in the new
 **GitHub** tab and an approve link goes out over Telegram and, optionally,
 email) or **Auto** (the task starts at once, within a cap on open auto
@@ -18,7 +19,7 @@ review gate and keeps the operator's merge approval.
 **Settings → GitHub** holds the tokens — fine-grained PATs stored encrypted
 with the TOTP key, shown as a name and last four characters, with a Test
 button that reports which projects a token reaches and whether it may read
-alerts and checks — the dashboard URL approve links are built on, delivery
+alerts, code scanning and checks — the dashboard URL approve links are built on, delivery
 switches, and the per-project policy table with budget, cap, author filter
 and coder route. The PR tools resolve their token per project from the
 same place; `GITHUB_TOKEN` in `.env` is now only a fallback.
@@ -29,7 +30,18 @@ button's POST acts, because messengers fetch links for previews.
 
 Also: the origin-remote parser accepts SSH host aliases (a deploy key per
 project means one per project; two of three live projects resolved to no
-repository until now).
+repository until now). `git remote get-url` applied insteadOf rewrites, so
+on a box with a GitHub token helper the Settings page reported an SSH
+origin as HTTPS and would have shown the helper's token; both the deploy-key
+status and the PR-tool slug now read the configured URL.
+
+### Docs and startup
+
+README, INSTALL and the public landing page now describe the inbox's fifth
+source (code scanning), the frontend seats, billed-cost budgets, runtime
+limits and deploy keys. `MODEL_PLAN` / `MODEL_EXECUTE` / `MODEL_REFLECT` are
+no longer required at startup — they had not been read since the alias
+pipeline. The landing page's Node floor is 24+, matching `install.sh`.
 
 ## v0.4.0 — a planner that keeps the brief, a Kimi seat for frontend work, costs as the router bills them (pre-release)
 

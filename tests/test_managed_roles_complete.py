@@ -28,3 +28,15 @@ def test_every_role_with_requirements_is_managed():
 def test_frontend_seats_are_managed_with_readable_labels():
     assert MANAGED_ROLES["agent-coder-frontend"] == "Coder (Frontend)"
     assert MANAGED_ROLES["agent-planning-chat-frontend"] == "Planning Chat (Frontend)"
+
+
+def test_readme_names_every_managed_role_alias():
+    """The Models tab lists every agent-* pin. If the README's role list
+    omits one, an operator reading the docs cannot find it to repin -- the
+    same class of silence that hid agent-coder-frontend from the page
+    itself (see the module docstring)."""
+    from pathlib import Path
+
+    readme = Path("README.md").read_text()
+    missing = [alias for alias in MANAGED_ROLES if f"`{alias}`" not in readme]
+    assert not missing, f"README does not mention managed role(s): {missing}"

@@ -1,15 +1,17 @@
-"""Unit tests for agent/planning_chat.py's two-model setup (2026-08-23):
-agent-planning-chat (Gemini 3.7 Flash, cheap) for the default case, escalating
-to agent-planning-chat-hard (Qwen3.8 Max) only for a turn that reads as
-bug-fixing/debugging or a genuinely hard problem. Two separate concerns:
+"""Unit tests for agent/planning_chat.py's three-seat setup:
+agent-planning-chat (EASY) for the default case, escalating to
+agent-planning-chat-hard only for a turn that reads as bug-fixing/debugging
+or a genuinely hard problem, with agent-planning-chat-frontend sitting ahead
+of that ladder for frontend sessions. What each alias resolves to is a
+dashboard pin. Two separate concerns:
 
 - classify_planning_difficulty: does the per-turn EASY/HARD call land
   correctly (keyword floor, routing through the real classify_task
   classifier -- not a second, parallel one -- and its safe fallback)?
-- build_planning_agent: does `difficulty` actually pick the right model
-  alias, and -- just as important -- does everything ELSE (tools, memory
-  backend, permissions, system prompt) stay identical regardless, so the
-  harder model never gets a reduced tool/memory set?
+- build_planning_agent: does `difficulty` / `route` actually pick the right
+  model alias, and -- just as important -- does everything ELSE (tools,
+  memory backend, permissions, system prompt) stay identical regardless, so
+  the harder (or frontend) model never gets a reduced tool/memory set?
 """
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -125,7 +127,7 @@ def _capturing_create_deep_agent(calls):
     return _fake
 
 
-async def test_easy_difficulty_uses_the_gemini_alias(monkeypatch):
+async def test_easy_difficulty_uses_the_easy_alias(monkeypatch):
     calls = []
     monkeypatch.setattr("agent.planning_chat.create_deep_agent", _capturing_create_deep_agent(calls))
     checkpointer = MemorySaver()
@@ -137,7 +139,7 @@ async def test_easy_difficulty_uses_the_gemini_alias(monkeypatch):
     assert calls[0]["model"].model_name == "agent-planning-chat"
 
 
-async def test_hard_difficulty_uses_the_qwen_alias(monkeypatch):
+async def test_hard_difficulty_uses_the_hard_alias(monkeypatch):
     calls = []
     monkeypatch.setattr("agent.planning_chat.create_deep_agent", _capturing_create_deep_agent(calls))
     checkpointer = MemorySaver()
@@ -163,9 +165,9 @@ async def test_default_difficulty_is_easy():
     assert plan_ref == {"markdown": None, "brief": None}
 
 
-async def test_qwen_gets_the_identical_tools_memory_and_permissions_as_gemini(monkeypatch):
-    """The actual point of this whole feature: Qwen must never get a
-    reduced tool/memory set relative to Gemini. Only `model=` may differ
+async def test_hard_tier_gets_the_identical_tools_memory_and_permissions_as_easy(monkeypatch):
+    """The actual point of this whole feature: HARD must never get a
+    reduced tool/memory set relative to EASY. Only `model=` may differ
     between the two difficulty branches -- everything else passed to
     create_deep_agent has to be the same.
     """

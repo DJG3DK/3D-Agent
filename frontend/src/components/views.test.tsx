@@ -113,6 +113,14 @@ describe("LandingPage", () => {
       .forEach((a) => expect(a.getAttribute("rel")).toMatch(/noopener/));
   });
 
+  it("states the Node floor as 24, not a retired LTS", () => {
+    // Node 20 left maintenance in April 2026; install.sh and CI pin 24.
+    // The landing page still said 20+ after the rest of the project moved.
+    render(<LandingPage onSignIn={vi.fn()} />);
+    expect(document.body.textContent).toMatch(/Node 24\+/);
+    expect(document.body.textContent).not.toMatch(/Node 20\+/);
+  });
+
   it("describes the licence as source-available, never as open source", () => {
     // PolyForm Noncommercial is not an OSI licence, and the README says so.
     render(<LandingPage onSignIn={vi.fn()} />);

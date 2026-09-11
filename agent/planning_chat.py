@@ -36,23 +36,23 @@ or inspiration, unlike a build task's single-repo scope. Memory stays scoped
 to the session's own primary repo either way; there's no cross-project
 memory write from here.
 
-Two models, not one (2026-08-23): agent-planning-chat (Gemini 3.7 Flash,
-cheap) handles the default case -- web search, research, simple design/UX
-planning (colors, layout, theme direction) -- and agent-planning-chat-hard
-(Qwen3.8 Max, the same model agent-investigator/agent-consolidator already
-use) is reserved for a turn that actually reads as bug-fixing/debugging or a
-genuinely hard problem. classify_planning_difficulty picks between them
-FRESH on every turn (a deterministic keyword floor first, then routing
-through the SAME classify_task classifier this system already built for
-task categorization -- its own "bug-fix" category is the HARD signal, no
-second parallel classifier needed) -- no session-level pinning, same
-reasoning as the shared router's own smart-router: a conversation can drift
-from "what color should this be" into "why is this crashing" mid-session,
-and the model should follow that, not stay stuck on whichever tier the
-first message happened to classify as. Everything else about the agent --
-tools, memory backend, permissions, middleware -- is identical between the
-two; only `model=` changes, so Qwen gets exactly the same access Gemini
-does, never a reduced set.
+Three seats, not one. agent-planning-chat (the EASY pin) handles the
+default case -- web search, research, simple design/UX planning -- and
+agent-planning-chat-hard is reserved for a turn that actually reads as
+bug-fixing/debugging or a genuinely hard problem. classify_planning_difficulty
+picks between them FRESH on every turn (a deterministic keyword floor first,
+then routing through the SAME classify_task classifier this system already
+built for task categorization -- its own "bug-fix" category is the HARD
+signal, no second parallel classifier needed). The session then ratchets
+upward: once a turn has needed HARD, later short follow-ups stay on HARD
+(server.py's sticky-upward floor -- a continuation "also check X" classifies
+EASY on its text alone and used to flip the model mid-plan). A third seat,
+agent-planning-chat-frontend, sits ahead of that ladder for a session that
+is frontend work (agent/frontend_route.py), so the plan is written by the
+same model that will build it. Everything else about the agent -- tools,
+memory backend, permissions, middleware -- is identical between the seats;
+only `model=` changes. What each alias currently resolves to is a dashboard
+pin, not a fact of this module.
 """
 
 import logging
@@ -130,8 +130,9 @@ _HARD_KEYWORDS = (
 
 
 async def classify_planning_difficulty(text: str, config: Config) -> str:
-    """Returns "EASY" or "HARD" -- which of the two planning-chat models
-    (see this module's docstring) should handle this turn.
+    """Returns "EASY" or "HARD" -- which of the EASY/HARD planning-chat
+    models (see this module's docstring) should handle this turn. The
+    frontend seat is chosen separately, ahead of this ladder.
 
     Routed through the SAME classifier this system already built for task
     categorization (agent/classify.py's classify_task, the pinned
@@ -290,26 +291,28 @@ async def build_planning_agent(
     """Returns (agent, plan_ref, tracker).
 
     `difficulty` ("EASY" or "HARD", from classify_planning_difficulty)
-    picks which of the two planning-chat models actually answers this turn
-    -- see this module's docstring. Defaults to "EASY" for callers that
-    build the agent without driving a real turn (e.g. get_planning_session's
-    read-only state fetch, which never invokes the model at all, so which
-    one gets wired in there is inert). Every other argument to
-    create_deep_agent below -- tools, memory backend, permissions,
-    middleware -- is identical regardless of `difficulty`; only `model=`
-    changes, so the harder model never gets a reduced tool/memory set.
+    picks which of the EASY/HARD planning-chat models actually answers this
+    turn -- see this module's docstring. `route="frontend"` sits ahead of
+    that ladder and pins agent-planning-chat-frontend instead. Defaults to
+    "EASY" / "general" for callers that build the agent without driving a
+    real turn (e.g. get_planning_session's read-only state fetch, which never
+    invokes the model at all, so which one gets wired in there is inert).
+    Every other argument to create_deep_agent below -- tools, memory backend,
+    permissions, middleware -- is identical regardless of `difficulty` or
+    `route`; only `model=` changes, so the harder (or frontend) model never
+    gets a reduced tool/memory set.
 
     `plan_ref` is a mutable {"markdown": str | None} dict that
     make_planning_tools' save_plan tool writes into; the caller reads it
     back after each turn to persist the current draft into the session's
     Store meta (see run_planning_turn).
 
-    `tracker` is a BudgetTracker with an effectively infinite ceiling --
-    unlike a build task, planning chat has no $ cap (the operator explicitly
-    doesn't want one here), but the cost is still worth showing, and
-    BudgetGuardMiddleware/BudgetTracker already compute it correctly from
-    real token usage against the router's own pricing -- reusing that
-    exactly rather than a separate ad hoc cost calculation.
+    `tracker` is a BudgetTracker whose ceiling is the session spend so far
+    plus one turn's allowance (Settings -> Runtime limits,
+    `planning_turn_budget_usd`). Planning used to run with math.inf -- the
+    one agent with no budget was the one that once spent $7 on a single
+    157-call turn. The cost is the router's own billed figure where it has
+    landed (BudgetGuardMiddleware / router_ledger.py).
     """
     repo_root = PROJECTS[repo]["sandbox"]
     project_tools, _ = make_agent_tools(repo_root)
@@ -386,11 +389,11 @@ async def build_planning_agent(
             # SCRATCH space, not the repo, and despite the prompt's warning a
             # live session burned 8 consecutive identical grep('runBacktest',
             # 'src/core/backtester...') calls -- "No matches found" every time
-            # -- against a repo path the tool cannot see. The repo has no grep
-            # tool here at all now; the codebase map (see prompt) is the
-            # find-things mechanism. execute/delete go too: execute has no
-            # sandbox behind it in this agent, delete has nothing it should
-            # ever delete.
+            # -- against a repo path the tool cannot see. The repo search is
+            # search_project/find_files (real-tree, .gitignore-aware); the
+            # codebase map is orientation, not a substitute for search.
+            # execute/delete go too: execute has no sandbox behind it in this
+            # agent, delete has nothing it should ever delete.
             SanitizeToolCallsMiddleware(),  # a malformed tool call in history never reaches a provider
             HiddenToolsMiddleware("task", "grep", "glob", "execute", "delete"),
             RepeatCallGuardMiddleware(),  # the same call with the same result is not run a third time

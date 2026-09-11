@@ -87,3 +87,14 @@ def test_code_scanning_inherits_the_dependabot_alert_mode_until_set_explicitly()
     assert s["projects"]["p"]["policies"]["code_scanning"] == "propose"
     assert s["projects"]["q"]["policies"]["code_scanning"] == "off"        # explicit wins
     assert s["projects"]["r"]["policies"]["code_scanning"] == "off"        # nothing to inherit
+
+
+def test_readme_documents_every_inbox_source():
+    """The inbox table in the README is how an operator learns what the
+    poller looks for. A source that exists only in code (2026-09-11:
+    code_scanning) is a feature nobody knows they have."""
+    from pathlib import Path
+
+    readme = Path("README.md").read_text()
+    missing = [meta["label"] for name, meta in gs.SOURCES.items() if meta["label"] not in readme]
+    assert not missing, f"README GitHub inbox section omits source(s): {missing}"

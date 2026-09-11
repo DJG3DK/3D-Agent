@@ -3,9 +3,11 @@ approve links the operator clicks.
 
 Flow, per project with at least one source switched on:
 
-  discover  -- read open PRs, Dependabot alerts, CHANGES_REQUESTED reviews
-               and failing default-branch checks from the GitHub API, each
-               as an inbox ITEM with a stable key and a fingerprint.
+  discover  -- read open PRs, Dependabot alerts, CodeQL/code-scanning alerts
+               (grouped per rule), CHANGES_REQUESTED reviews, and failing
+               default-branch checks (check runs, or Actions workflow runs
+               when the token has only Actions: read) from the GitHub API,
+               each as an inbox ITEM with a stable key and a fingerprint.
   decide    -- for an item not seen before (or whose fingerprint changed):
                  off      -> "seen"      (listed, nothing else)
                  propose  -> "proposed"  (alert with an approve link)
@@ -126,7 +128,7 @@ class GitHubClient:
 
 @dataclass
 class Item:
-    key: str                 # "pr:12" / "alert:7" / "review:12" / "ci:<sha>:<name>"
+    key: str                 # "pr:12" / "alert:7" / "review:12" / "ci:<sha>:<name>" / "code:<rule>"
     kind: str                # a SOURCES name
     repo: str
     title: str

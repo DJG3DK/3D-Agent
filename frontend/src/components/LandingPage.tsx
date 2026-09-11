@@ -67,10 +67,10 @@ const FEATURES = [
     img: shotRoles,
     alt: "Support roles — summarizer, vision, cartographer and consolidator, each with capability badges",
     title: "Every role is a named alias you can repin",
-    body: `Planner, coder, investigator and test-writer drive the build; summarizer, vision,
-      cartographer and consolidator support it. Each carries live pricing, the capability badges
-      its job requires, and an optional pinned provider — so swapping a model is one dropdown
-      rather than a config edit and a restart.`,
+    body: `Planner, coder (and a separate frontend coder), investigator and test-writer drive
+      the build; summarizer, vision, cartographer and consolidator support it. Each carries
+      live pricing, the capability badges its job requires, and an optional pinned provider
+      — so swapping a model is one dropdown rather than a config edit and a restart.`,
   },
   {
     img: shotBehaviour,
@@ -134,6 +134,10 @@ const CONTROLS = [
   {
     title: "The agent cannot git push",
     body: "It is on the blocked-command list. Merges happen through the gate, and each project pushes with its own deploy key, scoped to one repository.",
+  },
+  {
+    title: "Work can arrive from GitHub, not only the composer",
+    body: "The inbox polls Dependabot PRs, security and code-scanning alerts, review comments and failing checks. Propose sends an approve link; Auto starts the task. Every one still runs the review gate and keeps your merge approval.",
   },
   {
     title: "Approvals arrive inline",
@@ -293,10 +297,11 @@ export function LandingPage({ onSignIn }: Props) {
               pipeline.
             </p>
             <p className="lp-sub">
-              Two models, chosen automatically per turn: an everyday one, and a harder one a turn
-              escalates into. It is classified fresh every turn, because a conversation can drift
-              from design chat into a real bug report, and the escalation only ever sticks upward
-              &mdash; a short follow-up cannot quietly downgrade the model mid-plan.
+              Three seats, chosen automatically: an everyday model, a harder one a turn
+              escalates into, and a frontend seat that sits ahead of that ladder so a UI
+              plan is written by the model that will build it. Difficulty is classified
+              fresh every turn, then sticky upward within a session &mdash; a short
+              follow-up cannot quietly downgrade the model mid-plan.
             </p>
           </div>
           <ul className="lp-facts">
@@ -339,7 +344,7 @@ export function LandingPage({ onSignIn }: Props) {
             upgrade path.
           </p>
           <p className="lp-reqs">
-            Linux &middot; Python 3.12+ &middot; Node 20+ &middot; Docker &middot; PostgreSQL 14+
+            Linux &middot; Python 3.12+ &middot; Node 24+ &middot; Docker &middot; PostgreSQL 14+
             &middot; an OpenRouter API key
           </p>
           {/* One action here, and it is the repo. Sign-in lives in the nav,

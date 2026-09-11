@@ -70,9 +70,9 @@ failing a specific call shows up as a trend rather than a bad day.</td>
 
 <img src="docs/screenshots/modelspage3.png" alt="Planning chat model tiers">
 
-Planning chat runs a two-tier split — an everyday model plus a harder one that a turn escalates
-into — with a classifier deciding which. The escalation is sticky upward within a session, so a
-short follow-up can't quietly downgrade the model mid-plan.
+Planning chat runs three seats — a frontend model that sits ahead of an everyday model plus a
+harder one that a turn escalates into — with a classifier deciding EASY vs HARD. The escalation
+is sticky upward within a session, so a short follow-up can't quietly downgrade the model mid-plan.
 
 <img src="docs/screenshots/modelspage4.png" alt="Support roles">
 
@@ -94,6 +94,7 @@ Outbound mail is optional and only used for password resets.
 
 - [How a build task runs](#how-a-build-task-runs)
 - [Planning Chat](#planning-chat)
+- [Frontend routing](#frontend-routing)
 - [Dashboard](#dashboard)
 - [Telegram alerts](#telegram-alerts)
 - [GitHub inbox](#github-inbox)
@@ -104,6 +105,7 @@ Outbound mail is optional and only used for password resets.
 - [Repo layout](#repo-layout)
 - [Running it](#running-it)
 - [Configuration](#configuration)
+- [Adding a project](#adding-a-project)
 - [Testing](#testing)
 - [Tracing and secret redaction](#tracing-and-secret-redaction)
 - [Connection resilience](#connection-resilience)
@@ -114,9 +116,10 @@ Outbound mail is optional and only used for password resets.
 (`agent/deep_agent.py`):
 
 ```
-START → work → verify_and_ship ──(checks/review fail)──→ work (loop, same inner thread)
+START → work → verify_and_ship ──(findings / unfinished plan)──→ work (loop, same inner thread)
                     │
-                    └──(checks pass + review READY)──→ merge_and_deploy → END
+                    ├──(escalated / awaiting approval / awaiting merge)──→ END (resting; resume continues)
+                    └──(READY + merge allowed)──→ merge+deploy (inside this node) → END
 ```
 
 - **`work`** (`agent/nodes/work.py`) drives the deep agent's own tool-calling loop against a
@@ -126,17 +129,26 @@ START → work → verify_and_ship ──(checks/review fail)──→ work (loo
   **test-writer** (writes tests, required to run the checks itself before reporting done). A
   `run_checks` tool lets it run the project's real typecheck/lint/test suite itself mid-task — the
   same commands the gate will run — so it finds its own breakage rather than learning about it a
-  full round-trip later.
+  full round-trip later. On a frontend-routed task the coordinator and investigator sit on
+  `agent-coder-frontend`; the test-writer keeps its own pin (see [Frontend routing](#frontend-routing)).
+  With a GitHub token it can also **read a pull request** host-side (`github_pull_request`) — the
+  sandbox never sees the token.
 - **`verify_and_ship`** (`agent/nodes/verify_and_ship.py`) is the actual gate. It always re-runs the
   real typecheck/lint/test suite itself — the agent's own "done" status carries no authority here.
-  A pass with a real diff produces one commit on the task's own branch `agent/<task-id>`, handed to
+  A check that fails on the branch is re-run at the merge-base; one that fails there too is marked
+  **pre-existing**, does not force `NEEDS_FIXES`, and is listed for the agent with an instruction
+  not to chase it. A pass with a real diff produces one commit on the task's own branch `agent/<task-id>`, handed to
   an independent review service. The review unit is that **branch plus its merge-base**, fixed at the
   fork point — not "whatever the sandbox HEAD is now". The old model compared two HEADs and inferred
   the rest, which produced inverted diffs whenever live moved ahead: a branch's additions read as
   deletions of everything live had gained since, and that manufactured two `blocking` findings
   against a commit that had in fact *added* the settings it was accused of removing.
   From there:
-  `NEEDS_FIXES` loops back to `work` with the findings; `READY` merges and deploys.
+  `NEEDS_FIXES` loops back to `work` with the findings; `READY` merges and deploys (after the
+  operator's merge approval, unless that switch is off). Merge and deploy live **inside this
+  node**, not as a third graph node — a deploy preflight can fail as its own stage (a live URL
+  the build depends on is down) and escalate to a human rather than being handed to the agent as
+  a compile error.
 - **The plan has to be finished before anything is committed.** If the agent's own `write_todos`
   list still has open items, the gate holds the commit and sends it back to finish, naming what's
   left. Committing mid-plan means the review service reviews a deliberately-incomplete change and
@@ -145,7 +157,16 @@ START → work → verify_and_ship ──(checks/review fail)──→ work (loo
   own list can't strand working code as an uncommittable diff forever.
 - Two limits the model can't override: a **budget ceiling** (`BudgetGuardMiddleware`, checked after
   every model call, on both the coordinator and every subagent) and an **iteration/retry ceiling**
-  on the work/verify loop.
+  on the work/verify loop. The ceiling is enforced against **what the router billed**, not a token
+  × rate-table estimate: each call is carried at its estimate only until the router's line for that
+  call id lands (`agent/tools/router_ledger.py`), then the billed figure replaces it. A planning
+  turn was once ended at "$8.09 spent" when OpenRouter had billed $1.72.
+- **Loops end.** A third identical tool call whose two predecessors returned the same result is
+  answered from cache; the fourth and later are refused; after eight refusals in a row the pass
+  escalates naming the looping tool (`RepeatCallGuardMiddleware`). A call whose result changes (a
+  poll, a flaky test) is never blocked. Malformed tool calls are stripped from every model request
+  (`SanitizeToolCallsMiddleware`) so a truncated `write_todos` cannot poison every later turn of
+  the thread.
 - **`ask_user`** lets the agent pause and ask the operator a clarifying question mid-task instead of
   guessing, using the same human-in-the-loop interrupt that gates approval-required actions.
 - **A task is never a dead end.** Escalated, stopped, budget-exhausted, or orphaned by a backend
@@ -159,20 +180,46 @@ START → work → verify_and_ship ──(checks/review fail)──→ work (loo
 A separate agent (`agent/planning_chat.py`) for research, design discussion, and scoping a project
 before anything gets built. No write/bash access to the real repo — just research tools (web
 search, a headless-browser `browse_page` with screenshots, `describe_image`, read-only access to
-your other projects) and a `save_plan` tool. "Build Now" hands a finished plan to the real build
-pipeline above, as if it had been typed in directly.
+your other projects, `search_project` / `find_files` against the real tree, optional GitHub PR
+and inbox tools) and `save_brief` / `save_plan`. "Build Now" hands a finished plan to the real build
+pipeline above, as if it had been typed in directly. The app lands here first: Planning Chat is
+the front door, not the raw task composer.
 
-**Two models, chosen automatically per turn** (pins are dashboard-editable; current picks shown):
+**Three seats, chosen automatically** (pins are dashboard-editable; current picks shown):
 
-| Difficulty | Model (dashboard alias) | Used for |
+| Seat | Model (dashboard alias) | Used for |
 |---|---|---|
+| Frontend | `agent-planning-chat-frontend` — Kimi K3 | UI/UX sessions. Sits **ahead** of the EASY/HARD ladder so the plan is written by the model that will build it |
 | EASY (default) | `agent-planning-chat` — DeepSeek V4 Pro | Research, design/UX chat, everyday questions |
-| HARD | `agent-planning-chat-hard` — Claude Sonnet 5 | Bug hunting, debugging, genuinely hard problems |
+| HARD | `agent-planning-chat-hard` — Qwen3.8 Max | Bug hunting, debugging, genuinely hard problems |
 
-The HARD pin carries `cache_control_injection_points` in the router config — Anthropic prompt
-caching is explicit, and without those breakpoints every call would pay full input price; with
-them the append-only conversation re-reads from cache at ~10% of the input rate. The EASY pin's
-provider caches implicitly, no plumbing needed.
+The EASY pin's provider caches implicitly, no plumbing needed. The HARD pin used to be Claude
+Sonnet 5 and carried Anthropic `cache_control_injection_points`; those extras were removed with
+the Qwen repin (dropping sampling params on Qwen silently un-pinned `temperature=0`). If HARD
+ever goes back to an Anthropic model, both must return.
+
+Difficulty is classified fresh every turn (`classify_task` in `agent/classify.py`; a `"bug-fix"`
+category escalates, and a small keyword floor catches an explicit request for maximum effort), then
+**sticky upward** within a session: a short follow-up ("continue", "also check X") classifies EASY
+on its text alone and used to flip the model mid-plan. Once a session has needed HARD, later turns
+stay there. Frontend routing is sticky the same way. Both (all three) seats get the identical tool
+list, memory, and permissions — only the model itself changes.
+
+**The brief comes first and stays pinned.** `save_brief` is the only tool a new session can call
+until a brief exists (`BriefFirstMiddleware`); the brief rides in the system message on every call
+after that (`PinnedBriefMiddleware`), so compaction cannot touch it, and it persists with the
+session so follow-up turns do not re-force it. Saving the brief also matches the request against
+the project's skills and names the architecture skills to read before any file.
+
+**Search, then read the window a hit points to.** `search_project` (ripgrep, capped per file and
+overall) and `find_files` (the `.gitignore`-aware file list) against the real repo. Loop-proofed:
+an identical search is answered from cache and refused on the third; zero hits come back with what
+was scanned and what to change; a per-turn search budget ends searching with "write the plan from
+what you have". Both are dials under **Settings → Runtime limits**.
+
+**The draft gate.** After N repo reads without a saved plan (default 50) `read_project_file` closes
+with "save a draft now" and reopens once a plan is saved. A gate-forced save is a checkpoint, never
+the end of the turn. Paged reads return at least 500 lines whatever `limit` asks.
 
 **Deliberate constraints, each earned by a real incident:**
 
@@ -181,40 +228,66 @@ provider caches implicitly, no plumbing needed.
   (`agent/middleware/hidden_tools.py`). A hidden delegation primitive once burned a 30-minute turn
   timeout on nested agent loops. Built-in `glob`/`grep` are hidden for the same reason — they
   search the agent's own memory/skills space, never the repo, and a model will loop on the
-  misleading "No matches found" forever.
+  misleading "No matches found" forever. The repo search is `search_project` / `find_files`.
 - **Codebase-map first.** The cartographer's per-project map (`/skills/codebase-map/SKILL.md`) is
   advertised in the prompt and read before any directory walking — one read replaces a dozen
   exploratory listings. The map refreshes every 30 minutes by cron (hash-gated: an unchanged repo
-  costs a tree walk, no model call) and immediately after every merge+deploy.
+  costs a tree walk, no model call) and immediately after every merge+deploy. A companion
+  `recent-changes` skill lists the newest commits with their files.
 - **Large files page.** `read_project_file` supports `offset`/`limit`; a truncated read says
   outright that re-requesting returns identical text and names the exact next call to make.
-- **A per-turn dollar ceiling** (`PLANNING_TURN_BUDGET_USD`, default $4) on top of whatever the
-  session already spent. Planning previously ran uncapped — the one agent with no budget was the
-  one that once spent $7 on a single 157-call turn. On breach the draft plan and real cost are
-  banked and the operator decides whether another turn's allowance is worth it.
+- **A per-turn dollar ceiling** (Settings → Runtime limits, `planning_turn_budget_usd`, default $4;
+  also seedable from `PLANNING_TURN_BUDGET_USD`) on top of whatever the session already spent.
+  Planning previously ran uncapped — the one agent with no budget was the one that once spent $7
+  on a single 157-call turn. On breach the draft plan and real cost are banked and the operator
+  decides whether another turn's allowance is worth it.
 - **A plan written as chat text is not lost.** A turn that ends with a plan-shaped final message
   and no `save_plan` call has that text adopted as the draft (narrow heuristic; an explicit save
   always wins).
 
-Routing reuses the same classifier a build task is categorized with (`classify_task` in
-`agent/classify.py`); a `"bug-fix"` category escalates to the hard model, and a small keyword floor
-catches an explicit request for maximum effort. It's classified fresh every turn rather than once
-per session, since a conversation can drift from casual design chat into a real bug report. Both
-models get the identical tool list, memory, and permissions — only the model itself changes.
+With a GitHub token, `github_pull_request` / `github_pull_requests` read a PR host-side. The inbox
+tool `github_inbox_items` lists what the poller found — for code scanning items the locations in
+the summary **are** the findings.
+
+## Frontend routing
+
+The operator can pin frontend work to a different model than everything else
+(`agent/frontend_route.py`). Polish is decided at the keyboard, so the seat that matters is the
+coder (and the investigator that reads for it); the test-writer stays on its own pin.
+
+Three signals, strongest first, plus a switch the operator flips on the New Task form, Build Now,
+or a new planning session:
+
+1. **Override** — `frontend` or `general` beats everything.
+2. **Category** — the classifier's `ui-styling` is the strongest evidence a model read the whole goal.
+3. **Backend** — any named backend path (`api/`, `prisma/`, a `.sql` file) or backend keyword
+   (migration, schema, endpoint) routes **general**. Database work that also has a UI is still
+   backend work.
+4. **Paths** — a clear majority (two thirds) of named frontend files routes frontend; mixed stays
+   general.
+5. **Keywords** — two distinct hits on a short UI list (`layout`, `theme`, `css`, …).
+
+Every decision carries a **reason**, shown on the task/session as a route badge — silent routing
+is how an expensive frontend-seat run on a backend refactor happens. Planning sessions decide on
+their first message and stay put. On a frontend task the coordinator and investigator use
+`agent-coder-frontend`; planning uses `agent-planning-chat-frontend`. Both frontend seats are
+managed roles on the Models page.
 
 ## Dashboard
 
-One React/Vite app (`frontend/`), served by the backend itself. Live task and planning output
-arrives over WebSockets, with a REST snapshot on every (re)connect — the socket only carries events
-from the moment it opens, so the snapshot is what makes a page opened mid-task show real history
-instead of starting blank. Multiple people can watch the same task at once; a second viewer
-connecting doesn't disconnect the first.
+One React/Vite app (`frontend/`), served by the backend itself. Signed-out visitors see a public
+landing page; sign-in is in the nav. Live task and planning output arrives over WebSockets, with a
+REST snapshot on every (re)connect — the socket only carries events from the moment it opens, so
+the snapshot is what makes a page opened mid-task show real history instead of starting blank.
+Multiple people can watch the same task at once; a second viewer connecting doesn't disconnect the
+first. The app lands on **Planning**, not the raw task composer.
 
 - **Sidebar** — Planning sessions and build tasks, each grouped by the same six-way category the
   classifier assigns (`bug-fix`, `feature`, `ui-styling`, `performance`, `investigation`, `other`),
   with search. Running tasks sit in their own always-visible group at the top, so a refresh mid-task
   never buries the thing you're watching inside a collapsed category. Finished planning sessions
-  archive into a collapsed group rather than growing one endless list.
+  archive into a collapsed group rather than growing one endless list. Each item can show a
+  **route badge** (frontend / general) with the reason on hover.
 - **Mobile** — the app works on a phone, not just a narrow desktop. A bottom tab bar puts every
   destination in the thumb zone (navigation previously lived only in the sidebar, which *is* the list
   pane on a phone, so reaching Analytics took three gestures), safe-area insets keep content clear of
@@ -231,9 +304,12 @@ connecting doesn't disconnect the first.
   LangSmith run data plus the episodic records `verify_and_ship` writes.
 - **Models** (admin only) — the model-pin editor described under [Model routing](#model-routing).
 - **Users** (admin only) — create accounts, scope them to specific projects, revoke access.
+- **GitHub** (admin only) — the inbox tab: proposed items, approve / dismiss / snooze, and a
+  per-repo filter. Settings for it live under Settings → GitHub.
 - **Approvals inline** — when the agent hits a gated action or calls `ask_user`, the request appears
   in the task stream with approve/reject/answer controls; the answer goes straight back into the
-  same paused thread.
+  same paused thread. The New Task form, Build Now and the new-session panel carry an
+  Auto / Frontend / General selector.
 - **Credit balance** — remaining router credit sits in the sidebar and turns red under 15%, so
   running dry is something you see coming rather than discover through a failing task.
 - **Project filter** — a chip row above the sidebar lists (All + one per repo) filters Planning and
@@ -241,9 +317,14 @@ connecting doesn't disconnect the first.
 - **Task identity** — the task header carries click-to-copy `id:` and `commit:` chips, so "which
   task are we talking about" has a definite answer; every tool bubble in task and planning streams
   is timestamped, so stale scrollback and live activity are distinguishable at a glance.
-- **Settings** — themed sections (Account & access / Agent behavior / Notifications / GitHub /
-  API keys & integrations) in a responsive two-up grid; the API-keys panel is one card per credential group
-  (Model routing, Tracing, Email) with a single panel-wide save.
+- **Settings** — themed sections (Account & access / Agent behavior / Runtime limits / Notifications
+  & projects / GitHub / API keys & integrations) in a responsive two-up grid; the API-keys panel is
+  one card per credential group (Model routing, Tracing, Email) with a single panel-wide save.
+  **Runtime limits** are operator-tunable without a restart: planning read/search/turn budgets, model
+  and sandbox timeouts, check-suite timeouts, default task budget. A change lands on the next turn
+  or task; anything already running keeps the limits it started with. Each project card also holds
+  that project's **deploy key** (generate or paste, test the remote, HTTPS origins flagged because
+  an SSH key cannot authenticate them).
 
 ## Telegram alerts
 
@@ -267,14 +348,15 @@ slow the thing it is alerting about.
 ## GitHub inbox
 
 The agent can pick work up from GitHub instead of waiting to be told (**Settings → GitHub**, admin
-only; the inbox is a tab of its own). Four sources, each with its own policy per project:
+only; the inbox is a tab of its own). Five sources, each with its own policy per project:
 
 | source | what it is |
 |---|---|
 | Dependabot pull requests | open PRs by `dependabot[bot]` (widen to any bot, or anyone) |
 | Dependabot security alerts | open alerts on the repo's security tab (needs *Dependabot alerts: read*) |
+| Code scanning alerts (CodeQL) | open alerts on Security → Code scanning, **one inbox item per rule** so a task fixes every location of the same finding together (needs *Code scanning alerts: read*). The task fixes the cause in this repository; it never dismisses the alert on GitHub |
 | Review comments requesting changes | an open PR with a `CHANGES_REQUESTED` review still standing |
-| Failing checks on the default branch | a check run that concluded failure on the tip of `main` (needs *Checks: read* or *Actions: read*) |
+| Failing checks on the default branch | a check run that concluded failure on the tip of `main` (needs *Checks: read*); if the token has only *Actions: read*, the newest workflow runs on that branch are used instead (Dependabot's own update jobs excluded) |
 
 Policy is **Off** (listed, nothing else), **Propose** (put it in the inbox and send an approve link)
 or **Auto** (start the task at once, up to the project's cap on open auto tasks). Auto removes only
@@ -288,10 +370,12 @@ configured, alerts say to open the inbox instead.
 
 Tokens are fine-grained PATs stored encrypted with the same key as TOTP secrets; the dashboard sees a
 name, the last four characters and a **Test** button that reports which projects the token reaches and
-whether it may read alerts. A project without a token falls back to `GITHUB_TOKEN` from `.env`. The
+whether it may read alerts, code scanning and checks. A project without a token falls back to `GITHUB_TOKEN` from `.env`. The
 poller runs inside the backend every *poll interval* minutes (default 10) while any source is on; a
-PR is proposed once, a dismissed one stays dismissed until its head commit changes, and one that closes
-on GitHub is marked resolved.
+PR is proposed once, a dismissed one stays dismissed until its head commit changes, a snoozed one
+returns when the snooze expires, and one that closes on GitHub is marked resolved. A project
+configured before code scanning existed inherits that source's mode from its Dependabot-alert
+policy until the operator sets it explicitly.
 
 ## Memory
 
@@ -318,6 +402,10 @@ and it's shared across every task and planning session for that project. A secon
   projects, and the cron wrapper writes `data/last_consolidation.json` for the dashboard's
   consolidation panel. Previously it printed a line and exited 0, which is why a broken run was
   indistinguishable from a healthy one.
+- **Freshness.** Memory has no timestamps of its own. The cartographer keeps a ledger of which
+  memory lines cite which files, and flags a fact whose cited file changed after the fact was first
+  seen (`agent/memory_freshness.py`). Those flags ride into both agents' memory blocks — a hint, not
+  a deletion. A `recent-changes` skill (newest commits with their files) is rebuilt with the map.
 - `scripts/seed_memory.py` seeds a project's initial memory. Live memory lives in Postgres, not in
   the repo — `memory/` holds only `*.example.md` templates showing the expected shape; real
   per-project memory files are gitignored.
@@ -334,8 +422,9 @@ and it's shared across every task and planning session for that project. A secon
 ## Model routing
 
 Every model the agent uses is a named alias (`agent-planner`, `agent-coder`,
-`agent-investigator`, `agent-test-writer`, `agent-summarizer`, `agent-vision`,
-`agent-consolidator`, `agent-classifier`, `agent-planning-chat`, `agent-planning-chat-hard`,
+`agent-coder-frontend`, `agent-investigator`, `agent-test-writer`, `agent-summarizer`, `agent-vision`,
+`agent-consolidator`, `agent-cartographer`, `agent-classifier`, `agent-planning-chat`,
+`agent-planning-chat-hard`, `agent-planning-chat-frontend`,
 `agent-demo-chat`, `agent-reviewer`) pinned in a shared LiteLLM router config. They're edited from the **Models** tab in the dashboard
 (`GET`/`POST /api/model-config`) — swapping a role's model is a dashboard action plus a router
 restart, no code change or redeploy. `agent/model_config.py` only ever touches these `agent-*`
@@ -374,7 +463,8 @@ filter, not a guarantee, and pin the provider explicitly for anything that must 
 
 The coordinator splits its own work between two of those roles deterministically, no classifier
 involved: the first turn of a fresh thread (writing the plan) goes to `agent-planner`; every turn
-after that goes to `agent-coder` (`agent/middleware/model_pin.py`).
+after that goes to `agent-coder` (`agent/middleware/model_pin.py`) — or `agent-coder-frontend` when
+the task routed frontend.
 
 ## Auth
 
@@ -402,26 +492,37 @@ agent/
   graph.py               shared infra: Postgres checkpointer + store, per-project lock
   deep_agent.py          per-task deepagents factory (tools, memory backend, subagents)
   planning_chat.py       the Planning Chat agent
+  frontend_route.py      Auto / Frontend / General seat selection
+  github_inbox.py        poller, policy, approve-link tokens
+  github_settings.py     encrypted PATs and per-project source policy
   auth.py / mailer.py    login/2FA/session/password-reset
   classify.py            task/turn categorization, also drives Planning Chat routing
   model_config.py        reads/edits this agent's model pins in the shared llm-router config
   consolidation.py       background memory-consolidation agent
+  cartographer.py        per-project codebase map + recent-changes + freshness ledger
+  memory_freshness.py    flags memory facts whose cited files have changed
+  runtime_settings.py    operator-tunable limits (no restart)
+  deploy_keys.py         per-project SSH deploy keys
   config.py              env-var config + PROJECTS (which repos this agent can target)
   nodes/                 work.py, verify_and_ship.py
-  middleware/            budget_guard.py, model_pin.py
-  tools/                 files, shell/bash, git, review_gate, planning_tools, vision, checks...
+  middleware/            budget_guard, model_pin, hidden_tools, repeat_guard,
+                         sanitize_tool_calls, pinned_brief
+  tools/                 files, shell/bash, git, review_gate, planning_tools, vision, checks,
+                         github_tools, router_ledger...
 docker/agent-sandbox/    the container image build tasks' bash/edit tools run inside
-frontend/                React + Vite dashboard
+frontend/                React + Vite dashboard (landing page, Planning, inbox, settings)
 memory/                  *.example.md templates only -- live memory is in Postgres, not here
 skills/                  on-demand skill files (incl. a vendored reasoning skill under vendor/)
 services/                the rest of the system — one deployable each, all in this repo
                          because they are one piece and change together
   commit-reviewer/       the independent review gate (its own pm2 process)
-  agent-review/          review dashboard + gated merge/deploy control
+  agent-review/          review dashboard + gated merge/deploy control (incl. deploy preflight)
   llm-router/            shared LiteLLM proxy; every model call routes through it
+    auth-gate/           optional WebAuthn passkey gate for a public LiteLLM admin UI
+  shared/                projects.json reader used by both node services
 scripts/                 seeding, backfills, store-key migration, the consolidation
                          runner + cron wrapper, and the forced-tool-call probe
-tests/                   pytest suite
+tests/                   pytest suite (plus frontend Vitest and a few node tests)
 ```
 
 ## Repo shape
@@ -451,7 +552,7 @@ files, creates the database, builds the sandbox image and the dashboard, and is 
 project, since that step decides which of your test commands an unattended agent is allowed to
 run.
 
-What you need on the box: **Python 3.12+, Node 24+, Docker, Postgres, pm2** (optional) — and an
+What you need on the box: **Python 3.12+, Node 24+, Docker, Postgres, ripgrep, pm2** (optional) — and an
 OpenRouter API key, which is the only paid dependency.
 
 <details>
@@ -521,16 +622,17 @@ All config is environment variables, loaded from `.env` (see `agent/config.py`).
 |---|---|
 | `LANGGRAPH_PG_DSN` | Postgres DSN for the checkpointer, store, and auth tables |
 | `LITELLM_BASE_URL` / `LITELLM_API_KEY` | The LiteLLM router this agent's model aliases are pinned in |
-| `MODEL_PLAN` / `MODEL_EXECUTE` / `MODEL_REFLECT` | Required at startup but no longer read by the current pipeline, which routes through the `agent-*` aliases above instead |
-| `DEFAULT_BUDGET_USD` | Default per-task cost ceiling |
+| `DEFAULT_BUDGET_USD` | Seeds the default per-task cost ceiling (live dial: Settings → Runtime limits) |
 | `API_PORT` | Port `uvicorn` binds |
 | `AUTH_SECRET_KEY` | AES-GCM key encrypting TOTP 2FA secrets at rest (not sessions — those are opaque tokens). Must decode to 16/24/32 raw bytes: `python -c "import base64,secrets;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`. `openssl rand -hex 32` yields 48 bytes and will not work. Rotating it locks out every 2FA user permanently |
 | `ADMIN_EMAIL` | Address the first admin account is seeded with (defaults to `admin@example.com`) |
-| `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM` | Outbound mail for password-reset codes. Sending is optional, but all five keys must be present and `SMTP_PORT` must be numeric — see [INSTALL.md §6a](INSTALL.md#6a-email-smtp) |
+| `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM` | Outbound mail for password-reset codes (and optional GitHub-inbox approve emails). Sending is optional, but all five keys must be present and `SMTP_PORT` must be numeric — see [INSTALL.md §6a](INSTALL.md#6a-email-smtp) |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional tracing |
 | `LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S` | Streaming chunk timeout |
+| `CORS_ALLOW_ORIGINS` | Comma-separated; only for a split Vite-on-its-own-port dev setup. Production is same-origin |
 | `AGENT_PROJECT_ROOTS` | Colon-separated roots a project may be onboarded from (default `/home` — the parent of *all* home directories, not just yours; narrow it). Onboarding grants an agent bash and write access to what it points at, so this is the boundary — the admin check is only *who may ask* |
 | `AGENT_SANDBOX_ROOT` | Where agent worktrees are created (default `/home/agent-workspaces`). Server-owned: never accepted from a request |
+| `GITHUB_TOKEN` | Optional fallback for the PR tools and the GitHub inbox. Per-project tokens in Settings → GitHub are preferred |
 | `REVIEW_CONTROL_SECRET` | Shared secret authorising merge/deploy between the agent and the review service. The two sides read it from different files and must match — `install.sh` generates it into both. See [INSTALL.md](INSTALL.md) |
 
 `projects.json` (gitignored; `projects.example.json` is the template) lists the repos this
@@ -563,7 +665,9 @@ Both run the same three phases:
 3. **Provision** — creates the git worktree, writes the `projects.json` entry, reloads it
    into the running process (no restart needed), seeds starter project memory, and builds
    the codebase map. Each step reports independently, so a partial failure is visible
-   rather than looking like nothing happened.
+   rather than looking like nothing happened. After provision, generate or paste a
+   **deploy key** on the project card so merges can reach `origin` (HTTPS remotes cannot
+   use an SSH key; the card says so).
 
 ### Onboarding is contained, not merely authenticated
 
@@ -593,13 +697,22 @@ overwritten by generated ones.
 ## Testing
 
 ```bash
-pytest
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check .
+cd frontend && npm test && npx tsc --noEmit -p tsconfig.app.json && npm run lint
+node tests/test_projects_config_merge.js
+node tests/test_reviewer_preexisting.js
+node tests/test_preflight.js
 ```
 
-Covers the graph nodes (including the commit gate's plan-completion and stale-review handling),
-budget guard, model routing, Planning Chat's model selection and tool/memory parity, memory-key
-consistency, auth, and uploads — against in-memory stores and mocked model calls, no live Postgres
-or real model calls required.
+Python covers the graph nodes (including the commit gate's plan-completion, stale-review and
+pre-existing-failure handling), budget guard (including billed-vs-estimated cost), model routing,
+Planning Chat's model selection, tool/memory parity, brief-first and draft gate, frontend routing,
+memory-key consistency, auth, GitHub inbox sources (including code scanning grouped per rule),
+onboarding containment, and uploads — against in-memory stores and mocked model calls, no live
+Postgres or real model calls required. Frontend Vitest covers the landing page, settings, inbox
+and streams. The node tests cover `projects.json` merging, pre-existing check classification and
+deploy preflight.
 
 ## Tracing and secret redaction
 
@@ -632,7 +745,10 @@ layer of defense.
 - **Auto-reconnect** — both the task and planning streams reconnect with backoff on an unexpected
   drop and re-hydrate from the REST snapshot to fill whatever the dead socket missed. Live display
   state that only existed as stream events (running cost, the plan step strip) is mirrored into
-  the task's store record, so a refresh or task switch mid-pass rebuilds faithfully.
+  the task's store record, so a refresh or task switch mid-pass rebuilds faithfully. Planning
+  streams also have a **liveness watchdog**: 70s of silence is treated as a dead socket and
+  reconnects (a half-open socket left the browser showing thinking bubbles forever). Task streams
+  reconnect on close, but do not yet apply that same silence watchdog.
 - **Restart survival** — a deploy restart drains in-flight planning turns before the DB pools
   close (their teardown banks the draft plan and spend), and on startup the server auto-resumes
   any task orphaned by the restart: same checkpoint, no replanning, +40 iteration headroom, no
