@@ -343,23 +343,23 @@ model_list:
       output_cost_per_token: 0.000015
   - model_name: agent-investigator
     litellm_params:
-      model: openrouter/z-ai/glm-5.3
+      model: openrouter/deepseek/deepseek-v4.1-flash
       api_key: os.environ/OPENROUTER_API_KEY
       extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.0000014
-      output_cost_per_token: 0.0000044
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
   - model_name: agent-coder
     litellm_params:
       # DeepSeek V4 Pro 0423 (undated slug = the 0423 release). Promoted from
       # planner to coder 2026-08-20 after qwen3-coder showed a 15% edit-miss
       # rate and flubbed an architectural reviewer round.
-      model: openrouter/deepseek/deepseek-v4-pro-0813
+      model: openrouter/poolside/laguna-s-2.1
       api_key: os.environ/OPENROUTER_API_KEY
       extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.0000010494
-      output_cost_per_token: 0.0000031482
+      input_cost_per_token: 0.00000009
+      output_cost_per_token: 0.00000018
   - model_name: agent-planner
     litellm_params:
       # Gemini 3.7 Flash (operator dashboard swap 2026-08-28): plans and
@@ -390,12 +390,12 @@ model_list:
       output_cost_per_token: 0.0000019
   - model_name: agent-test-writer
     litellm_params:
-      model: openrouter/deepseek/deepseek-v4-pro-0813
+      model: openrouter/deepseek/deepseek-v4.1-flash
       api_key: os.environ/OPENROUTER_API_KEY
       extra_body: {"provider": {"require_parameters": true}}
     model_info:
-      input_cost_per_token: 0.0000010494
-      output_cost_per_token: 0.0000031482
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
   - model_name: agent-reviewer
     litellm_params:
       # The commit reviewer (commit-reviewer/reviewer.js). Added 2026-08-25 —
