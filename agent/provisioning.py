@@ -91,16 +91,21 @@ _NETWORK_CALL = re.compile(
 # and refuses real connections by default (WebMock, VCR, responses, respx,
 # nock, mockito). None of them is a promise the author made to us -- they are
 # libraries whose whole purpose is that no packet leaves.
+# Case-SENSITIVE on purpose. These are library names, and the lowercase
+# English words they collide with are not: `# bypass the cache` in a comment,
+# beside a real HTTPoison call, used to neutralise the whole suite. Where a
+# library is genuinely written lowercase in real code -- a require path, an
+# import -- that spelling is listed explicitly rather than by folding case.
 _NETWORK_STUBBED = re.compile(
-    r"(httptest\.|net/http/httptest|"                       # Go
-    r"mockito|wiremock|MockWebServer|"                       # Rust/JVM
-    r"\bWebMock\b|\bVCR\b|Rack::Test|ActionDispatch::IntegrationTest|"  # Ruby
+    r"(httptest\.|net/http/httptest|"                          # Go
+    r"\bmockito\b|MockWebServer|WireMock|wiremock|"            # JVM
+    r"\bWebMock\b|webmock/|\bVCR\b|vcr/|Rack::Test|"         # Ruby
+    r"ActionDispatch::IntegrationTest|"
     r"\bresponses\b|\brespx\b|requests_mock|httpretty|pytest_httpserver|"  # Python
-    r"\bnock\b|msw/node|setupServer\s*\(|"                # JS
-    r"Http::fake|MockHandler|createMock\s*\(|"             # PHP
-    r"\bMoq\b|MockHttpMessageHandler|WireMock|"            # .NET / JVM
-    r"\bBypass\b|\bMox\b|Plug\.Test|ExVCR)",            # Elixir
-    re.IGNORECASE,
+    r"\bnock\b|msw/node|setupServer\s*\(|"                   # JS
+    r"Http::fake|MockHandler|createMock\s*\(|"                # PHP
+    r"\bMoq\b|MockHttpMessageHandler|"                        # .NET
+    r"\bBypass\b|\bMox\b|Plug\.Test|ExVCR)",                # Elixir
 )
 
 _SCRIPT_REF = re.compile(r"[\w./-]+\.(?:js|mjs|cjs|ts|tsx|py)")
@@ -129,10 +134,17 @@ _SCAN_BYTES = 200_000
 TEST_TIMEOUT_MS_DEFAULT = 900_000
 
 # Directories never worth mounting or scanning.
+# Directories never worth mounting or scanning. Every entry is somebody
+# else's code or a build output: a hex package's own suite calling HTTPoison
+# said nothing about this repo's tests, and flagging the app's suite for it
+# is how an operator learns to click through the flags.
 _SKIP_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
     ".next", ".turbo", "coverage", ".pytest_cache", ".mypy_cache", "vendor",
     ".cache", "target", ".gradle",
+    "deps", "_build",      # Elixir: hex packages and compiled beams
+    "obj", "packages",     # .NET: restore output and old-style package dir
+    "Pods", "elm-stuff",   # other ecosystems' vendored trees
 }
 
 CHECK_TIMEOUT_MS_DEFAULT = 300_000
@@ -284,6 +296,11 @@ class DetectionReport:
     package_manager: str | None = None       # npm | pnpm | yarn
     languages: list[str] = field(default_factory=list)
     node_modules_dirs: list[str] = field(default_factory=lambda: ["."])
+    # Dependency trees the review checkout needs but git does not carry, for
+    # stacks that keep them inside the project instead of in a user-wide
+    # cache. The reviewer symlinks these from the live checkout -- see
+    # dependencyDirs in services/commit-reviewer/reviewer.js.
+    dependency_dirs: list[str] = field(default_factory=list)
     checks: list[dict] = field(default_factory=list)
     build_steps: list[dict] = field(default_factory=list)
     pm2_apps: list[Candidate] = field(default_factory=list)
@@ -739,7 +756,12 @@ def _mix_alias(live: Path, name: str) -> bool:
         text = mix.read_text(errors="ignore")[:_SCAN_BYTES]
     except OSError:
         return False
-    return bool(re.search(r"""['\"]?""" + re.escape(name) + r"""['\"]?\s*:\s*\[""", text))
+    # The value may be a list OR a single string: `"test.review": "test
+    # --only safe"` is as valid as the list form, and requiring `[` meant a
+    # repo that declared its review suite the short way was told it had none
+    # -- so its real suite arrived flagged instead.
+    text = _strip_line_comments(text, ("#",))
+    return bool(re.search(r"""['\"]?""" + re.escape(name) + r"""['\"]?\s*:\s*(\[|['\"])""", text))
 
 
 def _detect_elixir_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
@@ -774,8 +796,18 @@ def _detect_java_checks(live: Path) -> tuple[list[dict], list[Candidate], list[s
     gradle = any((live / f).is_file() for f in ("build.gradle", "build.gradle.kts",
                                                 "settings.gradle", "settings.gradle.kts"))
     checks: list[dict] = []
+    warnings: list[str] = []
     review = None
     target = _make_review_target(_makefile_targets(live))
+
+    if maven and gradle:
+        # A repo mid-migration. Picking one silently means the review gate
+        # builds with a tool the project may have stopped using, so say which
+        # was picked rather than leaving it to be discovered.
+        warnings.append(
+            "both pom.xml and a Gradle build file are present -- Maven was used for the "
+            "proposed checks. If the Gradle build is the authoritative one, edit the "
+            "project's checks after onboarding.")
 
     if maven:
         # -B (batch mode) because the reviewer has no terminal: without it
@@ -797,19 +829,52 @@ def _detect_java_checks(live: Path) -> tuple[list[dict], list[Candidate], list[s
         review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT)
 
     tests, risky = _guard_suite(live, "java", full, review)
-    return checks + tests, risky, []
+    return checks + tests, risky, warnings
+
+
+def _strip_line_comments(text: str, markers: tuple[str, ...] = ("//", "#")) -> str:
+    """Drop `// ...` / `# ...` tails. Crude -- it does not know about strings
+    -- but the question here is only "does this file DECLARE a task", and a
+    comment saying `// TODO: add testReview later` is the exact false
+    positive worth removing."""
+    out = []
+    for line in text.splitlines():
+        cut = len(line)
+        for marker in markers:
+            i = line.find(marker)
+            if i != -1:
+                cut = min(cut, i)
+        out.append(line[:cut])
+    return "\n".join(out)
 
 
 def _gradle_declares(live: Path, task: str) -> bool:
+    """Is `task` actually declared, in any of the spellings Gradle accepts?
+
+    A bare word match was enough to make `// TODO: add testReview later`
+    propose `gradle testReview` as this repo's curated review suite -- the
+    same shape as the rake bug, on a stack that had just learned not to do
+    it. So: comments are stripped first, and what remains has to look like a
+    declaration rather than a mention.
+    """
+    t = re.escape(task)
+    patterns = (
+        rf"task\s+{t}\b",                                  # task testReview(type: Test)
+        rf"tasks\.register(?:<[^>]+>)?\s*\(\s*['\"]{t}['\"]",  # tasks.register("testReview")
+        rf"tasks\.create\s*\(\s*['\"]{t}['\"]",            # tasks.create("testReview")
+        rf"val\s+{t}\s+by\s+tasks",                        # val testReview by tasks.registering
+        rf"^\s*{t}\s*\{{",                                 # testReview { ... } on its own line
+    )
     for name in ("build.gradle", "build.gradle.kts"):
         f = live / name
         if not f.is_file():
             continue
         try:
-            if re.search(r"\b" + re.escape(task) + r"\b", f.read_text(errors="ignore")[:_SCAN_BYTES]):
-                return True
+            body = _strip_line_comments(f.read_text(errors="ignore")[:_SCAN_BYTES], ("//",))
         except OSError:
             continue
+        if any(re.search(p, body, re.MULTILINE) for p in patterns):
+            return True
     return False
 
 
@@ -950,6 +1015,19 @@ def _add_checks(report: DetectionReport, checks: list[dict], risky: list[Candida
         report.risky_scripts.append(cand)
 
 
+# Where each stack keeps its installed dependencies, when it keeps them in
+# the project at all. Go, Rust, Maven, Gradle and NuGet all use a user-wide
+# cache that a worktree inherits for free, so they are deliberately absent.
+_DEPENDENCY_DIRS = {
+    "php": ("vendor",),
+    "elixir": ("deps", "_build"),
+}
+
+
+def _dependency_dirs_for(live: Path, lang: str) -> list[str]:
+    return [d for d in _DEPENDENCY_DIRS.get(lang, ()) if (live / d).is_dir()]
+
+
 def _build_steps_for(live: Path, lang: str) -> list[dict]:
     """What a deploy runs in the LIVE checkout before pm2 restarts it. Only
     the compile/install step every project of that stack needs -- anything
@@ -985,13 +1063,35 @@ def _build_steps_for(live: Path, lang: str) -> list[dict]:
 # missing toolchain is not a detection problem -- it is a check that will
 # fail on every single review until someone installs it. Better said at
 # onboarding than discovered on the first merge.
-def _missing_toolchain(checks: list[dict]) -> list[str]:
+# Commands that a build step creates rather than a package manager installs
+# system-wide. `vendor/bin/phpstan` does not exist until `composer install`
+# has run, and node_modules/.bin the same -- warning that they are "not on
+# PATH" describes a state the deploy is supposed to be in before the checks
+# run, and sends the operator looking for an install that was never needed.
+_INSTALLED_BY_BUILD = ("vendor/bin/", "node_modules/.bin/", "bin/")
+
+
+def _missing_toolchain(live: Path, checks: list[dict]) -> list[str]:
+    """Commands the review service will not be able to run.
+
+    PATH is the right question only for a command that IS on PATH. A repo's
+    own wrapper (`./gradlew`) lives in the repo, and looking it up on PATH
+    warned that a project shipping a wrapper had no Gradle -- while the whole
+    point of a wrapper is that it needs none.
+    """
     missing: list[str] = []
     for check in checks:
         cmd = check["cmd"]
         # python and make are the interpreter this process already runs under
         # and a coreutils-era binary; neither is worth a warning.
         if cmd in ("python", "make") or cmd in missing:
+            continue
+        if cmd.startswith(_INSTALLED_BY_BUILD) or "/" in cmd:
+            # Project-relative: it is present if it is in the repo, and its
+            # absence is only worth mentioning when nothing will create it.
+            if (live / cmd).exists() or cmd.startswith(_INSTALLED_BY_BUILD):
+                continue
+            missing.append(cmd)
             continue
         if not shutil.which(cmd):
             missing.append(cmd)
@@ -1088,7 +1188,8 @@ def detect_project(live_path: str, sandbox_root: str | None = None,
     if not report.languages:
         report.warnings.append(
             "no recognized project manifest (package.json, pyproject.toml, go.mod, Cargo.toml, "
-            "Gemfile) -- falling back to Makefile targets if there are any")
+            "Gemfile, mix.exs, pom.xml, build.gradle, composer.json, *.csproj) -- falling back "
+            "to Makefile targets if there are any")
 
     pkg = _read_json(live / "package.json")
     pm = _detect_package_manager(live)
@@ -1132,7 +1233,8 @@ def detect_project(live_path: str, sandbox_root: str | None = None,
             _add_checks(report, checks, risky, prefix=lang)
             report.warnings.extend(warns)
             report.build_steps.extend(_build_steps_for(live, lang))
-            missing = _missing_toolchain(checks)
+            report.dependency_dirs.extend(_dependency_dirs_for(live, lang))
+            missing = _missing_toolchain(live, checks)
             if missing:
                 report.warnings.append(
                     f"{', '.join(missing)} not on PATH -- the {lang} checks that use "
@@ -1241,6 +1343,8 @@ def validate_choices(report: DetectionReport, choices: dict) -> dict:
     clean["read_only_mounts"] = _subset("read_only_mounts", offered_mounts, relative_to=live)
     clean["pm2_apps"] = _subset("pm2_apps", offered_apps)
     clean["node_modules_dirs"] = _subset("node_modules_dirs", offered_nm, relative_to=live)
+    clean["dependency_dirs"] = _subset("dependency_dirs", set(report.dependency_dirs),
+                                       relative_to=live)
 
     db = choices.get("db_env_file")
     if db:
@@ -1268,6 +1372,8 @@ def config_from_choices(report_name: str, live: str, sandbox: str, choices: dict
         review["readOnlyMounts"] = list(choices["read_only_mounts"])
     if choices.get("node_modules_dirs"):
         review["nodeModulesDirs"] = list(choices["node_modules_dirs"])
+    if choices.get("dependency_dirs"):
+        review["dependencyDirs"] = list(choices["dependency_dirs"])
     if choices.get("checks"):
         review["checks"] = list(choices["checks"])
     if review:

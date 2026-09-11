@@ -322,6 +322,44 @@ async function detectNewCommit(project, cfg) {
   return null;
 }
 
+/**
+ * Dependency trees the review checkout needs but git does not carry.
+ *
+ * PHP keeps its dependencies in `vendor/`, Elixir in `deps/` and `_build/`,
+ * and both are gitignored -- so a fresh worktree has neither, and
+ * `vendor/bin/phpunit` exits 127 with nothing useful to say. That reads as a
+ * broken suite rather than as "nothing installed it", which is the same trap
+ * node_modules had before it was symlinked.
+ *
+ * Symlinked from the live checkout, never installed here: an install would
+ * execute an untrusted composer.json's scripts, and the entire premise of
+ * the review is that this code has not been vetted yet. A symlink resolves
+ * the same and runs nothing. Go, Rust, Maven, Gradle and NuGet all use a
+ * user-wide cache the worktree inherits, so they need nothing.
+ *
+ * Returns the directories it linked, for the caller's log and for tests.
+ */
+function materializeDependencyDirs(cfg, worktreePath, log = () => {}) {
+  const linked = [];
+  for (const rel of cfg.dependencyDirs || []) {
+    const src = path.join(cfg.live, rel);
+    const dest = path.join(worktreePath, rel);
+    if (!fs.existsSync(src)) {
+      // Not a fault on its own: the project may simply not have installed
+      // yet, and the check that needs it will say so far more clearly than a
+      // setup failure here would.
+      log(`${rel} is not present on the live checkout — checks that need it will fail`);
+      continue;
+    }
+    if (fs.existsSync(dest)) continue;   // the branch brought its own
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.symlinkSync(src, dest);
+    linked.push(rel);
+  }
+  return linked;
+}
+
+
 async function setupWorktree(project, cfg, sha, base) {
   const worktreePath = path.join(WORKTREE_ROOT, `${project}-${sha.slice(0, 12)}`);
   // Self-heal before the rmSync: a previous attempt that died between setup
@@ -481,6 +519,19 @@ async function setupWorktree(project, cfg, sha, base) {
       }
     }
   }
+
+  // The same problem, for every stack that keeps its dependencies inside the
+  // project rather than in a user-wide cache. PHP's `vendor/` and Elixir's
+  // `deps/` + `_build/` are gitignored, so a fresh worktree has neither --
+  // and `vendor/bin/phpunit` in a worktree exits 127 with no useful message,
+  // which reads as "the suite is broken" rather than "nothing installed it".
+  //
+  // Symlinked from the live checkout, not installed: an install here would
+  // run an untrusted composer.json's scripts, and the whole point of the
+  // review is that this code has not been vetted. A symlink gives the same
+  // resolution with no execution. Go, Rust, Maven, Gradle and NuGet all use
+  // a user-wide cache instead, so they need nothing here.
+  materializeDependencyDirs(cfg, worktreePath, (m) => log(`[${project}] ${m}`));
 
   // Credentials for the worktree come from REVIEW_SECRETS_ROOT, never from the
   // live checkout. They used to be copied straight out of cfg.live, which meant
@@ -1536,5 +1587,6 @@ if (require.main === module) {
 
 module.exports = {
   PROJECTS, setupWorktree, cleanupWorktree, runChecks, runBuildCheck, runDatabaseCheck, runSecretScan,
+  materializeDependencyDirs,
   detectNewCommit, reviewWithSonnet, buildAgentMessage, applyBaseline,
 };

@@ -1044,3 +1044,233 @@ def test_every_supported_stack_is_reachable_from_detect_languages(tmp_path):
         (repo / fname).write_text(body)
         _git_init(repo)
         assert lang in prov.detect_project(str(repo)).languages, f"{fname} no longer means {lang}"
+
+
+# ---------------------------------------------------------------------------
+# Residuals found by onboarding throwaway repos rather than by reading
+#
+# Every case below was a real false positive or false negative on a fixture
+# repo. They share one shape: a pattern that matched text rather than
+# structure. A wizard that is wrong in the direction of "looks fine" is worse
+# than one that is wrong loudly, because nobody goes back to check it.
+# ---------------------------------------------------------------------------
+
+def test_a_gradle_comment_is_not_a_declared_review_suite(tmp_path):
+    """`// TODO: add testReview later` proposed `gradle testReview` as the
+    repo's curated suite -- the same bare-word bug the rake path already
+    had, on the stack that watched it get fixed."""
+    repo = tmp_path / "gradle-comment"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "build.gradle").write_text(
+        "plugins { id 'java' }\n\n// TODO: add testReview later\ntest { useJUnitPlatform() }\n")
+    (repo / "src" / "test" / "java" / "ApiTest.java").write_text(
+        'class ApiTest { void t() { new java.net.URL("https://prod/x").openStream(); } }\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r), "a comment must not become the review suite"
+    assert [c.value for c in r.risky_scripts] == ["test"]
+
+
+@pytest.mark.parametrize("declaration", [
+    "task testReview(type: Test) { }",
+    'tasks.register("testReview") { }',
+    'tasks.register<Test>("testReview") { }',
+    'tasks.create("testReview") { }',
+    "val testReview by tasks.registering { }",
+])
+def test_every_spelling_of_a_gradle_task_declaration_counts(tmp_path, declaration):
+    repo = tmp_path / f"gradle-{abs(hash(declaration))}"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "build.gradle").write_text(f"plugins {{ id 'java' }}\n{declaration}\n")
+    (repo / "src" / "test" / "java" / "ApiTest.java").write_text("class ApiTest {}\n")
+    _git_init(repo)
+    assert _cmd(prov.detect_project(str(repo)), "test") == "gradle testReview"
+
+
+def test_a_mix_alias_declared_as_a_string_counts(tmp_path):
+    """`"test.review": "test --only safe"` is as valid as the list form.
+    Requiring `[` meant the repo was told it had no curated suite, so its
+    real one arrived flagged."""
+    repo = tmp_path / "mix-string-alias"
+    (repo / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text(
+        'defmodule App.MixProject do\n'
+        '  defp aliases, do: ["test.review": "test --only safe"]\n'
+        'end\n')
+    (repo / "test" / "live_test.exs").write_text(
+        'defmodule LiveTest do\n  test "hits" do\n    HTTPoison.get!("https://prod/x")\n  end\nend\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "mix test.review"
+
+
+def test_a_commented_out_mix_alias_does_not_count(tmp_path):
+    repo = tmp_path / "mix-comment"
+    (repo / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text(
+        'defmodule App.MixProject do\n  # "test.review": ["test --only safe"]\nend\n')
+    (repo / "test" / "live_test.exs").write_text(
+        'defmodule LiveTest do\n  test "x" do\n    HTTPoison.get!("https://prod/x")\n  end\nend\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+
+
+def test_a_hex_packages_own_tests_are_not_this_repos_tests(tmp_path):
+    """deps/ is other people's code. A package's suite calling HTTPoison
+    flagged the application's suite -- the same reason vendor/ and
+    node_modules/ were already skipped."""
+    repo = tmp_path / "elixir-deps"
+    (repo / "test").mkdir(parents=True)
+    (repo / "deps" / "httpoison" / "test").mkdir(parents=True)
+    (repo / "_build" / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text("defmodule App.MixProject do\nend\n")
+    (repo / "test" / "calc_test.exs").write_text(
+        'defmodule CalcTest do\n  test "adds" do\n    assert 1 + 1 == 2\n  end\nend\n')
+    (repo / "deps" / "httpoison" / "test" / "client_test.exs").write_text(
+        'defmodule ClientTest do\n  test "gets" do\n    HTTPoison.get!("https://example.com")\n  end\nend\n')
+    (repo / "_build" / "test" / "stale_test.exs").write_text(
+        'defmodule StaleTest do\n  test "x" do\n    HTTPoison.post!("https://prod/x", "")\n  end\nend\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r), "a dependency's suite says nothing about this repo's"
+    assert r.risky_scripts == []
+
+
+def test_the_word_bypass_in_a_comment_does_not_neutralise_a_suite(tmp_path):
+    """`# bypass the cache` next to a real HTTPoison call left the suite
+    enabled. The stub list is library names; matching them case-insensitively
+    matched English instead."""
+    repo = tmp_path / "bypass-comment"
+    (repo / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text("defmodule App.MixProject do\nend\n")
+    (repo / "test" / "live_test.exs").write_text(
+        'defmodule LiveTest do\n'
+        '  # bypass the cache so the numbers are fresh\n'
+        '  test "charges" do\n    HTTPoison.post!("https://payments.example.com/charge", "")\n  end\n'
+        'end\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r), "an English word in a comment is not a stub library"
+    assert [c.value for c in r.risky_scripts] == ["test"]
+
+
+def test_a_real_bypass_still_counts(tmp_path):
+    repo = tmp_path / "bypass-real"
+    (repo / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text("defmodule App.MixProject do\nend\n")
+    (repo / "test" / "client_test.exs").write_text(
+        'defmodule ClientTest do\n  setup do\n    bypass = Bypass.open()\n    {:ok, bypass: bypass}\n  end\n'
+        '  test "gets", %{bypass: b} do\n    HTTPoison.get!("http://localhost:#{b.port}/x")\n  end\nend\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r) and r.risky_scripts == []
+
+
+def test_a_repo_shipping_a_gradle_wrapper_is_not_told_gradle_is_missing(tmp_path, monkeypatch):
+    """The whole point of a wrapper is that the host needs no Gradle, and
+    `./gradlew` is never on PATH by construction."""
+    monkeypatch.setattr(prov.shutil, "which", lambda c: None)
+    repo = tmp_path / "wrapped"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "build.gradle").write_text("plugins { id 'java' }\n")
+    (repo / "gradlew").write_text("#!/bin/sh\n")
+    (repo / "gradlew").chmod(0o755)
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text("class CalcTest {}\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "./gradlew test"
+    assert not any("not on PATH" in w for w in r.warnings), r.warnings
+
+
+def test_a_binary_the_install_step_creates_is_not_reported_missing(tmp_path, monkeypatch):
+    """vendor/bin/phpstan does not exist until `composer install` runs, and
+    that install is the deploy's first build step."""
+    monkeypatch.setattr(prov.shutil, "which", lambda c: None)
+    repo = tmp_path / "phpstan-missing"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "composer.json").write_text(json.dumps({"scripts": {"test": "phpunit"}}))
+    (repo / "phpstan.neon").write_text("parameters:\n  level: 5\n")
+    (repo / "tests" / "CalcTest.php").write_text("<?php class CalcTest {}\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "analyse").startswith("vendor/bin/phpstan")
+    # composer itself is a fair warning here -- it really is missing. phpstan
+    # is not: `composer install` is the deploy's first build step.
+    assert not any("phpstan" in w for w in r.warnings), r.warnings
+
+
+def test_a_php_project_proposes_the_vendor_dir_the_reviewer_must_materialise(tmp_path):
+    """`vendor/bin/phpunit` in a fresh worktree exits 127: vendor/ is
+    gitignored, so nothing put it there. The reviewer symlinks whatever is
+    listed here from the live checkout."""
+    repo = tmp_path / "php-vendor"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "vendor" / "bin").mkdir(parents=True)
+    (repo / "composer.json").write_text(json.dumps({"scripts": {"test": "phpunit"}}))
+    (repo / "tests" / "CalcTest.php").write_text("<?php class CalcTest {}\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert r.dependency_dirs == ["vendor"]
+
+    clean = prov.validate_choices(r, {"dependency_dirs": ["vendor"]})
+    entry = prov.config_from_choices(r.name, r.live, r.sandbox, clean)
+    assert entry["review"]["dependencyDirs"] == ["vendor"]
+
+
+def test_an_elixir_project_proposes_deps_and_build(tmp_path):
+    repo = tmp_path / "elixir-dirs"
+    (repo / "test").mkdir(parents=True)
+    (repo / "deps").mkdir()
+    (repo / "_build").mkdir()
+    (repo / "mix.exs").write_text("defmodule App.MixProject do\nend\n")
+    (repo / "test" / "calc_test.exs").write_text('defmodule CalcTest do\nend\n')
+    _git_init(repo)
+    assert prov.detect_project(str(repo)).dependency_dirs == ["deps", "_build"]
+
+
+def test_a_stack_with_a_user_wide_cache_proposes_nothing(tmp_path):
+    """Go, Rust, Maven, Gradle and NuGet all resolve from a cache outside the
+    project, which a worktree inherits for free."""
+    repo = tmp_path / "go-nodeps"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/x\n")
+    _git_init(repo)
+    assert prov.detect_project(str(repo)).dependency_dirs == []
+
+
+def test_a_dependency_dir_the_server_did_not_propose_is_refused(tmp_path):
+    """The reviewer symlinks these paths out of the live checkout, so they
+    are a capability, not a preference."""
+    repo = tmp_path / "php-narrow"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "vendor").mkdir()
+    (repo / "composer.json").write_text(json.dumps({"scripts": {"test": "phpunit"}}))
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    with pytest.raises(prov.ProvisioningError):
+        prov.validate_choices(r, {"dependency_dirs": ["../../etc"]})
+    with pytest.raises(prov.ProvisioningError):
+        prov.validate_choices(r, {"dependency_dirs": [".git"]})
+
+
+def test_a_repo_with_both_maven_and_gradle_says_which_one_was_used(tmp_path):
+    repo = tmp_path / "dual-build"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "pom.xml").write_text("<project><artifactId>x</artifactId></project>\n")
+    (repo / "build.gradle").write_text("plugins { id 'java' }\n")
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text("class CalcTest {}\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "mvn -B test"
+    assert any("both pom.xml and a Gradle build file" in w for w in r.warnings)
+
+
+def test_the_no_manifest_warning_lists_the_stacks_that_exist(tmp_path):
+    repo = tmp_path / "bare"
+    repo.mkdir()
+    (repo / "hello.txt").write_text("hi\n")
+    _git_init(repo)
+    warning = next(w for w in prov.detect_project(str(repo)).warnings if "no recognized" in w)
+    for manifest in ("mix.exs", "pom.xml", "composer.json", "csproj", "Gemfile"):
+        assert manifest in warning, f"{manifest} is a stack we support and the warning omits it"

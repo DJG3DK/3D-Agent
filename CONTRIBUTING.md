@@ -75,6 +75,7 @@ node tests/test_reviewer_preexisting.js
 node tests/test_preflight.js
 node tests/test_service_env.js
 node tests/test_health_projects.js
+node tests/test_reviewer_dependency_dirs.js
 
 # 3b. The commands onboarding proposes, run for real on this host's stacks.
 #     Add --docker's worth by dropping the flag if you have Go/Rust/Ruby images.

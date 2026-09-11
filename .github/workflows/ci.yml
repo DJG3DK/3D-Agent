@@ -144,11 +144,13 @@ jobs:
           node tests/test_preflight.js
           node tests/test_service_env.js
           node tests/test_health_projects.js
+          node tests/test_reviewer_dependency_dirs.js
 
   stacks:
     name: Stack checks — real toolchains (manual)
-    # Pulls the official Go, Rust and Ruby images, so it is not worth running
-    # on every push. Run it from the Actions tab after changing detection in
+    # Pulls an image per stack (Go, Rust, Ruby, Elixir, Maven, Gradle,
+    # Composer and the .NET SDK), so it is not worth running on every push.
+    # Run it from the Actions tab after changing detection in
     # agent/provisioning.py -- it is what caught the rust image shipping
     # without rustfmt or clippy.
     if: github.event_name == 'workflow_dispatch'

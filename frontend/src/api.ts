@@ -730,6 +730,10 @@ export interface DetectionReport {
   package_manager: string | null;
   languages: string[];
   node_modules_dirs: string[];
+  /** Dependency trees the review checkout needs but git does not carry
+   *  (PHP's vendor/, Elixir's deps/ and _build/). The reviewer symlinks
+   *  these from the live checkout. */
+  dependency_dirs: string[];
   checks: CheckStep[];
   build_steps: CheckStep[];
   pm2_apps: ProvisionCandidate[];

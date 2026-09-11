@@ -11,14 +11,21 @@ the gate itself.
 
 So this script builds a throwaway repo per stack, asks provisioning what it
 would run, and then RUNS it: on this host for Make and pytest, and in the
-official toolchain image for Go, Rust and Ruby (read-only network off, so a
-pass also proves the fixture needed nothing from the network).
+official toolchain image for Go, Rust, Ruby, Elixir, Java (both Maven and
+Gradle), PHP and .NET. Where the fixture needs nothing from the network the
+container gets `--network none`, so a pass proves that too.
+
+Then it breaks one assertion per stack and runs the test check again, which
+must now fail. A check that cannot fail is not a gate.
 
     python3 scripts/verify_stack_checks.py            # everything
     python3 scripts/verify_stack_checks.py --no-docker  # host stacks only
 
-Not part of CI: pulling three language images costs more than it is worth on
-every push. Run it when the detection rules in agent/provisioning.py change.
+CI runs the `--no-docker` half on every push, in the job that already has the
+Python dependencies: that covers detection end to end plus the Make and
+pytest stacks. The container half is a manual workflow_dispatch job ("Stack
+checks"), because it pulls an image per stack. Run it locally when the
+detection rules in agent/provisioning.py change.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ IMAGES = {
     "go": "golang:1.22-alpine",
     "elixir": "elixir:1.16-alpine",
     "java": "maven:3.9-eclipse-temurin-21",
+    "gradle": "gradle:8-jdk21",
     "php": "composer:2",
     "dotnet": "mcr.microsoft.com/dotnet/sdk:8.0",
     # Built locally from rust:1 -- see RUST_DOCKERFILE. The official image
@@ -54,8 +62,13 @@ CONTAINER_ENV = {
            "-e", "GOFLAGS=-mod=mod"],
     "rust": ["-e", "HOME=/tmp", "-e", "CARGO_HOME=/tmp/cargo"],
     "ruby": ["-e", "HOME=/tmp"],
-    "elixir": ["-e", "HOME=/tmp", "-e", "MIX_ENV=test"],
+    # HOME inside the mounted workspace, not /tmp: every check runs in its
+    # own container, and Hex installs itself under HOME. With HOME in the
+    # container's own filesystem, `mix local.hex` in the setup step is thrown
+    # away and the very next check asks to install Hex again.
+    "elixir": ["-e", "HOME=/w/.verify-home", "-e", "MIX_ENV=test"],
     "java": ["-e", "HOME=/tmp", "-e", "MAVEN_OPTS=-Dmaven.repo.local=/tmp/m2"],
+    "gradle": ["-e", "HOME=/tmp", "-e", "GRADLE_USER_HOME=/tmp/gradle"],
     "php": ["-e", "HOME=/tmp", "-e", "COMPOSER_HOME=/tmp/composer"],
     "dotnet": ["-e", "HOME=/tmp", "-e", "DOTNET_CLI_TELEMETRY_OPTOUT=1",
                "-e", "DOTNET_NOLOGO=1", "-e", "NUGET_PACKAGES=/tmp/nuget"],
@@ -66,13 +79,25 @@ CONTAINER_ENV = {
 # the phpunit package -- none of that is optional and none of it is under this
 # script's control. The command spelling is still what is being verified; the
 # --network none default just stops being available as extra evidence.
-NEEDS_NETWORK = {"java", "php", "dotnet"}
+NEEDS_NETWORK = {"java", "gradle", "php", "dotnet", "elixir"}
 
 # Some toolchains need a step before the checks that is not itself a check:
 # fetching dependencies the fixture declares. Run once, before the proposed
 # commands, so a failure there is not reported as the check failing.
 SETUP = {
     "php": ["composer", "install", "--no-interaction", "--no-progress"],
+    # credo is a hex package, so the fixture has to fetch it before `mix
+    # credo` means anything -- which is the point: the unit tests can only
+    # assert we PROPOSE `mix credo --strict`, never that it runs.
+    #
+    # Hex first: a bare image has no package manager installed, and
+    # `deps.get` answers that with an interactive "Shall I install Hex?" that
+    # nothing is there to answer. `mix format` last, so the fixture's own
+    # source is canonical and `--check-formatted` is testing the command
+    # rather than this file's hand-written indentation.
+    "elixir": ["sh", "-c",
+               "mix local.hex --force >/dev/null && mix local.rebar --force >/dev/null "
+               "&& mix deps.get && mix format"],
 }
 
 
@@ -124,12 +149,30 @@ def fixture_elixir(root: Path) -> Path:
     (repo / "mix.exs").write_text(
         'defmodule Calc.MixProject do\n'
         '  use Mix.Project\n'
-        '  def project, do: [app: :calc, version: "0.1.0", elixir: "~> 1.14"]\n'
-        '  def application, do: []\n'
+        '  def project,\n'
+        '    do: [\n'
+        '      app: :calc,\n'
+        '      version: "0.1.0",\n'
+        '      elixir: "~> 1.14",\n'
+        '      deps: deps()\n'
+        '    ]\n\n'
+        '  def application, do: []\n\n'
+        '  defp deps, do: [{:credo, "~> 1.7", only: [:dev, :test], runtime: false}]\n'
         'end\n')
     (repo / ".formatter.exs").write_text('[inputs: ["lib/**/*.ex", "test/**/*.exs", "mix.exs"]]\n')
+    # Present so detection proposes `mix credo --strict`, and real enough for
+    # credo to run: the unit tests can only check that we propose it.
+    (repo / ".credo.exs").write_text(
+        "%{configs: [%{name: \"default\", files: %{included: [\"lib/\"]}, checks: []}]}\n")
+    # @moduledoc/@doc because the proposed check is `mix credo --strict`,
+    # and strict mode's whole job is to notice they are missing. A fixture
+    # that fails the check would be testing the fixture, not the command.
     (repo / "lib" / "calc.ex").write_text(
-        "defmodule Calc do\n  def sum(a, b), do: a + b\nend\n")
+        'defmodule Calc do\n'
+        '  @moduledoc "Arithmetic, for a fixture that has to pass credo --strict."\n\n'
+        '  @doc "Adds two integers."\n'
+        '  def sum(a, b), do: a + b\n'
+        'end\n')
     (repo / "test" / "test_helper.exs").write_text("ExUnit.start()\n")
     (repo / "test" / "calc_test.exs").write_text(
         "defmodule CalcTest do\n  use ExUnit.Case\n\n"
@@ -164,6 +207,27 @@ def fixture_java(root: Path) -> Path:
         '    <version>3.2.5</version>\n'
         '  </plugin></plugins></build>\n'
         '</project>\n')
+    (repo / "src" / "main" / "java" / "Calc.java").write_text(
+        "public class Calc {\n  public static int sum(int a, int b) { return a + b; }\n}\n")
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text(
+        "import org.junit.jupiter.api.Test;\n"
+        "import static org.junit.jupiter.api.Assertions.assertEquals;\n\n"
+        "class CalcTest {\n  @Test void adds() { assertEquals(3, Calc.sum(1, 2)); }\n}\n")
+    return repo
+
+
+def fixture_gradle(root: Path) -> Path:
+    """The other half of the JVM. Maven was the only Java fixture, so the
+    Gradle commands -- and the wrapper preference -- were unit-tested only."""
+    repo = root / "gradle-svc"
+    (repo / "src" / "main" / "java").mkdir(parents=True)
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "settings.gradle").write_text("rootProject.name = 'svc'\n")
+    (repo / "build.gradle").write_text(
+        "plugins { id 'java' }\n"
+        "repositories { mavenCentral() }\n"
+        "dependencies { testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2' }\n"
+        "test { useJUnitPlatform() }\n")
     (repo / "src" / "main" / "java" / "Calc.java").write_text(
         "public class Calc {\n  public static int sum(int a, int b) { return a + b; }\n}\n")
     (repo / "src" / "test" / "java" / "CalcTest.java").write_text(
@@ -242,6 +306,7 @@ FIXTURES = {
     "ruby": fixture_ruby,
     "elixir": fixture_elixir,
     "java": fixture_java,
+    "gradle": fixture_gradle,
     "php": fixture_php,
     "dotnet": fixture_dotnet,
     "make": fixture_make,
@@ -300,6 +365,13 @@ def break_java(repo: Path) -> None:
         "class CalcTest {\n  @Test void adds() { assertEquals(4, Calc.sum(1, 2)); }\n}\n")
 
 
+def break_gradle(repo: Path) -> None:
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text(
+        "import org.junit.jupiter.api.Test;\n"
+        "import static org.junit.jupiter.api.Assertions.assertEquals;\n\n"
+        "class CalcTest {\n  @Test void adds() { assertEquals(4, Calc.sum(1, 2)); }\n}\n")
+
+
 def break_php(repo: Path) -> None:
     (repo / "tests" / "CalcTest.php").write_text(
         "<?php\nuse PHPUnit\\Framework\\TestCase;\nuse App\\Calc;\n\n"
@@ -315,7 +387,7 @@ def break_dotnet(repo: Path) -> None:
 
 BREAKERS = {
     "go": break_go, "rust": break_rust, "ruby": break_ruby,
-    "elixir": break_elixir, "java": break_java, "php": break_php,
+    "elixir": break_elixir, "java": break_java, "gradle": break_gradle, "php": break_php,
     "dotnet": break_dotnet, "make": break_make, "python": break_python,
 }
 def git_init(repo: Path) -> None:

@@ -120,6 +120,7 @@ export function ProjectsPanel() {
           read_only_mounts: on(mounts),
           pm2_apps: on(apps),
           node_modules_dirs: report.node_modules_dirs,
+          dependency_dirs: report.dependency_dirs,
           checks: [...report.checks, ...extraChecks],
           build_steps: report.build_steps,
           db_env_file: report.db_env_file,
