@@ -480,8 +480,16 @@ def test_non_anthropic_to_non_anthropic_is_untouched():
 def test_the_live_config_obeys_the_family_rule():
     """Guards HAND edits too: any agent-* pin in the real config must carry
     the extras iff it is Anthropic. Fails the suite the moment the file
-    drifts, instead of a role silently living on its fallback."""
-    d = _yaml.safe_load(open("services/llm-router/config.yaml"))
+    drifts, instead of a role silently living on its fallback.
+
+    Reads through LLM_ROUTER_CONFIG_PATH rather than the literal path: the
+    live config is the operator's file and is gitignored, so on a fresh
+    clone -- CI, a contributor's laptop -- this checks the example, which is
+    what that clone would install.
+    """
+    from agent.tools.model_rates import LLM_ROUTER_CONFIG_PATH
+
+    d = _yaml.safe_load(LLM_ROUTER_CONFIG_PATH.read_text())
     for entry in d["model_list"]:
         name = entry.get("model_name") or ""
         if not name.startswith("agent-"):

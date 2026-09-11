@@ -128,6 +128,16 @@ def test_every_playbook_opens_with_a_test_that_fails_first(page):
         assert pathlib.Path(rel).exists(), f"{page} points at {rel}, which does not exist"
 
 
+def _has_example(ref: str) -> bool:
+    """Some files a playbook tells you to edit are the operator's, not the
+    repo's -- the router config is gitignored because the Models page
+    rewrites it. What ships is the example beside it, and that is what has to
+    exist for the instruction to be followable on a fresh clone."""
+    path = pathlib.Path(ref)
+    return (path.with_suffix(f".example{path.suffix}").exists()
+            or pathlib.Path(f"{ref}.example").exists())
+
+
 @pytest.mark.parametrize("page", sorted(p.name for p in (DOCS / "playbooks").glob("*.md")))
 def test_every_file_a_playbook_tells_you_to_edit_is_really_there(page):
     """Each step names a file. A renamed module turns the playbook into a
@@ -135,7 +145,9 @@ def test_every_file_a_playbook_tells_you_to_edit_is_really_there(page):
     text = (PLAYBOOKS / page).read_text()
     missing = []
     for ref in re.findall(r"`((?:agent|frontend|services|tests|scripts)/[\w./-]+)`", text):
-        if ref.endswith("/") or not pathlib.Path(ref).exists():
+        if ref.endswith("/"):
+            continue
+        if not pathlib.Path(ref).exists() and not _has_example(ref):
             missing.append(ref)
     assert not missing, f"{page} names files that do not exist: {sorted(set(missing))}"
 
