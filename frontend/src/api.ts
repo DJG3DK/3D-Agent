@@ -731,8 +731,8 @@ export interface DetectionReport {
   languages: string[];
   node_modules_dirs: string[];
   /** Dependency trees the review checkout needs but git does not carry
-   *  (PHP's vendor/, Elixir's deps/ and _build/). The reviewer symlinks
-   *  these from the live checkout. */
+   *  (PHP's vendor/, Elixir's deps/, a bundled Ruby project's vendor/bundle).
+   *  The reviewer binds these read-only from the live checkout. */
   dependency_dirs: string[];
   checks: CheckStep[];
   build_steps: CheckStep[];

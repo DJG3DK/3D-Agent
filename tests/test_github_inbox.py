@@ -234,6 +234,19 @@ async def test_poll_project_creates_proposes_notifies_and_resolves(monkeypatch):
     assert len(approve_notes) == 2 and "/api/github/approve?t=" in approve_notes[0]
     assert any("started automatically" in n for n in notes)
 
+    # The one audit entry with no person behind it. A task appeared, nobody
+    # clicked anything, and without this the log shows the policy change and
+    # then silence.
+    from agent import audit
+    entries = await audit.recent(store)
+    auto = [e for e in entries if e["action"] == "inbox.auto_start"]
+    assert len(auto) == 1, "an auto-started task must be recorded"
+    assert auto[0]["actor"] == "github-inbox", "the policy acted, not an account"
+    assert auto[0]["target"] == "proj/pr:1"
+    assert auto[0]["task_id"] == "task-1"
+    assert not [e for e in entries if e["action"] == "inbox.approve"], \
+        "nobody approved anything here"
+
     # Second pass: nothing new, nothing re-sent; PR 2 merged -> resolved.
     notes.clear()
     gh.prs = [_pr(1, "dependabot[bot]", "bump a")]

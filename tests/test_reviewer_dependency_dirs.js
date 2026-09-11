@@ -29,6 +29,23 @@ const {
 let passed = 0;
 const skipped = [];
 
+// Bind mounts need root. Locally that means the real-mount tests skip, which
+// is fine -- but a suite that silently skips its only proof of the
+// read-only guarantee is not proof of anything, and this one skipped on
+// GitHub for exactly the same reason. CI runs this file under sudo with
+// REQUIRE_MOUNT_TESTS=1, which turns a skip into a failure.
+const MOUNTS_REQUIRED = process.env.REQUIRE_MOUNT_TESTS === '1';
+
+function cannotMount(why) {
+    if (MOUNTS_REQUIRED) {
+        throw new Error(
+            `REQUIRE_MOUNT_TESTS=1 but the mount did not happen (${why}). `
+          + 'This test is the only proof that live\'s dependencies are borrowed read-only; '
+          + 'run it as root or unset the variable, but do not let it pass silently.');
+    }
+    skipped.push(why);
+}
+
 // async, and AWAITING fn: `try { return fn() } finally { cleanup }` around an
 // async function runs the cleanup the moment fn returns its promise -- which
 // deleted the fixture out from under the test that was still using it.
@@ -68,8 +85,8 @@ async function main() {
     const { mounted, issues } = await materializeDependencyDirs(
         { live, dependencyDirs: ['vendor'] }, worktree);
 
-    if (!mounted.length && issues.length) {
-        skipped.push('bind mounts need root — vendor mount test skipped');
+    if (!mounted.length) {
+        cannotMount('vendor bind mount (needs root)');
         return;
     }
     assert.deepEqual(mounted, ['vendor']);
@@ -84,7 +101,7 @@ async function main() {
 
     const { mounted } = await materializeDependencyDirs({ live, dependencyDirs: ['vendor'] }, worktree);
     if (!mounted.length) {
-        skipped.push('bind mounts need root — read-only test skipped');
+        cannotMount('read-only remount (needs root)');
         return;
     }
 
@@ -127,6 +144,64 @@ async function main() {
     assert.deepEqual(fs.readdirSync(worktree), []);
     ok('a project with no dependency dirs is untouched');
   });
+
+  // ---- the mount sequence, without needing root -----------------------
+  //
+  // The tests above prove the guarantee by writing through a real mount and
+  // requiring EROFS. These prove the reviewer ASKS for the right thing, on
+  // any machine: a bind, then a read-only remount, and an unmount rather
+  // than a writable mount left behind if the remount fails.
+
+  await test('a bind is always followed by a read-only remount', async ({ live, worktree }) => {
+    fs.mkdirSync(path.join(live, 'vendor'), { recursive: true });
+    const calls = [];
+    const fakeRun = async (cmd, args) => { calls.push([cmd, ...args.slice(0, 2)]); return { ok: true, output: '' }; };
+
+    const { mounted } = await materializeDependencyDirs(
+        { live, dependencyDirs: ['vendor'] }, worktree, { run: fakeRun });
+
+    assert.deepEqual(mounted, ['vendor']);
+    assert.equal(calls[0][0], 'mount');
+    assert.equal(calls[0][1], '--bind');
+    assert.deepEqual(calls[1].slice(0, 2), ['mount', '-o'], 'the remount must follow the bind');
+    assert.match(calls[1][2], /remount,ro,bind/);
+    ok('a bind is always followed by a read-only remount');
+  });
+
+  await test('a failed read-only remount unmounts rather than leaving it writable',
+    async ({ live, worktree }) => {
+      fs.mkdirSync(path.join(live, 'vendor'), { recursive: true });
+      const calls = [];
+      const fakeRun = async (cmd, args) => {
+        calls.push(cmd);
+        const remounting = cmd === 'mount' && args[0] === '-o';
+        return remounting ? { ok: false, output: 'remount refused' } : { ok: true, output: '' };
+      };
+
+      const { mounted, issues } = await materializeDependencyDirs(
+          { live, dependencyDirs: ['vendor'] }, worktree, { run: fakeRun });
+
+      assert.deepEqual(mounted, [], 'nothing may be reported as mounted');
+      assert.equal(issues.length, 1);
+      assert.match(issues[0].output, /unmounted rather than exposing/);
+      assert.equal(calls.at(-1), 'umount', 'the writable bind must be undone');
+      ok('a failed read-only remount unmounts rather than leaving it writable');
+    });
+
+  await test('a failed bind is reported and nothing further is attempted',
+    async ({ live, worktree }) => {
+      fs.mkdirSync(path.join(live, 'vendor'), { recursive: true });
+      const calls = [];
+      const fakeRun = async (cmd) => { calls.push(cmd); return { ok: false, output: 'no permission' }; };
+
+      const { mounted, issues } = await materializeDependencyDirs(
+          { live, dependencyDirs: ['vendor'] }, worktree, { run: fakeRun });
+
+      assert.deepEqual(mounted, []);
+      assert.equal(issues.length, 1);
+      assert.deepEqual(calls, ['mount'], 'no remount, no unmount of something never mounted');
+      ok('a failed bind is reported and nothing further is attempted');
+    });
 
   // ---- installChangedDependencies -------------------------------------
   //
@@ -175,6 +250,29 @@ async function main() {
       ok('a stack that declares no such directory is never installed for');
     });
 
+  await test('a changed Gemfile refuses the borrow instead of testing old gems',
+    async ({ live, worktree }) => {
+      // bundle install builds native extensions -- code execution on an
+      // unreviewed branch, with no --ignore-scripts to disable it. So the
+      // branch gets neither an install nor live's gems, and the reason is
+      // recorded rather than the suite passing against the wrong ones.
+      const { installed, issues } = await installChangedDependencies(
+          { live, dependencyDirs: ['vendor/bundle'] }, worktree, 'Gemfile.lock\nlib/a.rb\n');
+      assert.deepEqual(installed, ['vendor/bundle'], 'marked so the borrow is skipped');
+      assert.equal(issues.length, 1);
+      assert.match(issues[0].output, /native extensions/);
+      assert.match(issues[0].output, /not borrowed/);
+      ok('a changed Gemfile refuses the borrow instead of testing old gems');
+    });
+
+  await test('an unchanged Gemfile borrows the bundle as usual', async ({ live, worktree }) => {
+    const { installed, issues } = await installChangedDependencies(
+        { live, dependencyDirs: ['vendor/bundle'] }, worktree, 'lib/a.rb\n');
+    assert.deepEqual(installed, []);
+    assert.deepEqual(issues, []);
+    ok('an unchanged Gemfile borrows the bundle as usual');
+  });
+
   await test('what was installed fresh is not then mounted over', async ({ live, worktree }) => {
     fs.mkdirSync(path.join(live, 'vendor'), { recursive: true });
     fs.writeFileSync(path.join(live, 'vendor', 'from-live'), '');
@@ -187,7 +285,10 @@ async function main() {
   });
 
   console.log(`\n${passed} passed`);
-  for (const s of skipped) console.log(`  (skipped: ${s})`);
+  for (const s of skipped) console.log(`  SKIPPED (needs root): ${s}`);
+  if (skipped.length) {
+    console.log('  -> run as root, or in CI where REQUIRE_MOUNT_TESTS=1 makes a skip a failure');
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

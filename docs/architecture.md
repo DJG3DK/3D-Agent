@@ -87,11 +87,17 @@ anything: `node_modules`, PHP's `vendor/`, Elixir's `deps/` and a bundled
 Ruby project's `vendor/bundle` are all gitignored. The reviewer borrows them
 from the live checkout, **bound read-only** — the code about to run against
 them is by definition unreviewed, and a writable borrow would let it edit
-what production has installed. When the branch changes its own manifest
-(`composer.json`, `mix.exs`, a lockfile) the borrow is wrong anyway, so the
-reviewer installs that stack's dependencies into the worktree instead, with
-scripts and plugins disabled — the same `--ignore-scripts` discipline the npm
-path has always used.
+what production has installed. When the branch changes its own manifest the borrow is
+wrong anyway — those are the old dependencies — so the reviewer installs that
+stack's into the worktree instead, with scripts and plugins disabled: the
+same `--ignore-scripts` discipline the npm path has always used. That covers
+`package.json`/lockfiles, `composer.json` and `mix.exs`.
+
+Bundler is the exception. `bundle install` builds native extensions, which is
+code execution at install time and has no `--ignore-scripts` equivalent, so a
+branch that changes its `Gemfile` gets neither an install nor the borrow: the
+reviewer records why as a failed setup check, and the verdict accounts for it
+rather than being quietly green against the wrong gems.
 
 A task's diff is the task worktree against its branch point. The live checkout
 never moves until the gate approves and the operator approves the merge.

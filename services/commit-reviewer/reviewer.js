@@ -351,7 +351,9 @@ async function detectNewCommit(project, cfg) {
  * never thrown: a project that has not installed yet should fail the check
  * that needs it, with that check's own message, not the whole review.
  */
-async function materializeDependencyDirs(cfg, worktreePath, { log = () => {}, skip = [] } = {}) {
+async function materializeDependencyDirs(
+  cfg, worktreePath, { log = () => {}, skip = [], run: runCmd = run } = {},
+) {
   const mounted = [];
   const issues = [];
   for (const rel of cfg.dependencyDirs || []) {
@@ -364,14 +366,14 @@ async function materializeDependencyDirs(cfg, worktreePath, { log = () => {}, sk
     }
     if (fs.existsSync(dest)) continue;         // the branch brought its own
     fs.mkdirSync(dest, { recursive: true });
-    const m = await run('mount', ['--bind', src, dest], '/');
+    const m = await runCmd('mount', ['--bind', src, dest], '/');
     if (!m.ok) {
       issues.push({ name: `deps (${rel})`, ok: false, output: m.output.slice(-2000) });
       continue;
     }
-    const ro = await run('mount', ['-o', 'remount,ro,bind', dest], '/');
+    const ro = await runCmd('mount', ['-o', 'remount,ro,bind', dest], '/');
     if (!ro.ok) {
-      await run('umount', [dest], '/');
+      await runCmd('umount', [dest], '/');
       issues.push({
         name: `deps (${rel})`, ok: false,
         output: `could not remount read-only; unmounted rather than exposing live's installed `
@@ -422,6 +424,33 @@ async function installChangedDependencies(cfg, worktreePath, diffFiles, log = ()
     const r = await runSealed('mix', ['deps.get'], worktreePath, 600_000);
     if (r.ok) installed.push('deps');
     else issues.push({ name: 'mix deps.get', ok: false, output: r.output.slice(-4000) });
+  }
+
+  // Bundler is the exception, and it is the interesting one.
+  //
+  // `bundle install` builds native extensions, which is arbitrary code
+  // execution at install time -- the same class of thing npm's
+  // --ignore-scripts and composer's --no-scripts exist to prevent, and
+  // bundler has no equivalent flag. So a branch that changes its Gemfile
+  // does NOT get an install here.
+  //
+  // What it must not get either is live's bundle: those are the OLD gems,
+  // and a green suite against them says nothing about the change. The
+  // borrow is refused and the reason is recorded as a failed setup check, so
+  // the verdict accounts for it instead of being quietly wrong.
+  if (declared.includes('vendor/bundle') && /Gemfile(\.lock)?/.test(diffFiles)) {
+    log('Gemfile/lock changed — refusing to borrow live\'s gems for a different Gemfile');
+    issues.push({
+      name: 'bundle',
+      ok: false,
+      output: 'This branch changes Gemfile/Gemfile.lock, so the live checkout\'s installed gems '
+            + 'are the wrong ones to test against. They were not borrowed. `bundle install` is '
+            + 'not run here either: it builds native extensions, which is code execution on an '
+            + 'unreviewed branch (bundler has no --ignore-scripts). Install the new gems on the '
+            + 'live checkout, or run this suite by hand before merging.',
+    });
+    // Named as installed so the read-only borrow is skipped for it.
+    installed.push('vendor/bundle');
   }
 
   return { installed, issues };
@@ -553,7 +582,20 @@ async function setupWorktree(project, cfg, sha, base) {
         // a writable bind mount of LIVE's node_modules let a test/build script in
         // the untrusted worktree write through to the running production app.
         const roMount = await run('mount', ['-o', 'remount,ro,bind', targetNodeModules], '/');
-        if (!roMount.ok) log(`[${project}] WARN: ${rel}/node_modules not remounted ro: ${roMount.output.slice(0, 200)}`);
+        if (!roMount.ok) {
+          // Unmount, never warn-and-continue. A warning left live's
+          // node_modules bind-mounted WRITABLE into an unreviewed worktree --
+          // the exact hole the vendor/ mount was fixed for, in the stack that
+          // had it first. Without the mount the checks fail on missing
+          // dependencies, which is a loud, correct failure; with it, an
+          // unvetted build script writes into the running app's modules.
+          await run('umount', [targetNodeModules], '/');
+          setupIssues.push({
+            name: `node_modules (${rel})`, ok: false,
+            output: `could not remount read-only; unmounted rather than exposing live's `
+                  + `node_modules writable to an unreviewed branch.\n${roMount.output.slice(-1000)}`,
+          });
+        }
       } else if (internalPackages.size > 0) {
         // Populate entry-by-entry instead of one directory symlink, so each
         // workspace-internal package can be individually redirected to the

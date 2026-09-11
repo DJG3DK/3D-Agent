@@ -45,6 +45,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 
 from agent import github_settings
+from agent import audit
 from agent.config import Config
 from agent.tools.github_tools import fetch_pull_request, format_pull_request, resolve_slug
 
@@ -647,6 +648,17 @@ async def poll_project(
                 item.task_id = await create_task_for_item(item.to_dict(), settings, config, create_task)
                 summary["created"] += 1
                 await put_item(store, item)
+                # The one entry in this log with no person behind it, and the
+                # one most worth having: a task appeared, nobody clicked
+                # anything, and the only trace otherwise is a Telegram
+                # message. The actor names the policy, not an account -- the
+                # operator who set the source to Auto is already recorded
+                # under settings, at the time they set it.
+                await audit.record(
+                    store, actor="github-inbox", action="inbox.auto_start",
+                    target=f"{repo}/{item.key}", detail=(item.title or "")[:160],
+                    extra={"task_id": item.task_id},
+                )
                 await notify(created_text(item, item.task_id, float(proj["budget_usd"])), repo)
             except Exception as e:  # noqa: BLE001 -- fall back to a proposal rather than lose the item
                 logger.exception("github inbox: auto task for %s %s failed", repo, item.key)

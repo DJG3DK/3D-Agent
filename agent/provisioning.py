@@ -301,8 +301,9 @@ class DetectionReport:
     node_modules_dirs: list[str] = field(default_factory=lambda: ["."])
     # Dependency trees the review checkout needs but git does not carry, for
     # stacks that keep them inside the project instead of in a user-wide
-    # cache. The reviewer symlinks these from the live checkout -- see
-    # dependencyDirs in services/commit-reviewer/reviewer.js.
+    # cache. The reviewer binds these READ-ONLY from the live checkout --
+    # see dependencyDirs in services/commit-reviewer/reviewer.js. Read-only
+    # because the code about to run against them has not been reviewed yet.
     dependency_dirs: list[str] = field(default_factory=list)
     checks: list[dict] = field(default_factory=list)
     build_steps: list[dict] = field(default_factory=list)

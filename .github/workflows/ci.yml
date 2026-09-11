@@ -144,7 +144,16 @@ jobs:
           node tests/test_preflight.js
           node tests/test_service_env.js
           node tests/test_health_projects.js
-          node tests/test_reviewer_dependency_dirs.js
+
+      - name: Reviewer dependency mounts (as root — the read-only proof)
+        # This one needs real bind mounts: it borrows a directory the way the
+        # reviewer does, writes through it, and requires EROFS. Without root
+        # those cases skip, and a suite that silently skips its only proof of
+        # the read-only guarantee proves nothing -- which is what was
+        # happening here. REQUIRE_MOUNT_TESTS=1 turns a skip into a failure,
+        # and the runner has passwordless sudo, so CI actually exercises the
+        # mechanism the reviewer uses in production.
+        run: sudo REQUIRE_MOUNT_TESTS=1 node tests/test_reviewer_dependency_dirs.js
 
   stacks:
     name: Stack checks — real toolchains (manual)

@@ -1202,8 +1202,8 @@ def test_a_binary_the_install_step_creates_is_not_reported_missing(tmp_path, mon
 
 def test_a_php_project_proposes_the_vendor_dir_the_reviewer_must_materialise(tmp_path):
     """`vendor/bin/phpunit` in a fresh worktree exits 127: vendor/ is
-    gitignored, so nothing put it there. The reviewer symlinks whatever is
-    listed here from the live checkout."""
+    gitignored, so nothing put it there. The reviewer binds whatever is
+    listed here read-only from the live checkout."""
     repo = tmp_path / "php-vendor"
     (repo / "tests").mkdir(parents=True)
     (repo / "vendor" / "bin").mkdir(parents=True)
@@ -1270,7 +1270,7 @@ def test_a_stack_with_a_user_wide_cache_proposes_nothing(tmp_path):
 
 
 def test_a_dependency_dir_the_server_did_not_propose_is_refused(tmp_path):
-    """The reviewer symlinks these paths out of the live checkout, so they
+    """The reviewer mounts these paths out of the live checkout, so they
     are a capability, not a preference."""
     repo = tmp_path / "php-narrow"
     (repo / "tests").mkdir(parents=True)

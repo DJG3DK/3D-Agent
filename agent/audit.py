@@ -59,6 +59,7 @@ ACTIONS: dict[str, str] = {
     "settings.merge_review": "changed the final merge review",
     "settings.auto_approve_repos": "changed which projects auto-approve covers",
     "github.source_policy": "changed a GitHub inbox source",
+    "inbox.auto_start": "started a task from the inbox automatically (policy: auto)",
     "inbox.approve": "approved an inbox item (a task was started)",
     "inbox.dismiss": "dismissed an inbox item",
     "inbox.snooze": "snoozed an inbox item",
