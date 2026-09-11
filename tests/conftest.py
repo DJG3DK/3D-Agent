@@ -13,8 +13,8 @@ import os
 os.environ["LANGSMITH_TRACING"] = "false"
 os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
-# audit H4: agent/config.py calls load_config() shape at import time and reads
-# ten un-defaulted variables with os.environ[...], so on a checkout without a
+# audit H4: agent/config.py calls load_config() at import time and reads
+# un-defaulted variables with os.environ[...], so on a checkout without a
 # .env, 13 of 30 test files died during COLLECTION with KeyError:
 # 'LANGGRAPH_PG_DSN' -- `pytest` did not run at all for a new contributor, and
 # the failure looked like a broken suite rather than a missing file.
@@ -28,9 +28,6 @@ for _key, _placeholder in {
     "LANGGRAPH_PG_DSN": "postgresql://test:test@127.0.0.1:5432/test_placeholder",
     "LITELLM_BASE_URL": "http://127.0.0.1:4000",
     "LITELLM_API_KEY": "test-placeholder",
-    "MODEL_PLAN": "agent-planner",
-    "MODEL_EXECUTE": "agent-coder",
-    "MODEL_REFLECT": "agent-reviewer",
     "AUTH_SECRET_KEY": "dGVzdC1wbGFjZWhvbGRlci0zMi1ieXRlcy1rZXktMDAwMA==",
     "SMTP_HOST": "",
     "SMTP_PORT": "587",

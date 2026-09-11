@@ -13,9 +13,6 @@ class Config:
     pg_dsn: str
     litellm_base_url: str
     litellm_api_key: str
-    model_plan: str
-    model_execute: str
-    model_reflect: str
     default_budget_usd: float
     api_port: int
     langsmith_tracing: bool
@@ -37,9 +34,6 @@ def load_config() -> Config:
         pg_dsn=os.environ["LANGGRAPH_PG_DSN"],
         litellm_base_url=os.environ["LITELLM_BASE_URL"],
         litellm_api_key=os.environ["LITELLM_API_KEY"],
-        model_plan=os.environ["MODEL_PLAN"],
-        model_execute=os.environ["MODEL_EXECUTE"],
-        model_reflect=os.environ["MODEL_REFLECT"],
         default_budget_usd=float(os.environ.get("DEFAULT_BUDGET_USD", "2.00")),
         api_port=int(os.environ.get("API_PORT", "8100")),
         langsmith_tracing=os.environ.get("LANGSMITH_TRACING", "").lower() == "true",

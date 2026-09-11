@@ -13,6 +13,20 @@ def test_server_module_imports():
     importlib.import_module("agent.server")
 
 
+def test_load_config_does_not_require_the_retired_model_env_vars(monkeypatch):
+    """MODEL_PLAN / MODEL_EXECUTE / MODEL_REFLECT were required at startup
+    long after the pipeline stopped reading them. A .env copied from an
+    older template that omitted them (or a fresh one that never had them)
+    should still boot."""
+    from agent.config import load_config
+
+    for key in ("MODEL_PLAN", "MODEL_EXECUTE", "MODEL_REFLECT"):
+        monkeypatch.delenv(key, raising=False)
+    cfg = load_config()
+    assert cfg.litellm_api_key
+    assert not hasattr(cfg, "model_plan")
+
+
 def test_model_config_module_imports():
     importlib.import_module("agent.model_config")
 

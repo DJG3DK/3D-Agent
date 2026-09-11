@@ -206,12 +206,6 @@ LANGGRAPH_PG_DSN=$PG_DSN
 LITELLM_BASE_URL=http://127.0.0.1:4000
 LITELLM_API_KEY=$LITELLM_MASTER_KEY
 
-# Required at startup; the current pipeline routes through the agent-* aliases
-# in services/llm-router/config.yaml instead of reading these.
-MODEL_PLAN=agent-planner
-MODEL_EXECUTE=agent-coder
-MODEL_REFLECT=agent-reviewer
-
 DEFAULT_BUDGET_USD=5.0
 API_PORT=8100
 
