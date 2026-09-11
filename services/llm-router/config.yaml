@@ -345,7 +345,7 @@ model_list:
     litellm_params:
       model: openrouter/z-ai/glm-5.3
       api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"require_parameters": true, "only": ["Z.AI"], "allow_fallbacks": false}}
+      extra_body: {"provider": {"require_parameters": true}}
     model_info:
       input_cost_per_token: 0.0000014
       output_cost_per_token: 0.0000044
