@@ -38,10 +38,48 @@ def test_auto_mode_selects_the_relaxed_gate():
     assert interrupt_on_for(True) is INTERRUPT_ON_AUTO_APPROVE
 
 
-def test_destructive_commands_still_gated_in_auto_mode():
+# Auto mode's gate is deletions that lose work, not every destructive marker
+# (2026-09-11). bash only ever runs inside the sandbox container, which has no
+# credentials, no capabilities and one writable mount, so a push cannot
+# authenticate and sudo cannot escalate -- but a delete still loses the work in
+# the worktree. These two lists pin that line.
+LOSES_WORK = [
+    "rm -rf src", "rm src/app.ts", "rm -rf .", "rm -rf /", "rm -rf ~",
+    "rm -rf $HOME", "rm -rf /workspace", "rm -rf .git", "rm -rf ../other-project",
+    'rm -rf "$BUILD_DIR"', "rm -rf", "git clean -fdx", 'find . -name "*.ts" -delete',
+    "find src -name x -delete", "rm -rf /home/3DSteals",
+    # cd is tracked, so the last one decides where a relative target lands
+    "cd /tmp && cd /workspace && rm -rf src",
+]
+LOSES_NOTHING = [
+    # the exact call that interrupted a task about every 30 seconds
+    "cd /tmp && rm -rf u && mkdir u && cd u && npm pack undici@7.18.2 >/dev/null 2>&1",
+    "rm -rf /tmp/scratch", "rm -rf dist && npm run build", "rm -rf node_modules/.vite",
+    "rm -rf apps/api/dist", "rm -f coverage/lcov.info", "rm -rf .pytest_cache __pycache__",
+    "cd /var/tmp/x && rm -rf *",
+    # the container answers these; strict mode still asks
+    "sudo apt-get install -y jq", "git push --force origin main", ":(){ :|:& };:",
+    "echo x > /dev/sda", "chmod -R 777 .", "npm ci && npm test",
+]
+
+
+def test_auto_mode_gates_a_delete_that_loses_work():
     when = INTERRUPT_ON_AUTO_APPROVE["bash"]["when"]
-    for command in DESTRUCTIVE:
+    for command in LOSES_WORK:
         assert when(_req(command)) is True, f"auto mode must still gate: {command}"
+
+
+def test_auto_mode_runs_scratch_and_sandbox_answered_commands_unattended():
+    when = INTERRUPT_ON_AUTO_APPROVE["bash"]["when"]
+    for command in LOSES_NOTHING:
+        assert when(_req(command)) is False, f"auto mode should not prompt for: {command}"
+
+
+def test_strict_mode_still_asks_about_every_destructive_marker():
+    """Narrowing auto mode must not narrow the default gate with it."""
+    when = INTERRUPT_ON["bash"]["when"]
+    for command in DESTRUCTIVE:
+        assert when(_req(command)) is True, f"default gate must still ask about: {command}"
 
 
 def test_sensitive_paths_are_auto_approved_in_auto_mode():
@@ -84,11 +122,13 @@ def test_every_danger_marker_is_lowercase():
         assert marker == marker.lower(), f"marker {marker!r} can never match a lowercased command"
 
 
-def test_recursive_chmod_and_chown_are_gated_in_both_modes():
-    """The specific regression: these two were dead markers."""
+def test_recursive_chmod_and_chown_are_gated_in_strict_mode():
+    """The specific regression: these two were dead markers (uppercase R in a
+    list matched against a lowercased command). Strict mode still asks; auto
+    mode does not, because a mode change inside the container cannot outlive
+    the container -- only a delete costs work."""
     for command in ["chmod -R 777 .", "chown -R root:root .", "CHMOD -R 777 ."]:
         assert INTERRUPT_ON["bash"]["when"](_req(command)) is True
-        assert INTERRUPT_ON_AUTO_APPROVE["bash"]["when"](_req(command)) is True
 
 
 # audit M-7: whitespace/flag-order evasions the old substring matcher missed.

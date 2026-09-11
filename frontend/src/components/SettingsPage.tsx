@@ -160,17 +160,21 @@ export function SettingsPage({ user, onUserChanged }: Props) {
             <strong>Still always asks, even with auto mode on:</strong>
             <ul>
               <li>
-                Destructive commands — <code>rm -rf</code>, <code>git push</code>, <code>sudo</code>,{" "}
-                <code>chmod -R</code>, <code>chown -R</code>, redirects to <code>/dev/</code>, fork bombs
+                Deletions that lose work — the repo itself, anything under <code>.git</code>, a path
+                outside the sandbox's scratch space, <code>git clean -f</code>, or a target it cannot
+                read (a shell variable). Clearing <code>/tmp</code> or a build folder like{" "}
+                <code>dist</code> or <code>node_modules</code> runs without asking: nothing is lost.
               </li>
               <li>Questions the agent asks you directly, so it gets your real answer</li>
             </ul>
           </div>
           <div className="settings-note settings-note--warn">
             <strong>What you give up:</strong> the agent edits config, secrets-adjacent files, CI
-            workflows and deploy config with no prompt. Everything still runs inside the sandboxed
-            checkout, still goes through the review gate before merging, and is still capped by the
-            task budget — but you won't see those calls until you read the log afterwards.
+            workflows and deploy config with no prompt, and runs shell commands that strict mode
+            stops for (<code>sudo</code>, a force push, <code>chmod -R</code>). Every command runs in
+            a throwaway container with no credentials, no privileges and only the task's own checkout
+            mounted, so those cannot reach the host, another project or a remote — but you won't see
+            them until you read the log. The review gate and the task budget are unchanged.
           </div>
           <p className="settings-body settings-body--dim">
             Applies to tasks you start from now on. A task already running keeps the setting it began

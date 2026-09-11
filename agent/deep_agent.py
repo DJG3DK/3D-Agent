@@ -336,17 +336,149 @@ def _bash_creates_a_symlink(command: str) -> bool:
     return bool(_SYMLINK_RE.search(command))
 
 
+# ---------------------------------------------------------------------------
+# What auto mode still stops for: a deletion that loses real work.
+#
+# 2026-09-11, operator report: auto mode interrupted about every 30 seconds.
+# The predicate it used (_bash_is_destructive) fires on any `rm -rf`, and the
+# call that kept firing was `cd /tmp && rm -rf u && mkdir u && ...` -- scratch
+# space inside a container, thrown away when the command ends. A prompt for
+# that is noise, and noise is what makes an operator stop reading prompts.
+#
+# bash NEVER runs on the host: agent_tools.py sends every command through
+# run_shell_sandboxed -- a per-command Docker container with all Linux
+# capabilities dropped, no-new-privileges, a pid cap, no credentials in its
+# environment (no SSH key, no router key, no GitHub token), and exactly one
+# writable mount: the task's throwaway worktree at /workspace. sudo cannot
+# escalate there, a push cannot authenticate, a fork bomb hits the pid cap and
+# a raw-device write has no device to reach. Those markers still gate in
+# strict mode, where they read as "look at this"; in auto mode the container
+# has already answered them.
+#
+# What the container does not answer is the loss of work: the worktree holds
+# the task's own edits, and a delete that reaches the repo -- or anything
+# outside scratch -- throws away state no revert brings back. That is the one
+# class the operator asked to keep, and it is the only one auto mode stops for.
+_SCRATCH_ROOTS = ("/tmp", "/var/tmp", "/dev/shm", "/run/shm")
+
+# Names whose contents a build regenerates. Deleting one is a clean step, not
+# a loss: `rm -rf dist && npm run build` is ordinary work between check runs.
+_REGENERABLE_NAMES = frozenset({
+    "node_modules", "dist", "build", "out", ".next", ".nuxt", ".svelte-kit",
+    ".cache", ".turbo", ".parcel-cache", ".vite", "coverage", ".nyc_output",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+    ".eggs", ".gradle", ".venv", "venv", "tmp", ".tmp", ".output",
+    "tsconfig.tsbuildinfo", ".ds_store",
+})
+
+# sandbox.py runs every command with `-w /workspace` (the worktree mount), so
+# a relative target resolves against that unless the command cd's first.
+_SANDBOX_CWD = "/workspace"
+
+_SEGMENT_SPLIT = _re.compile(r"\|\||&&|[;|\n()]")
+_DELETE_COMMANDS = ("rm", "rmdir", "shred", "unlink")
+_UNPARSEABLE = "\x00unparseable"
+
+
+def _segments(command: str) -> list[list[str]]:
+    """The command split into simple segments, each tokenised. A segment that
+    will not tokenise comes back as one unparseable token, so a caller fails
+    closed on it instead of skipping past it."""
+    import shlex
+    out: list[list[str]] = []
+    for raw in _SEGMENT_SPLIT.split(command):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            tokens = shlex.split(raw, posix=True)
+        except ValueError:
+            tokens = [_UNPARSEABLE]
+        if tokens:
+            out.append(tokens)
+    return out
+
+
+def _resolve(target: str, cwd: str) -> str:
+    import posixpath
+    if target.startswith("~"):
+        return posixpath.normpath("/root" + target[1:])      # $HOME in the image
+    if not posixpath.isabs(target):
+        target = posixpath.join(cwd, target)
+    return posixpath.normpath(target)
+
+
+def _target_is_scratch(target: str, cwd: str) -> bool:
+    """True when deleting this path loses nothing -- container scratch space,
+    or something a build regenerates. Anything uncertain is not scratch."""
+    if not target or any(ch in target for ch in "$`"):
+        return False                                         # a variable: cannot judge it
+    resolved = _resolve(target, cwd)
+    segments = [seg.lower() for seg in resolved.split("/") if seg not in ("", ".")]
+    if not segments or ".." in segments:
+        return False                                         # "/" itself, or a path climbing out
+    if ".git" in segments:
+        return False                                         # history is work
+    for root in _SCRATCH_ROOTS:
+        root_segments = [seg for seg in root.split("/") if seg]
+        if segments[:len(root_segments)] == root_segments and len(segments) > len(root_segments):
+            return True                                      # inside scratch, never the root itself
+    return any(seg in _REGENERABLE_NAMES for seg in segments)
+
+
+def _deletions_that_lose_work(command: str) -> list[str]:
+    """Targets of this command's deletions that are not scratch. Empty means
+    nothing of value is being deleted. A target that cannot be read (a shell
+    variable, an unparseable segment, `rm` with only flags) is reported, so
+    the caller asks about it rather than assuming."""
+    cwd = _SANDBOX_CWD
+    losses: list[str] = []
+    for tokens in _segments(command):
+        head = tokens[0].rsplit("/", 1)[-1]
+        if head == "cd" and len(tokens) > 1 and not any(ch in tokens[1] for ch in "$`"):
+            cwd = _resolve(tokens[1], cwd)
+            continue
+        if head == "git" and "clean" in tokens[1:4] and any(
+                t.startswith("-") and not t.startswith("--") and "f" in t for t in tokens):
+            losses.append("git clean -f")                     # removes untracked work
+            continue
+        if head == "find" and "-delete" in tokens:
+            paths = []
+            for tok in tokens[1:]:
+                if tok.startswith("-"):
+                    break                                     # find's paths come before its tests
+                paths.append(tok)
+            losses += [t for t in (paths or ["."]) if not _target_is_scratch(t, cwd)]
+            continue
+        if head in _DELETE_COMMANDS:
+            targets = [t for t in tokens[1:] if not t.startswith("-")]
+            if not targets:
+                losses.append(" ".join(tokens))               # flags only: unreadable, so ask
+                continue
+            losses += [t for t in targets if not _target_is_scratch(t, cwd)]
+    return losses
+
+
+def _bash_deletes_real_work(req) -> bool:
+    """Auto mode's only bash gate -- see the block comment above."""
+    return bool(_deletions_that_lose_work(str(req.tool_call["args"].get("command", ""))))
+
+
 def _bash_is_destructive(req) -> bool:
-    """The subset of `bash` that stays gated even in auto-approve mode.
+    """The recognisably destructive shape: rm -rf, a force push, sudo, a fork
+    bomb, a raw-device write.
 
     Deliberately NOT the same predicate as _bash_needs_approval: the two
     marker lists guard genuinely different risks. A sensitive PATH match
     (reading .env, editing .github/workflows) is about touching something
     that deserves a second look, and it's the case that fires constantly on
-    ordinary work -- that's the noise auto-approve exists to remove. A
-    DESTRUCTIVE COMMAND match (rm -rf, a force push, sudo, a fork bomb) is
-    about an action that can't be undone by reverting a diff, and no
-    per-user preference should be able to wave that through unattended.
+    ordinary work -- that's the noise auto-approve exists to remove.
+
+    Auto mode used this as its gate until 2026-09-11 and it was too wide:
+    it cannot tell `rm -rf /tmp/scratch` from `rm -rf src`, and the sandbox
+    already neutralises everything here except the loss of work. Auto mode
+    asks _bash_deletes_real_work instead; this stays as strict mode's notion
+    of "destructive", which is also what the tests pin.
     """
     return _matches_dangerous(str(req.tool_call["args"].get("command", "")))
 
@@ -462,9 +594,12 @@ INTERRUPT_ON = {
 # a long task need babysitting.
 #
 # What it deliberately does NOT remove:
-#   * destructive commands (_bash_is_destructive) stay gated, always. The
-#     whole point of that list is actions a revert can't undo, and a
-#     preference toggle is the wrong instrument for switching those off.
+#   * a deletion that loses real work (_bash_deletes_real_work) stays gated,
+#     always: the repo worktree, a path outside the container's scratch
+#     dirs, anything under .git, or a target too unreadable to judge. Those
+#     are the actions a revert can't undo, and a preference toggle is the
+#     wrong instrument for switching them off. Scratch and build-output
+#     deletes go through, because losing them costs nothing.
 #   * ask_user stays interrupting. It's the agent's question channel, not a
 #     safety gate -- auto-approving it would just feed every clarifying
 #     question the generic "use your best judgment" fallback instead of the
@@ -476,7 +611,11 @@ INTERRUPT_ON_AUTO_APPROVE = {
     "ask_user": INTERRUPT_ON["ask_user"],
     "bash": {
         "allowed_decisions": ["approve", "reject"],
-        "when": _bash_is_destructive,
+        # Deletions that lose real work, NOT every destructive marker: the
+        # sandbox already answers sudo, a push, a fork bomb and a device
+        # write, and gating scratch cleanup made auto mode interrupt every
+        # half minute. See _bash_deletes_real_work's own block comment.
+        "when": _bash_deletes_real_work,
         "description": _describe_bash,
     },
 }
