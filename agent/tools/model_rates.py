@@ -46,10 +46,28 @@ logger = logging.getLogger("3d-agent")
 # repo lived elsewhere -- warm_rates() raised FileNotFoundError at startup
 # (swallowed) and every task then died on its first model call. This file is
 # agent/tools/model_rates.py, so the config is three parents up.
-LLM_ROUTER_CONFIG_PATH = Path(
-    os.environ.get("LLM_ROUTER_CONFIG_PATH")
-    or (Path(__file__).resolve().parents[2] / "services" / "llm-router" / "config.yaml")
-)
+def _router_config_path(router: Path | None = None) -> Path:
+    """The live router config, or the example when there is no live one.
+
+    config.yaml is gitignored: the Models page rewrites it on every repin, so
+    tracking it made each model change a diff, and an upgrade could overwrite
+    pins the operator chose. A fresh clone therefore has only
+    config.example.yaml -- and the rate table, the Models page and the
+    managed-role tests all still need SOMETHING to read, or a checkout with no
+    install becomes a pile of import errors. The example is that something.
+    """
+    override = os.environ.get("LLM_ROUTER_CONFIG_PATH")
+    if override:
+        return Path(override)
+    # `router` is a parameter only so a test can ask the question about a
+    # directory it built, rather than monkeypatching this module's __file__ --
+    # which leaks into every later test through the module-level constant.
+    router = router or Path(__file__).resolve().parents[2] / "services" / "llm-router"
+    live = router / "config.yaml"
+    return live if live.is_file() else router / "config.example.yaml"
+
+
+LLM_ROUTER_CONFIG_PATH = _router_config_path()
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{model_id}/endpoints"
 

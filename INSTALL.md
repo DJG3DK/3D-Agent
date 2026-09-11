@@ -393,6 +393,7 @@ an admin account and prints a fresh password to the log.
 | `keys/` | Per-project deploy keys (mode 700) |
 | `services/commit-reviewer/review-secrets/` | Copies of each project's secret files, so its checks can run |
 | `projects.json` | Your projects (written by the wizard) |
+| `services/llm-router/config.yaml` | Your model pins (written by Settings → Models; seeded once from `config.example.yaml`) |
 | `skills/local/` | Your own domain knowledge — see `skills/local/README.md` |
 | `services/*/builtin-projects.local.js` | Optional review/deploy overrides — see the `.example` files |
 | `memory/*.md` | Per-project memory the agent maintains |
@@ -472,8 +473,15 @@ the router's file.
 ## 8. Choosing models
 
 Everything routes through named aliases (`agent-coder`, `agent-planner`,
-`agent-reviewer`, …) defined in `services/llm-router/config.yaml`. The shipped
-pins are a reasonable starting point.
+`agent-reviewer`, …) defined in `services/llm-router/config.yaml`.
+
+That file is **yours**, not the repo's. `install.sh` copies it from
+`config.example.yaml` on a fresh install and never touches it again, and it is
+gitignored — the Models page rewrites it on every repin, so tracking it would
+turn each model change into a diff and let an upgrade overwrite the pins you
+chose. The example's pins are one deployment's answers on one day, not
+recommendations: expect to change them, and keep your copy with your backups
+(it is not in git to restore from).
 
 Change them from **Settings → Models** in the dashboard, which shows each
 model's price, agentic-arena standing and knowledge cutoff, and each provider's

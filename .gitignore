@@ -9,6 +9,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# The router's live config. The Models page rewrites it on every repin, so
+# tracking it turned every model change into a diff the operator had to
+# explain -- and an upgrade could overwrite the pins they chose. The shape is
+# tracked instead, as services/llm-router/config.example.yaml, which
+# install.sh copies here on a fresh install.
+services/llm-router/config.yaml
+
 # Local run artifacts
 *.log
 # A stray root-level one appears the moment anything runs npx/vitest from the

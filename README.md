@@ -456,6 +456,13 @@ restart, no code change or redeploy. `agent/model_config.py` only ever touches t
 entries; the router config is shared with other services, and edits are a surgical text
 replacement so everything else in the file is untouched.
 
+That config (`services/llm-router/config.yaml`) is **yours, not the repo's**. It is gitignored and
+seeded once from `config.example.yaml` by `install.sh`: the Models page rewrites it every time you
+repin a role, so tracking it would make each model change a diff to explain, and an upgrade could
+overwrite the pins you chose. The example's pins are one deployment's answers on one day — a shape
+that works, not a recommendation. Keep your copy with your backups, since git has no version of it
+to restore.
+
 ### Picking a model for a role
 
 The Models tab marks every role on three axes, because they fail independently:

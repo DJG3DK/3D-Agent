@@ -1,3 +1,23 @@
+# LiteLLM router configuration -- EXAMPLE.
+#
+# install.sh copies this to config.yaml on a fresh install, and config.yaml is
+# gitignored from then on. The live file is yours: the Models page writes to
+# it every time you repin a role, and an upgrade must never overwrite what you
+# chose. This file is a starting point that is known to work, not a set of
+# recommendations -- the pins below are one deployment's answers on one day.
+#
+# What matters is the SHAPE, because the rest of the system depends on it:
+#
+#   * every alias the agent asks for is a `model_name` beginning `agent-`
+#     (agent/model_config.py MANAGED_ROLES is the list, and a test asserts
+#     every alias here is one of them);
+#   * `model_info` carries the per-token rates the analytics page bills from
+#     for models the proxy cannot report a cost for;
+#   * `api_key: os.environ/OPENROUTER_API_KEY` -- no key is ever written here.
+#
+# Repin from the dashboard (Settings -> Models) rather than by hand: it writes
+# this same file, keeps the rate table in step, and does not need a restart.
+
 # LiteLLM intelligent inference router — task-based routing over OpenRouter.
 #
 # The router's ONLY real consumer is OpenHands (a coding agent). Two failed

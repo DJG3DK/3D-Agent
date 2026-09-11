@@ -358,6 +358,22 @@ else
     fi
 fi
 
+# The router's config is the operator's file, not the repo's: the Models page
+# rewrites it on every repin, so it is gitignored and seeded from the example
+# once. Never overwritten -- an upgrade that clobbered the pins someone chose
+# would be the worst kind of silent change.
+if [ -f services/llm-router/config.yaml ]; then
+    ok "router config already exists (yours — left alone)"
+elif [ "$DRY_RUN" = "1" ]; then
+    note "would copy services/llm-router/config.example.yaml to config.yaml"
+elif [ -f services/llm-router/config.example.yaml ]; then
+    cp services/llm-router/config.example.yaml services/llm-router/config.yaml \
+        && ok "wrote services/llm-router/config.yaml from the example — repin from Settings → Models" \
+        || die "could not write services/llm-router/config.yaml"
+else
+    die "services/llm-router/config.example.yaml is missing — the router has no aliases to serve"
+fi
+
 if [ -d services/llm-router/venv ]; then
     ok "router venv already exists"
 elif [ "$DRY_RUN" = "1" ]; then

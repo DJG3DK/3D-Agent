@@ -161,7 +161,8 @@ scripts/
   backup.sh            + verify_backup_restore.sh (docs/backup.md)
   package_release.sh   a tarball with the dashboard prebuilt
 services/
-  llm-router/          LiteLLM config.yaml (the aliases and their pins)
+  llm-router/          LiteLLM config.yaml (the aliases and their pins; yours,
+                       gitignored, seeded from config.example.yaml)
   agent-review/        merge + deploy control, review dashboard
   commit-reviewer/     the verdict: checks, the model review, state.json
   shared/              projects.json reader, service secrets reader

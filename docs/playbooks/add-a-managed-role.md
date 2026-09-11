@@ -33,6 +33,11 @@ AssertionError: aliases invisible on the Models page: ['agent-your-role']
    Models page writes to it, so whatever you remember about the pins is
    probably stale.
 
+   **And add the same entry to `config.example.yaml`**, which *is* tracked.
+   The live file is gitignored — it is the operator's, rewritten on every
+   repin — so a role that exists only there ships to nobody. A test asserts
+   the example covers every managed role.
+
 2. **`agent/model_config.py` → `MANAGED_ROLES`** — `"agent-<role>": "Human
    Label"`. This is what puts it on the Models page. The label is what the
    operator sees, so write the seat, not the implementation
