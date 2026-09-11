@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### The model pins are yours
+
+`services/llm-router/config.yaml` is gitignored. The Models page rewrites it
+on every repin, so every model change used to arrive in this repo as a diff
+somebody had to explain — and an upgrade could overwrite pins an operator had
+chosen. The shape is tracked instead, as `config.example.yaml`, which
+`install.sh` copies into place on a fresh install and never touches again.
+
+The example's pins are one deployment's answers on one day, not
+recommendations. Three consequences worth knowing: the file is not in git, so
+it belongs with your backups; a new managed role has to be added to the
+example as well as to your live config, and a test enforces that; and a
+checkout that has never been installed still reads the example, so the rate
+table and the Models page work in a fresh clone.
+
 ## v0.5.0 — work that arrives on its own, ten stacks it can check, and a box a second person can run
 
 **2026-09-11**
