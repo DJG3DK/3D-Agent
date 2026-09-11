@@ -84,7 +84,8 @@ machine, that is a bug worth reporting on its own — the point of the offline
 setup is that a contributor's box and CI agree.
 
 To actually *run* the agent (Postgres, Docker, a router, the two services),
-follow [INSTALL.md](INSTALL.md). [docs/architecture.md](docs/architecture.md)
+follow [INSTALL.md](INSTALL.md), and check the result with
+`.venv/bin/python scripts/doctor.py`. [docs/architecture.md](docs/architecture.md)
 is the map of what those processes are and which file holds what.
 
 ## House style

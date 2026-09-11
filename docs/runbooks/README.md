@@ -14,6 +14,7 @@ box and the dashboard in a browser.
 Before any of them, the cheapest question: **is everything up?**
 
 ```bash
+.venv/bin/python scripts/doctor.py --quiet   # config: modes, key pairs, paths
 curl -s 127.0.0.1:8100/api/health | python3 -m json.tool   # the agent
 curl -s 127.0.0.1:4100/health     | python3 -m json.tool   # merge + deploy
 curl -s 127.0.0.1:4101/health     | python3 -m json.tool   # the reviewer

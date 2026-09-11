@@ -283,7 +283,56 @@ Everything lives in `.env` (see `.env.example` for the full list).
 | `GITHUB_TOKEN` | Optional. Fallback GitHub token for the PR tools and the GitHub inbox; the dashboard's **Settings → GitHub** stores per-project tokens encrypted and is the preferred place. See [§6b](#6b-github-optional) |
 | `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM` | Outbound mail for password-reset codes. Sending is optional — **the keys are not**. See [§6a](#6a-email-smtp) |
 
-### 6a. Email (SMTP)
+### 6c. Where every secret lives
+
+Six files, one database, two directories. Nothing is duplicated except the two
+pairs that must agree, and those are marked.
+
+```
+3d-agent/
+├── .env                                   the AGENT's own secrets            600
+│     LANGGRAPH_PG_DSN   AUTH_SECRET_KEY   SMTP_*   ADMIN_EMAIL
+│     LITELLM_API_KEY ─────────────────────────┐  must match ──┐
+│     REVIEW_CONTROL_SECRET ───────────┐       │               │
+│     GITHUB_TOKEN (optional fallback) │       │               │
+│                                      │       │               │
+├── services/                          │       │               │
+│   ├── llm-router/.env                │       │               │   600
+│   │     OPENROUTER_API_KEY           │       │               │
+│   │     LITELLM_MASTER_KEY ──────────┼───────┘               │
+│   │     GATE_RP_ID / GATE_ORIGIN     │   (the passkey gate)  │
+│   │                                  │                       │
+│   ├── shared/.env                    │                       │   600
+│   │     REVIEW_CONTROL_SECRET ───────┘  read by both Node services
+│   │
+│   └── commit-reviewer/review-secrets/<project>/…    700
+│         copies of each project's own secret files, so its
+│         checks can run inside a review worktree
+│
+├── keys/<project>.key                 per-project deploy keys  600 (dir 700)
+│     also referenced from ~/.ssh/config as a host alias
+│
+├── projects.json                      NOT a secret: paths, checks, build steps
+│
+└── Postgres (LANGGRAPH_PG_DSN)
+      GitHub inbox tokens, TOTP secrets, recovery codes
+      — encrypted with AUTH_SECRET_KEY, so the database alone is not enough
+```
+
+**Check it rather than trusting it.** `scripts/doctor.py` verifies presence,
+file modes, that `AUTH_SECRET_KEY` decodes to a usable length, and that both
+pairs above actually match — comparing them by hash, never by printing them:
+
+```bash
+.venv/bin/python scripts/doctor.py            # everything
+.venv/bin/python scripts/doctor.py --quiet    # only problems; exit 1 if any failed
+```
+
+It also checks each project's paths, the sandbox image, the built dashboard
+and which pm2 apps are online. Run it after any change to configuration, and
+after an upgrade.
+
+## 6a. Email (SMTP)
 
 Email is used for **password-reset codes** and, if you switch it on under Settings → GitHub,
 for the GitHub inbox's approve links. It is not used for task alerts (Telegram covers those), and
@@ -517,6 +566,32 @@ Nightly:
 Keep `.env` with the dump — `AUTH_SECRET_KEY` is what decrypts the 2FA secrets
 and the stored GitHub tokens, and a restore without it locks every user out.
 Full procedure, including what is *not* in the dump: [docs/backup.md](docs/backup.md).
+
+## 9b. Installing from a release tarball
+
+A git clone has no built dashboard (`frontend/dist` is generated, not
+committed), so `install.sh` builds it, which needs Node on the server. A
+release tarball ships it already built:
+
+```bash
+scripts/package_release.sh v0.5.0        # on a machine with Node
+# -> dist/3d-agent-v0.5.0.tar.gz  +  .sha256
+```
+
+On the server:
+
+```bash
+tar -xzf 3d-agent-v0.5.0.tar.gz && cd 3d-agent-v0.5.0
+./install.sh          # finds frontend/dist and skips the Node build entirely
+```
+
+The tarball is `git archive` of HEAD plus `frontend/dist` and a `RELEASE.json`
+receipt. It refuses to build if any `.env`, `*.key` or password file ends up
+staged, and it contains no database, no backups and no `node_modules`.
+
+Node is still required on the server for the two review services
+(`agent-review`, `commit-reviewer`) — the tarball removes it only from the
+dashboard build.
 
 ## 10. Updating
 

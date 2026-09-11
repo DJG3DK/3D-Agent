@@ -55,6 +55,10 @@ which is called out explicitly.
 | Per-project deploy keys | `keys/<project>.key` (`AGENT_KEYS_DIR`), plus whatever `~/.ssh/config` points at | git, through the host's SSH |
 | Per-project secret files copied into a review worktree | listed in `projects.json`, stored under `services/commit-reviewer/review-secrets/<project>/` | the reviewer, so checks can run |
 
+Check the whole layout at once with `.venv/bin/python scripts/doctor.py`: it
+verifies presence, file modes, key length and that the two pairs that must
+match actually do, comparing them by hash rather than printing them.
+
 `REVIEW_CONTROL_SECRET` used to live in the router's `.env`, which made the
 model proxy a secrets bus. The services still fall back to that path with a
 warning so an upgrade keeps working — see `services/shared/service-env.js`.
@@ -128,6 +132,10 @@ agent/
                        hidden_tools, pinned_brief, model_pin
   tools/               files, bash/sandbox, git, review_gate, planning_tools,
                        github_tools, vision, checks
+scripts/
+  doctor.py            checks the configuration above, without printing a secret
+  backup.sh            + verify_backup_restore.sh (docs/backup.md)
+  package_release.sh   a tarball with the dashboard prebuilt
 services/
   llm-router/          LiteLLM config.yaml (the aliases and their pins)
   agent-review/        merge + deploy control, review dashboard

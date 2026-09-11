@@ -71,3 +71,32 @@ def test_the_backup_scripts_exist_and_are_executable(script):
     assert p.exists(), script
     assert p.stat().st_mode & 0o111, f"{script} is not executable"
     assert script in pathlib.Path("docs/backup.md").read_text()
+
+
+def test_the_doctor_and_release_scripts_exist_and_are_documented():
+    """Slice 2: a layout diagram nobody can check is decoration."""
+    for script in ("scripts/doctor.py", "scripts/package_release.sh"):
+        p = pathlib.Path(script)
+        assert p.exists(), script
+        assert p.stat().st_mode & 0o111, f"{script} is not executable"
+    install = pathlib.Path("INSTALL.md").read_text()
+    assert "scripts/doctor.py" in install
+    assert "package_release.sh" in install
+    assert "Where every secret lives" in install
+
+
+def test_the_secret_diagram_names_every_file_the_doctor_checks():
+    """If the doctor learns about a new secret file, the diagram must too --
+    they are the same claim, one checked and one read."""
+    import importlib.util
+    import sys as _sys
+    spec = importlib.util.spec_from_file_location("doctor_doc", pathlib.Path("scripts/doctor.py"))
+    doctor = importlib.util.module_from_spec(spec)
+    _sys.modules["doctor_doc"] = doctor
+    spec.loader.exec_module(doctor)
+
+    install = pathlib.Path("INSTALL.md").read_text()
+    for path in (doctor.AGENT_ENV, doctor.ROUTER_ENV, doctor.SHARED_ENV, doctor.PROJECTS_JSON):
+        name = path.name if path.name != ".env" else str(path.parent.name)
+        assert name in install, f"INSTALL.md does not mention {path}"
+    assert "review-secrets" in install and "keys/" in install

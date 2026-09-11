@@ -390,12 +390,20 @@ fi
 # --- 7. frontend ------------------------------------------------------------
 step "Dashboard"
 
+# A release tarball (scripts/package_release.sh) ships frontend/dist already
+# built, so installing from one needs no Node build at all -- the agent serves
+# those files as they are. A git clone has no dist (it is gitignored), so that
+# path still builds, which is also what you want while developing.
+#
+# Checked on dist alone, not on dist AND node_modules: a tarball has the first
+# and not the second, and requiring both sent every tarball install through a
+# full npm ci for files it already had.
 if [ "${SKIP_FRONTEND:-0}" = "1" ]; then
     warn "skipped (SKIP_FRONTEND=1) — the server has no UI to serve until you run: cd frontend && npm ci && npm run build"
+elif [ -f frontend/dist/index.html ]; then
+    ok "dashboard already built — using the prebuilt frontend/dist (no Node build needed)"
 elif [ "$DRY_RUN" = "1" ]; then
-    note "would run npm ci && npm run build in frontend/"
-elif [ -f frontend/dist/index.html ] && [ -d frontend/node_modules ]; then
-    ok "dashboard already built"
+    note "would run npm ci && npm run build in frontend/ (no prebuilt dist here)"
 else
     say "  installing and building the dashboard…"
     if (cd frontend && npm ci --silent >/dev/null 2>&1 && npm run build >/dev/null 2>&1); then

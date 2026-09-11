@@ -57,3 +57,6 @@ frontend/coverage/
 .initial-admin-password
 # database dumps from scripts/backup.sh (keep them off the repo and off GitHub)
 backups/
+
+# release tarballs from scripts/package_release.sh
+/dist/
