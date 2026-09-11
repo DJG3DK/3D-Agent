@@ -71,6 +71,7 @@ _MUST_MIRROR = [
     "node --check",
     "scripts/doctor.py --quiet",
     "install.sh --dry-run --yes",
+    "scripts/verify_stack_checks.py --no-docker",
 ]
 
 

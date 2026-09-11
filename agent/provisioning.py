@@ -62,9 +62,33 @@ _NETWORK_CALL = re.compile(
     r"\bnet\.Dial\b|grpc\.Dial\b|"
     # Rust
     r"\breqwest\b|\bureq\b|hyper::Client|TcpStream::connect|"
-    # Ruby
-    r"Net::HTTP|HTTParty|RestClient|Faraday|Excon|URI\.(open|parse)\s*\(|open-uri|"
+    # Ruby. URI.parse is NOT here: parsing a string opens nothing, and it
+    # appears in every spec that builds a URL for a stubbed request.
+    r"Net::HTTP|HTTParty|RestClient|Faraday|Excon|URI\.open\s*\(|open-uri|"
     r"127\.0\.0\.1|localhost:\d+)",
+    re.IGNORECASE,
+)
+
+# Evidence that a file's HTTP goes nowhere real.
+#
+# The rule above is deliberately suspicious, and its cost is false positives:
+# an honest Rails spec, a Go test driving httptest.NewServer, a Python test
+# using `responses` -- all of them "call the network" by the letter of the
+# regex and none of them can touch production. Flagging those trains the
+# operator to click through the flags, which is the same failure as not
+# flagging at all, arrived at more slowly.
+#
+# So a file that shows one of these is not flagged. Each entry either serves
+# the request in-process (httptest, Rack::Test, wiremock) or intercepts it
+# and refuses real connections by default (WebMock, VCR, responses, respx,
+# nock, mockito). None of them is a promise the author made to us -- they are
+# libraries whose whole purpose is that no packet leaves.
+_NETWORK_STUBBED = re.compile(
+    r"(httptest\.|net/http/httptest|"                       # Go
+    r"mockito|wiremock|MockWebServer|"                       # Rust/JVM
+    r"\bWebMock\b|\bVCR\b|Rack::Test|ActionDispatch::IntegrationTest|"  # Ruby
+    r"\bresponses\b|\brespx\b|requests_mock|httpretty|pytest_httpserver|"  # Python
+    r"\bnock\b|msw/node|setupServer\s*\()",              # JS
     re.IGNORECASE,
 )
 
@@ -447,8 +471,15 @@ def _scan_for_network_tests(live: Path, lang: str) -> list[tuple[str, str]]:
                     and "#[actix_rt::test]" not in body:
                 continue
             m = _NETWORK_CALL.search(body)
-            if m:
-                hits.append((str(path.relative_to(live)), m.group(0)))
+            if not m:
+                continue
+            # A file that stubs or serves its own HTTP is not reaching
+            # anything real, whatever the idiom looked like. Judged per file,
+            # not per repo: one spec wired to WebMock says nothing about the
+            # smoke test three directories over.
+            if _NETWORK_STUBBED.search(body):
+                continue
+            hits.append((str(path.relative_to(live)), m.group(0)))
     return hits
 
 
@@ -579,10 +610,27 @@ def _detect_rust_checks(live: Path) -> tuple[list[dict], list[Candidate], list[s
     return checks + tests, risky, []
 
 
+def _uses_bundler(live: Path) -> bool:
+    """Bundler manages this repo, so its commands run through `bundle exec`
+    and its deploy needs `bundle install`. One predicate for both, because a
+    repo that needs the prefix and never gets the install fails every check
+    on a missing gem."""
+    return (live / "Gemfile").is_file() or (live / "Gemfile.lock").is_file()
+
+
 def _rake_declares_test_review(live: Path) -> bool:
     """Does the Rakefile declare a `test:review` task? Both spellings count:
     the flat `task "test:review"` and the idiomatic `namespace :test` with a
-    `:review` task inside it, which is how most repos actually write it."""
+    `:review` task inside it, which is how most repos actually write it.
+
+    The namespace form is read as a block, not as two searches of the whole
+    file: `namespace :test` near the top and an unrelated `task :review`
+    under `namespace :deploy` two hundred lines down is not a declaration of
+    `test:review`, and treating it as one would hand the review gate a task
+    that does something else entirely. The block ends at the first `end` no
+    more indented than the `namespace` line, which is how rake files are
+    written and formatted; anything more exact means parsing Ruby.
+    """
     rf = live / "Rakefile"
     if not rf.is_file():
         return False
@@ -590,15 +638,25 @@ def _rake_declares_test_review(live: Path) -> bool:
         text = rf.read_text(errors="ignore")[:_SCAN_BYTES]
     except OSError:
         return False
-    if "test:review" in text:
+    if re.search(r"""task\s+['"]?test:review['"]?""", text):
         return True
-    return bool(re.search(r"namespace\s+:test\b", text)
-                and re.search(r"task\s+:review\b", text))
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        opener = re.match(r"(\s*)namespace\s+:?['\"]?test['\"]?\b", line)
+        if not opener:
+            continue
+        indent = len(opener.group(1))
+        for inner in lines[i + 1:]:
+            closer = re.match(r"(\s*)end\b", inner)
+            if closer and len(closer.group(1)) <= indent:
+                break
+            if re.search(r"""task\s+:?['"]?review['"]?\b""", inner):
+                return True
+    return False
 
 
 def _detect_ruby_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
-    bundled = (live / "Gemfile.lock").is_file() or (live / "Gemfile").is_file()
-    runner = ["bundle", "exec"] if bundled else []
+    runner = ["bundle", "exec"] if _uses_bundler(live) else []
 
     def cmd(*parts: str) -> dict:
         args = (runner + list(parts))
@@ -719,7 +777,11 @@ def _build_steps_for(live: Path, lang: str) -> list[dict]:
         return [{"dir": ".", "cmd": "go", "args": ["build", "./..."]}]
     if lang == "rust":
         return [{"dir": ".", "cmd": "cargo", "args": ["build", "--release"]}]
-    if lang == "ruby" and (live / "Gemfile.lock").is_file():
+    if lang == "ruby" and _uses_bundler(live):
+        # The same predicate the checks use. Keying the deploy step on
+        # Gemfile.lock alone left a Gemfile-only repo -- normal for a library
+        # -- running `bundle exec rspec` in review against a bundle the
+        # deploy never installed.
         return [{"dir": ".", "cmd": "bundle", "args": ["install"]}]
     return []
 

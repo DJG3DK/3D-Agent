@@ -74,6 +74,10 @@ node tests/test_preflight.js
 node tests/test_service_env.js
 node tests/test_health_projects.js
 
+# 3b. The commands onboarding proposes, run for real on this host's stacks.
+#     Add --docker's worth by dropping the flag if you have Go/Rust/Ruby images.
+python3 scripts/verify_stack_checks.py --no-docker
+
 # 4. Shell -- the scripts, the doctor on an unconfigured tree, a dry-run install.
 bash -n install.sh scripts/*.sh
 python3 scripts/doctor.py --quiet || true

@@ -145,7 +145,15 @@ def break_make(repo: Path) -> None:
 
 
 def break_python(repo: Path) -> None:
-    (repo / "tests" / "test_math.py").write_text("def test_adds():\n    assert 1 + 1 == 3\n")
+    # Deliberately a different LENGTH, and the caches go too. CPython
+    # invalidates a .pyc on (mtime, size), and pytest's assertion rewriter
+    # caches under the same rule -- an edit of equal size inside the same
+    # second reran the stale bytecode and the "broken" suite passed, which
+    # made this very check flap.
+    (repo / "tests" / "test_math.py").write_text(
+        "def test_adds():\n    assert 1 + 1 == 3, 'deliberately broken'\n")
+    for cache in (*repo.rglob("__pycache__"), *repo.rglob(".pytest_cache")):
+        shutil.rmtree(cache, ignore_errors=True)
 
 
 BREAKERS = {
@@ -222,6 +230,8 @@ def main() -> int:
                 if ok is False:
                     failures += 1
 
+            # A check that cannot fail is not a gate, so every stack's test
+            # check is re-run against a deliberate break.
             test_check = next((c for c in report.checks if c["name"] == "test"), None)
             if test_check is not None:
                 BREAKERS[stack](repo)

@@ -605,3 +605,196 @@ def test_a_missing_toolchain_is_a_warning_not_a_silent_failure(go_repo, monkeypa
     monkeypatch.setattr(prov.shutil, "which", lambda c: f"/usr/bin/{c}")
     r = prov.detect_project(str(go_repo))
     assert not any("not on PATH" in w for w in r.warnings)
+
+
+# ---------------------------------------------------------------------------
+# False positives are a real cost, not a free safety margin
+#
+# The network rule is deliberately suspicious, and a wizard that flags every
+# honest suite trains the operator to click through the flags -- the same
+# failure as not flagging at all, reached more slowly. These hold the line
+# between "we cannot prove this is safe" and "this obviously goes nowhere".
+# ---------------------------------------------------------------------------
+
+def test_a_go_test_driving_httptest_is_not_flagged(tmp_path):
+    """httptest.NewServer IS the local server the http.Get is aimed at."""
+    repo = tmp_path / "httptest-go"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/ht\n")
+    (repo / "api_test.go").write_text(
+        'package main\n\nimport (\n\t"net/http"\n\t"net/http/httptest"\n)\n\n'
+        'func TestAPI(t *testing.T) {\n'
+        '\tsrv := httptest.NewServer(handler())\n'
+        '\tdefer srv.Close()\n'
+        '\thttp.Get(srv.URL + "/health")\n}\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r), "a test server the suite starts itself is not production"
+    assert r.risky_scripts == []
+
+
+def test_a_ruby_spec_with_webmock_is_not_flagged(tmp_path):
+    """WebMock refuses real connections by default -- that is its purpose."""
+    repo = tmp_path / "webmocked"
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\ngem 'webmock'\n")
+    (repo / "spec" / "client_spec.rb").write_text(
+        "require 'webmock/rspec'\n\n"
+        "describe Client do\n"
+        "  it 'fetches' do\n"
+        "    stub_request(:get, 'https://api.example.com/x')\n"
+        "    Net::HTTP.get(URI.parse('https://api.example.com/x'))\n"
+        "  end\n"
+        "end\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r)
+    assert r.risky_scripts == []
+
+
+def test_uri_parse_alone_is_not_a_network_call(tmp_path):
+    """Parsing a string opens nothing. It appeared in every spec that builds
+    a URL for a stubbed request, which is most of them."""
+    repo = tmp_path / "uriparse"
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\n")
+    (repo / "spec" / "url_spec.rb").write_text(
+        "describe 'urls' do\n  it 'parses' do\n"
+        "    expect(URI.parse('https://example.com/a').host).to eq 'example.com'\n"
+        "  end\nend\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r)
+    assert r.risky_scripts == []
+
+
+def test_a_python_test_using_responses_is_not_flagged(tmp_path):
+    repo = tmp_path / "responses-py"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'r'\n")
+    (repo / "tests" / "test_client.py").write_text(
+        "import responses\nimport requests\n\n"
+        "@responses.activate\ndef test_get():\n"
+        "    responses.add(responses.GET, 'https://api.example.com/x', json={})\n"
+        "    requests.get('https://api.example.com/x')\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r)
+    assert r.risky_scripts == []
+
+
+def test_stubbing_is_judged_per_file_not_per_repo(tmp_path):
+    """One spec wired to WebMock says nothing about the smoke test three
+    directories over."""
+    repo = tmp_path / "mixed"
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\n")
+    (repo / "spec" / "stubbed_spec.rb").write_text(
+        "require 'webmock/rspec'\nstub_request(:get, 'https://x/')\nNet::HTTP.get(URI('https://x/'))\n")
+    (repo / "spec" / "smoke_spec.rb").write_text(
+        "describe 'smoke' do\n  it 'hits prod' do\n"
+        "    Net::HTTP.post(URI('https://payments.example.com/charge'), '')\n"
+        "  end\nend\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+    reason = r.risky_scripts[0].reason
+    assert "smoke_spec.rb" in reason and "stubbed_spec.rb" not in reason
+
+
+def test_an_unstubbed_localhost_call_is_still_flagged(tmp_path):
+    """The incident this rule exists for hit a service on localhost. Local is
+    not the same as harmless -- this deployment's own bot ran there."""
+    repo = tmp_path / "localhost-go"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/lh\n")
+    (repo / "bot_test.go").write_text(
+        'package main\nimport "net/http"\n'
+        'func TestTrade(t *testing.T){ http.Post("http://127.0.0.1:8080/trade/open", "", nil) }\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+    assert [c.value for c in r.risky_scripts] == ["test"]
+
+
+# ---------------------------------------------------------------------------
+# Rake task detection reads a block, not the whole file
+# ---------------------------------------------------------------------------
+
+def _ruby_repo(tmp_path, name, rakefile):
+    repo = tmp_path / name
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\n")
+    (repo / "Rakefile").write_text(rakefile)
+    (repo / "spec" / "live_spec.rb").write_text(
+        "describe('live') { Net::HTTP.get(URI('https://prod/x')) }\n")
+    _git_init(repo)
+    return repo
+
+
+def test_review_task_under_an_unrelated_namespace_is_not_test_review(tmp_path):
+    """`namespace :test` at the top and `task :review` under `namespace
+    :deploy` further down is not a declaration of test:review, and handing
+    the review gate that task would run something else entirely."""
+    repo = _ruby_repo(tmp_path, "misleading", (
+        "namespace :test do\n"
+        "  task :unit do\n  end\n"
+        "end\n"
+        "\n"
+        "namespace :deploy do\n"
+        "  task :review do\n  end\n"
+        "end\n"))
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r), "no curated suite was declared, and the specs call out"
+    assert [c.value for c in r.risky_scripts] == ["test"]
+
+
+def test_review_task_inside_the_test_namespace_is_found(tmp_path):
+    repo = _ruby_repo(tmp_path, "genuine", (
+        "namespace :test do\n"
+        "  desc 'suites safe for an outside reviewer'\n"
+        "  task :review do\n  end\n"
+        "end\n"))
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "bundle exec rake test:review"
+
+
+def test_the_flat_spelling_still_counts(tmp_path):
+    repo = _ruby_repo(tmp_path, "flat", "task 'test:review' do\nend\n")
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "bundle exec rake test:review"
+
+
+def test_a_bare_mention_of_test_review_in_a_comment_is_not_a_declaration(tmp_path):
+    repo = _ruby_repo(tmp_path, "commented", "# TODO: add a test:review task one day\n")
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+
+
+# ---------------------------------------------------------------------------
+# bundler: one predicate for the checks and the deploy
+# ---------------------------------------------------------------------------
+
+def test_a_gemfile_without_a_lockfile_still_gets_bundle_install(tmp_path):
+    """Keying the deploy step on Gemfile.lock left a library repo running
+    `bundle exec rspec` in review against a bundle the deploy never
+    installed."""
+    repo = tmp_path / "libgem"
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\ngem 'rspec'\n")
+    (repo / "spec" / "x_spec.rb").write_text("describe('x') { }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "bundle exec rspec"
+    assert {"dir": ".", "cmd": "bundle", "args": ["install"]} in r.build_steps
+
+
+def test_a_repo_with_no_bundler_gets_neither(tmp_path):
+    repo = tmp_path / "nobundler"
+    (repo / "spec").mkdir(parents=True)
+    (repo / ".ruby-version").write_text("3.3.0\n")
+    (repo / "spec" / "x_spec.rb").write_text("describe('x') { }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "rspec"
+    assert r.build_steps == []
