@@ -18,6 +18,7 @@ import asyncio
 import pytest
 
 import agent.server as server
+from agent.classify import TaskClassification
 
 
 class _Item:
@@ -43,6 +44,18 @@ class _FakeStore:
 class _Tracker:
     def __init__(self, total_cost: float):
         self.total_cost = total_cost
+
+
+@pytest.fixture(autouse=True)
+def _no_classifier_call(monkeypatch):
+    """A turn that ends with a plan and no category classifies the session
+    once -- a real model call, through the real router, in tests that are
+    about teardown and difficulty. Stubbed here rather than in each test so
+    a new test in this file cannot reintroduce it."""
+    async def _classify(_text, _config):
+        return TaskClassification(category="other", needs_tests=False)
+
+    monkeypatch.setattr(server, "classify_task", _classify)
 
 
 @pytest.fixture

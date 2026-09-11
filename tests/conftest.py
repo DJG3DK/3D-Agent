@@ -24,9 +24,17 @@ os.environ["LANGCHAIN_TRACING_V2"] = "false"
 # obvious placeholders -- nothing in the suite connects to Postgres or the
 # network, and anything that tried would fail loudly against these rather than
 # silently reaching a real service.
+#
+# Which is why the router placeholder is a CLOSED port. It used to be
+# 127.0.0.1:4000, the real router's address -- harmless on a contributor's
+# laptop, and not harmless on the one machine that also runs the router,
+# where three planning tests were quietly issuing live classifier calls on
+# every `pytest` run (rejected on the placeholder key, so they showed up only
+# as 401s in routing.jsonl). A port nothing listens on makes the claim above
+# true everywhere.
 for _key, _placeholder in {
     "LANGGRAPH_PG_DSN": "postgresql://test:test@127.0.0.1:5432/test_placeholder",
-    "LITELLM_BASE_URL": "http://127.0.0.1:4000",
+    "LITELLM_BASE_URL": "http://127.0.0.1:9",
     "LITELLM_API_KEY": "test-placeholder",
     "AUTH_SECRET_KEY": "dGVzdC1wbGFjZWhvbGRlci0zMi1ieXRlcy1rZXktMDAwMA==",
     "SMTP_HOST": "",
