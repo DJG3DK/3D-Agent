@@ -508,7 +508,8 @@ agent/
   config.py              env-var config + PROJECTS (which repos this agent can target)
   nodes/                 work.py, verify_and_ship.py
   middleware/            budget_guard, model_pin, hidden_tools, repeat_guard,
-                         sanitize_tool_calls, pinned_brief
+                         sanitize_tool_calls, pinned_brief, todo_nag
+                         (what each forbids: docs/middleware.md)
   tools/                 files, shell/bash, git, review_gate, planning_tools, vision, checks,
                          github_tools, router_ledger...
 docker/agent-sandbox/    the container image build tasks' bash/edit tools run inside
@@ -761,6 +762,10 @@ layer of defense.
 
 - [CHANGELOG.md](CHANGELOG.md) — what shipped in each release, and the known limits.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — setup, house style, and what makes a useful PR.
+- [docs/playbooks/](docs/playbooks/README.md) — adding a model role, a GitHub inbox source or a
+  runtime knob. Each starts with a test that fails until the wiring is finished.
+- [docs/middleware.md](docs/middleware.md) — which rule is attached to which agent, and what it
+  forbids. Subagents do not inherit the coordinator's chain.
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1.
 - [SECURITY.md](SECURITY.md) — private vulnerability reporting, the threat model (what the agent
   is *supposed* to be able to do vs. what counts as a real vulnerability), and how to deploy

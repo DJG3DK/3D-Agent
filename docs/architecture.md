@@ -149,6 +149,8 @@ services/
   commit-reviewer/     the verdict: checks, the model review, state.json
   shared/              projects.json reader, service secrets reader
 frontend/src/          the dashboard (Vite + React)
+docs/middleware.md     which rule is attached to which agent, and what it forbids
+docs/playbooks/        how to add a role, an inbox source, a runtime knob
 docs/runbooks/         symptom → check → action, for when something is wrong
 tests/                 pytest, plus node tests for the two services
 ```
@@ -159,3 +161,22 @@ tests/                 pytest, plus node tests for the two services
 
 `docs/runbooks/` has one page per symptom, each in the same shape: what you
 see, what to check, what to do. Start there rather than here.
+
+---
+
+## 7. When you are adding to it
+
+Two pages, for the two questions the source does not answer quickly.
+
+[docs/middleware.md](middleware.md) is the inventory of what each middleware
+forbids and which of the six agents it is attached to. The modules under
+`agent/middleware/` carry the incident that produced each rule, at length;
+that is the story, and the inventory is the index. Subagents do **not**
+inherit the coordinator's chain, which is the single most expensive thing to
+learn by discovery.
+
+[docs/playbooks/](playbooks/README.md) covers the three things added most
+often -- a model role, a GitHub inbox source, a runtime knob. Each playbook
+starts with a test that fails until the work is finished and names the file
+still unwired, because every one of those extension points is silent when you
+miss a step.

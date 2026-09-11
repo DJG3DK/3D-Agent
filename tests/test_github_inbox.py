@@ -440,3 +440,46 @@ async def test_a_full_poll_starts_nothing_on_a_project_without_checks(monkeypatc
     item = (await gi.list_items(store, "proj"))["pr:1"]
     assert item["state"] == "proposed" and "checks" in item["reason"]
     assert notes and "Approve" in notes[0]
+
+
+# ---------------------------------------------------------------------------
+# The registry is the contract (docs/playbooks/add-an-inbox-source.md)
+#
+# A name in SOURCES switches on a card in the settings UI. If discover() does
+# not look for it, that switch is a lie: the operator turns the source to
+# Auto, nothing is ever found, and the absence looks exactly like "no items
+# right now". These are the tests that fail first when a source is added.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_every_source_in_the_registry_is_one_discover_looks_for():
+    gh = FakeGitHub(
+        prs=[_pr(1, "dependabot[bot]")],
+        reviews={1: [{"id": 5, "state": "CHANGES_REQUESTED", "user": {"login": "reviewer"}}]},
+        alerts=[{"number": 9, "state": "open", "html_url": "https://gh/alert/9",
+                 "security_advisory": {"severity": "high", "summary": "RCE", "ghsa_id": "GHSA-1"},
+                 "dependency": {"package": {"name": "multer"}},
+                 "security_vulnerability": {"vulnerable_version_range": "< 2", "first_patched_version": {"identifier": "2.0.0"}}}],
+        checks=[{"id": 11, "name": "ci", "conclusion": "failure", "head_sha": "feedfacefeed1234",
+                 "html_url": "https://gh/run/11", "output": {"title": "3 tests failed"}}],
+        code_alerts=[{"number": 21, "state": "open", "html_url": "https://gh/code/21",
+                      "rule": {"id": "js/sql-injection", "security_severity_level": "high",
+                               "description": "SQL injection"},
+                      "most_recent_instance": {"location": {"path": "api/db.js", "start_line": 12}}}],
+    )
+    proj = _proj(**{name: "propose" for name in gs.SOURCES})
+    found = {i.kind for i in await gi.discover(gh, "proj", "o/proj", proj)}
+    missing = set(gs.SOURCES) - found
+    assert not missing, (
+        f"these sources are switchable in the settings card and discover() never "
+        f"produces them, so switching them on finds nothing forever: {sorted(missing)}")
+
+
+@pytest.mark.parametrize("source", sorted(gs.SOURCES))
+def test_every_source_can_become_a_task_and_a_notification(source):
+    """A discovered item with no goal template raises a KeyError inside the
+    poller, and one with no label notifies the operator about a blank."""
+    assert source in gi._GOAL_TEMPLATES, "build_goal would raise KeyError on this kind"
+    assert source in gi._KIND_LABEL, "the proposal notification would name nothing"
+    goal = gi.build_goal(_item(f"{source}:1", kind=source))
+    assert "review gate" in goal, "every inbox goal states that the gate still applies"

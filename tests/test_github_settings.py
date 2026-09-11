@@ -98,3 +98,29 @@ def test_readme_documents_every_inbox_source():
     readme = Path("README.md").read_text()
     missing = [meta["label"] for name, meta in gs.SOURCES.items() if meta["label"] not in readme]
     assert not missing, f"README GitHub inbox section omits source(s): {missing}"
+
+
+def test_the_settings_card_can_render_every_source():
+    """SOURCE_ORDER in the settings card is a hand-written array. A source
+    added to the registry and not to it is invisible in the UI: the API sends
+    it, the table never draws a column for it, and the operator cannot switch
+    on a feature they have. See docs/playbooks/add-an-inbox-source.md."""
+    import re
+    from pathlib import Path
+
+    tsx = Path("frontend/src/components/GitHubSettingsCard.tsx").read_text()
+    m = re.search(r"SOURCE_ORDER[^=]*=\s*\[(.*?)\]", tsx, re.S)
+    assert m, "SOURCE_ORDER is gone from GitHubSettingsCard.tsx -- has the card changed shape?"
+    missing = [name for name in gs.SOURCES if f'"{name}"' not in m.group(1)]
+    assert not missing, f"the settings card draws no column for: {missing}"
+
+
+def test_the_frontend_type_knows_every_source():
+    """GitHubSource is the union the whole frontend narrows on; a missing
+    member makes the new source a type error at every use site."""
+    from pathlib import Path
+
+    api = Path("frontend/src/api.ts").read_text()
+    line = next(ln for ln in api.splitlines() if "export type GitHubSource" in ln)
+    missing = [name for name in gs.SOURCES if f'"{name}"' not in line]
+    assert not missing, f"GitHubSource is missing: {missing}"

@@ -100,3 +100,48 @@ def test_the_secret_diagram_names_every_file_the_doctor_checks():
         name = path.name if path.name != ".env" else str(path.parent.name)
         assert name in install, f"INSTALL.md does not mention {path}"
     assert "review-secrets" in install and "keys/" in install
+
+
+# ---------------------------------------------------------------------------
+# The playbooks (docs/playbooks/) and the middleware inventory
+# ---------------------------------------------------------------------------
+
+PLAYBOOKS = DOCS / "playbooks"
+
+
+def test_the_playbooks_and_the_inventory_exist():
+    assert (DOCS / "middleware.md").exists()
+    for page in ("README.md", "add-a-managed-role.md", "add-an-inbox-source.md",
+                 "add-a-runtime-knob.md"):
+        assert (PLAYBOOKS / page).exists(), page
+
+
+@pytest.mark.parametrize("page", sorted(p.name for p in (DOCS / "playbooks").glob("add-*.md")))
+def test_every_playbook_opens_with_a_test_that_fails_first(page):
+    """The premise of a playbook here is that you do not have to trust the
+    checklist: something red tells you what is still unwired. A playbook
+    naming a test that does not exist is back to a checklist."""
+    text = (PLAYBOOKS / page).read_text()
+    named = re.findall(r"tests/test_\w+\.py", text)
+    assert named, f"{page} names no test to run first"
+    for rel in set(named):
+        assert pathlib.Path(rel).exists(), f"{page} points at {rel}, which does not exist"
+
+
+@pytest.mark.parametrize("page", sorted(p.name for p in (DOCS / "playbooks").glob("*.md")))
+def test_every_file_a_playbook_tells_you_to_edit_is_really_there(page):
+    """Each step names a file. A renamed module turns the playbook into a
+    treasure hunt, and the reader has no way to tell which half is stale."""
+    text = (PLAYBOOKS / page).read_text()
+    missing = []
+    for ref in re.findall(r"`((?:agent|frontend|services|tests|scripts)/[\w./-]+)`", text):
+        if ref.endswith("/") or not pathlib.Path(ref).exists():
+            missing.append(ref)
+    assert not missing, f"{page} names files that do not exist: {sorted(set(missing))}"
+
+
+def test_the_inventory_is_reachable_from_the_map():
+    """A page nobody links to is a page nobody reads."""
+    arch = ARCH.read_text()
+    assert "middleware.md" in arch, "docs/architecture.md does not link the middleware inventory"
+    assert "playbooks" in arch, "docs/architecture.md does not link the playbooks"
