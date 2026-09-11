@@ -231,7 +231,10 @@ export async function listTasks(repo?: string): Promise<TaskMeta[]> {
   return res.json();
 }
 
-export async function getTask(taskId: string, repo: string): Promise<{ meta: TaskMeta; state: TaskState | null; orphaned: boolean }> {
+/** `seq` is where this snapshot sits in the task's event stream: the browser
+ *  opens its socket before hydrating, buffers what arrives meanwhile, and on
+ *  replay drops anything at or below this number (agent/log_stream.py). */
+export async function getTask(taskId: string, repo: string): Promise<{ meta: TaskMeta; state: TaskState | null; orphaned: boolean; seq?: number }> {
   const res = await apiFetch(`${API_BASE}/tasks/${taskId}?repo=${encodeURIComponent(repo)}`);
   if (!res.ok) throw new Error(`getTask failed: ${res.status}`);
   return res.json();

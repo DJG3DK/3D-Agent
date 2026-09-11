@@ -46,6 +46,7 @@ from agent.classify import classify_task, TaskClassification, TEST_REMINDER_NOTE
 from agent import runtime_settings
 from agent import github_inbox, github_settings
 from agent import health as health_checks
+from agent import log_stream
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.frontend_route import RouteDecision, classify_frontend, normalize_override
 from agent.planning_chat import build_planning_agent, classify_planning_difficulty, planning_thread_config, run_planning_turn, _translate_message as _translate_planning_message
@@ -1330,8 +1331,15 @@ _SUBSCRIBER_QUEUE_MAX = 2000
 
 
 def _publish(task_id: str, event: dict) -> None:
+    # Every entry carries a content-derived id and every event a monotonic
+    # seq (agent/log_stream.py). Together they let the browser open its
+    # socket before hydrating, buffer what arrives meanwhile, and merge the
+    # two sources afterwards without losing or duplicating a line.
     if event.get("execution_log"):
+        event["execution_log"] = log_stream.stamp(event["execution_log"])
         _live_log_append(_live_task_log, task_id, event["execution_log"])
+    if event.get("type") != "ping":
+        event["seq"] = _task_event_seq.next(task_id)
     for q, _ws in _subscribers.get(task_id, []):
         try:
             q.put_nowait(event)
@@ -1851,6 +1859,8 @@ def list_repos(user: User = Depends(require_full_auth)):
 _LIVE_LOG_MAX_ENTRIES = 3000   # matches the frontend's MAX_LOG_ENTRIES cap
 _LIVE_LOG_MAX_KEYS = 12        # LRU-ish: enough for every concurrently-viewed run
 _live_task_log: dict[str, list] = {}
+# Monotonic per-task event ids for the socket-first hydrate (log_stream.py).
+_task_event_seq = log_stream.SeqCounter()
 _live_planning_log: dict[str, list] = {}
 
 
@@ -1866,11 +1876,14 @@ def _live_log_append(book: dict, key: str, entries: list) -> None:
 
 
 def _fuller_log(buffered: list | None, durable: list | None) -> list:
-    """The hydrate rule: live buffer wins only by being LONGER -- a durable
-    source that caught up (or a fresh process with an empty buffer) is never
-    shadowed by a stale one."""
-    b, d = buffered or [], durable or []
-    return b if len(b) > len(d) else d
+    """The hydrate rule: MERGE the two sources by entry id, durable first.
+
+    This was "whichever list is longer", which cannot merge: a durable list
+    that is longer but older replaced newer live entries, and a shorter one
+    was discarded even when it held entries the buffer never had (everything
+    before this process started). Identity comes from the entry's own content
+    -- see agent/log_stream.py."""
+    return log_stream.merge(durable, buffered)
 
 
 # Last Telegram-alerted (status, detail) per task, in-process: a resumed task
@@ -3751,7 +3764,11 @@ async def get_task(task_id: str, repo: str, user: User = Depends(require_full_au
         # buffer's own comment. The checkpoint's execution_log (per-pass
         # summaries) stays the durable fallback.
         snapshot["execution_log"] = _fuller_log(_live_task_log.get(task_id), snapshot.get("execution_log"))
-    return {"meta": meta.value, "state": snapshot, "orphaned": orphaned}
+    # Where this snapshot sits in the event stream. The browser opens its
+    # socket first and buffers; on replay it drops anything at or below this,
+    # so an event already folded into the snapshot is not applied twice.
+    return {"meta": meta.value, "state": snapshot, "orphaned": orphaned,
+            "seq": _task_event_seq.current(task_id)}
 
 
 @app.delete("/api/tasks/{task_id}")

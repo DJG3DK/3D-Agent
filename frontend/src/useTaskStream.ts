@@ -15,6 +15,13 @@ interface StreamState {
   status: TaskStatus | "connecting";
   connected: boolean;
   hydrateError: string | null;
+  /** Seconds since anything of substance arrived (a log entry, a plan change,
+   *  a status), while the task is running. A live socket is not the same as a
+   *  working agent: a task wedged on a model call that never returns keeps
+   *  receiving pings, so the liveness watchdog stays happy and the page keeps
+   *  saying "running". This is the number that tells the two apart. 0 when the
+   *  task is not running. */
+  idleSeconds: number;
   // True when the Store says "running" but nothing is actually driving the
   // task (a backend restart mid-run — same condition resume_task's own
   // eligibility check already accepts). Only ever known from the REST
@@ -51,6 +58,38 @@ const MAX_LOG_ENTRIES = 3000;
 const SOCKET_SILENCE_LIMIT_MS = 70_000;
 const SOCKET_WATCHDOG_POLL_MS = 15_000;
 
+// A live socket is not the same as a working agent. Pings keep arriving from a
+// server whose task is wedged on a model call that will never return, so the
+// watchdog above sees a healthy connection and the page keeps saying
+// "running". This tracks the last time anything of SUBSTANCE arrived -- a log
+// entry, a plan change, a status, an approval -- and the view reports it, so a
+// stall is visible as a stall rather than as ordinary work.
+const STALL_TICK_MS = 10_000;
+
+/** One log from the snapshot and what the socket has delivered since.
+ *
+ * Server-side twin: agent/log_stream.py's merge(). Entries carry a
+ * content-derived `id`, so the same entry arriving by both routes is one
+ * entry. An entry with no id (an older server) falls back to its own content,
+ * which is what the id is anyway.
+ */
+export function mergeLog(durable: LogEntry[] | undefined | null, live: LogEntry[]): LogEntry[] {
+  const idOf = (e: LogEntry): string =>
+    (e as { id?: string }).id ??
+    `${e.timestamp ?? ""}|${e.node ?? ""}|${e.summary ?? ""}|${(e.detail ?? "").slice(0, 120)}`;
+  const snapshot = durable ?? [];
+  const seen = new Set(snapshot.map(idOf));
+  const merged = [...snapshot];
+  for (const entry of live) {
+    const id = idOf(entry);
+    if (!seen.has(id)) {
+      seen.add(id);
+      merged.push(entry);
+    }
+  }
+  return merged.length > MAX_LOG_ENTRIES ? merged.slice(-MAX_LOG_ENTRIES) : merged;
+}
+
 const EMPTY_STATE: StreamState = {
   log: [],
   plan: [],
@@ -64,6 +103,7 @@ const EMPTY_STATE: StreamState = {
   status: "connecting",
   connected: false,
   hydrateError: null,
+  idleSeconds: 0,
   orphaned: false,
 };
 
@@ -98,6 +138,18 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
   // close the socket the connect() closure owns.
   const wsRef = useRef<WebSocket | null>(null);
   const lastMessageAt = useRef(Date.now());
+  // Socket-first hydrate. The socket is opened before the REST snapshot is
+  // fetched, so nothing published during the fetch is missed; frames that
+  // arrive while `hydrating` is true wait in `pending` and are applied after
+  // the snapshot, in order, skipping anything the snapshot already contains
+  // (`lastAppliedSeq`).
+  const hydrating = useRef(false);
+  const pending = useRef<StreamEvent[]>([]);
+  const lastAppliedSeq = useRef(0);
+  // Last time something of substance arrived -- not a ping. A wedged agent
+  // keeps the socket healthy, so this is the only thing that can tell the
+  // difference between working and stuck.
+  const lastProgressAt = useRef(Date.now());
 
   useEffect(() => {
     if (!taskId || !repo) return;
@@ -110,22 +162,23 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
       for (let attempt = 0; attempt <= HYDRATE_MAX_RETRIES; attempt++) {
         if (cancelled) return false;
         try {
-          const { meta, state: graphState, orphaned } = await getTask(taskId!, repo!);
+          const { meta, state: graphState, orphaned, seq } = await getTask(taskId!, repo!);
           if (cancelled) return false;
+          // Where this snapshot sits in the stream: anything at or below
+          // it is already folded in, so the buffer replay skips it.
+          if (typeof seq === "number" && seq > lastAppliedSeq.current) lastAppliedSeq.current = seq;
           if (graphState) {
             setState((s) => ({
               ...s,
-              // audit M-18: never SHRINK the log. work_node only persists
-              // execution_log at the end of a pass, so a reconnect mid-pass
-              // returns an older, shorter checkpointed list that would replace
-              // live-streamed entries and make the log visibly shrink. Keep
-              // whichever is longer. (The full fix -- open the socket first,
-              // buffer, then hydrate + replay with a monotonic event id for
-              // dedup -- is a larger backend change; this removes the concrete
-              // shrink symptom safely.)
-              log: (graphState.execution_log && graphState.execution_log.length >= s.log.length)
-                ? graphState.execution_log
-                : s.log,
+              // audit M-18, finished 2026-09-11. This was "keep whichever
+              // list is longer", a proxy for freshness that is wrong both
+              // ways: a snapshot that is longer but older replaced newer
+              // live entries, and a shorter one was discarded even when it
+              // held history this browser never saw. Entries now carry a
+              // content-derived id from the server (agent/log_stream.py), so
+              // the two sources MERGE: the snapshot keeps its order, and
+              // anything the socket delivered since is appended.
+              log: mergeLog(graphState.execution_log, s.log),
               plan: graphState.plan ?? s.plan,
               currentStepIndex: graphState.current_step_index ?? s.currentStepIndex,
               costSoFar: graphState.cost_so_far ?? s.costSoFar,
@@ -170,22 +223,94 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
     // permanently, since nothing re-read it afterwards. The graceful
     // closed-frame path re-hydrated; the three unclean paths did not, which is
     // exactly backwards: an unclean drop is when a gap is most likely.
+    function applyEvent(event: StreamEvent) {
+      // Ordering and replay protection: the server numbers every content
+      // event per task (agent/log_stream.py). A frame already folded into
+      // the snapshot, or one replayed twice from the buffer, is dropped
+      // here rather than double-counted.
+      const seq = (event as { seq?: number }).seq;
+      if (typeof seq === "number") {
+        if (seq <= lastAppliedSeq.current) return;
+        lastAppliedSeq.current = seq;
+      }
+      if (event.type === "closed") {
+        closedIntentionally.current = true;
+        watchForResumption();
+        return;
+      }
+      // Something of substance arrived, which is what "the agent is
+      // working" actually means -- a ping only means the socket is open.
+      lastProgressAt.current = Date.now();
+      setState((s) => ({
+        // mergeLog rather than a blind append: a replayed frame (the
+        // buffer flushed after a hydrate, or a reconnect that re-sends)
+        // must not double an entry.
+        log: event.execution_log ? mergeLog(s.log, event.execution_log) : s.log,
+        plan: event.plan ?? s.plan,
+        currentStepIndex: event.current_step_index ?? s.currentStepIndex,
+        costSoFar: event.cost_so_far ?? s.costSoFar,
+        committedSha: event.committed_sha ?? s.committedSha,
+        escalated: event.escalated ?? s.escalated,
+        escalationReason: event.escalation_reason ?? s.escalationReason,
+        reviewGateResult: event.review_gate_result ?? s.reviewGateResult,
+        // Same reasoning as the hydrate path above: `pending_approval` is
+        // only included by server.py on a "work" node_update or a
+        // "status" event, but is ALWAYS included (possibly as an explicit
+        // null) whenever it is -- work_node's own return dict always has
+        // this key. `"pending_approval" in event` distinguishes "this
+        // event doesn't speak to approval state at all" (a todos/
+        // log_entry custom event) from "the approval state is definitely
+        // X now, even if X is null" -- `??` alone can't tell those apart
+        // since it treats an explicit null the same as absent.
+        pendingApproval: "pending_approval" in event ? (event.pending_approval ?? null) : s.pendingApproval,
+        status: event.status ?? s.status,
+        connected: true,
+        hydrateError: null,
+        // A live event is direct proof the task is being driven right
+        // now, regardless of what the last hydrate snapshot said.
+        orphaned: false,
+        // An event IS progress, so the stall counter restarts here rather
+        // than waiting for the next tick.
+        idleSeconds: 0,
+      }));
+    }
+
+    /** Open the socket, then hydrate, then replay whatever arrived meanwhile.
+     *
+     * The order matters and used to be the other way round. Hydrating first
+     * leaves a window between the snapshot being taken and the socket being
+     * open: anything the task published in that window reached nobody, and
+     * nothing ever went back for it. Opening first closes the window; the
+     * buffer is what makes opening first safe, and the per-event seq plus the
+     * per-entry id are what make the replay idempotent.
+     */
+    async function connectThenHydrate() {
+      hydrating.current = true;
+      pending.current = [];
+      connect();
+      const ok = await hydrate();
+      if (cancelled) return;
+      hydrating.current = false;
+      lastProgressAt.current = Date.now();
+      const buffered = pending.current;
+      pending.current = [];
+      for (const event of buffered) applyEvent(event);
+      return ok;
+    }
+
     async function reconnect() {
       if (cancelled || closedIntentionally.current) return;
-      await hydrate();
-      if (cancelled || closedIntentionally.current) return;
-      connect();
+      await connectThenHydrate();
     }
 
     async function hydrateAndConnect() {
       if (isNewTask) {
         setState({ ...EMPTY_STATE, status: "connecting" });
+        lastAppliedSeq.current = 0;
       } else {
         setState((s) => ({ ...s, status: "connecting", connected: false, hydrateError: null }));
       }
-      await hydrate();
-      if (cancelled) return;
-      connect();
+      await connectThenHydrate();
     }
 
     let ws: WebSocket;
@@ -299,43 +424,18 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
           return;
         }
         if (event.type === "ping") return; // server heartbeat, not content
-        if (event.type === "closed") {
-          closedIntentionally.current = true;
-          watchForResumption();
+        // Socket-first hydrate: this connection was opened BEFORE the
+        // snapshot was fetched, so that nothing published in between is
+        // lost. Until the snapshot lands, frames are buffered rather than
+        // applied -- applying them first and then hydrating is what used to
+        // let an older snapshot overwrite newer state.
+        if (hydrating.current) {
+          pending.current.push(event);
           return;
         }
-        setState((s) => ({
-          log: event.execution_log
-            ? (() => {
-                const next = [...s.log, ...event.execution_log];
-                return next.length > MAX_LOG_ENTRIES ? next.slice(-MAX_LOG_ENTRIES) : next;
-              })()
-            : s.log,
-          plan: event.plan ?? s.plan,
-          currentStepIndex: event.current_step_index ?? s.currentStepIndex,
-          costSoFar: event.cost_so_far ?? s.costSoFar,
-          committedSha: event.committed_sha ?? s.committedSha,
-          escalated: event.escalated ?? s.escalated,
-          escalationReason: event.escalation_reason ?? s.escalationReason,
-          reviewGateResult: event.review_gate_result ?? s.reviewGateResult,
-          // Same reasoning as the hydrate path above: `pending_approval` is
-          // only included by server.py on a "work" node_update or a
-          // "status" event, but is ALWAYS included (possibly as an explicit
-          // null) whenever it is -- work_node's own return dict always has
-          // this key. `"pending_approval" in event` distinguishes "this
-          // event doesn't speak to approval state at all" (a todos/
-          // log_entry custom event) from "the approval state is definitely
-          // X now, even if X is null" -- `??` alone can't tell those apart
-          // since it treats an explicit null the same as absent.
-          pendingApproval: "pending_approval" in event ? (event.pending_approval ?? null) : s.pendingApproval,
-          status: event.status ?? s.status,
-          connected: true,
-          hydrateError: null,
-          // A live event is direct proof the task is being driven right
-          // now, regardless of what the last hydrate snapshot said.
-          orphaned: false,
-        }));
+        applyEvent(event);
       };
+
 
       ws.onclose = () => {
         // `cancelled` is per-effect-run; `closedIntentionally` is a ref shared
@@ -388,6 +488,24 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
       wsRef.current = null;
     };
   }, [taskId, repo, generation]);
+
+  // How long the agent has been quiet, recomputed on a timer because the
+  // absence of events is exactly what has to be noticed. Only while running:
+  // a settled or paused task is quiet by definition and reporting that would
+  // be noise.
+  useEffect(() => {
+    if (state.status !== "running") {
+      setState((s) => (s.idleSeconds === 0 ? s : { ...s, idleSeconds: 0 }));
+      return;
+    }
+    const tick = () => {
+      const seconds = Math.floor((Date.now() - lastProgressAt.current) / 1000);
+      setState((s) => (s.idleSeconds === seconds ? s : { ...s, idleSeconds: seconds }));
+    };
+    tick();
+    const id = window.setInterval(tick, STALL_TICK_MS);
+    return () => window.clearInterval(id);
+  }, [state.status]);
 
   // Armed only while the task is running: a settled task has nothing to
   // recover, and the REST watcher above already covers the paused states.

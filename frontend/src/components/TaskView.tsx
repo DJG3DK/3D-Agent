@@ -136,6 +136,21 @@ export function TaskView({ task, stream, setGeneration }: Props) {
               <span /><span /><span />
             </div>
           )}
+          {/* Thinking bubbles look the same after four seconds and after forty
+              minutes. A task wedged on a model call that never returns still
+              receives the server's pings, so the socket is healthy and the
+              page keeps animating — the one thing this dashboard exists to
+              make visible is exactly what it hid. Past two minutes of silence,
+              say how long it has been. */}
+          {status === "running" && !stream.orphaned && stream.idleSeconds >= 120 && (
+            <div className="chat-stalled" role="status">
+              No activity for {stream.idleSeconds < 3600
+                ? `${Math.floor(stream.idleSeconds / 60)} min`
+                : `${(stream.idleSeconds / 3600).toFixed(1)} h`}
+              . The connection is live, so the agent is either on a long model
+              call or stuck — the Stop button ends it, and a resume keeps the work so far.
+            </div>
+          )}
           {stream.reviewGateResult && <ReviewGatePanel result={stream.reviewGateResult} minimized={status === "running"} />}
           {stream.pendingApproval && (
             <ApprovalCard

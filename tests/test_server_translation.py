@@ -220,12 +220,32 @@ def test_buffer_evicts_oldest_key_at_the_cap():
     assert "t0" not in book and f"t{_LIVE_LOG_MAX_KEYS + 1}" in book
 
 
-def test_fuller_log_prefers_the_longer_source():
-    assert _fuller_log([1, 2, 3], [1]) == [1, 2, 3]
-    assert _fuller_log([1], [1, 2, 3]) == [1, 2, 3]      # durable caught up / fresh process
-    assert _fuller_log(None, [1]) == [1]
-    assert _fuller_log([1], None) == [1]
+def test_fuller_log_merges_the_two_sources_by_entry_id():
+    """Was "whichever list is longer" (2026-09-11). Length is a proxy for
+    freshness and it is wrong both ways: a durable list that is longer but
+    older replaced newer live entries, and a shorter one was discarded even
+    when it held history the buffer never had. Entries carry a
+    content-derived id now, so the two sources merge -- durable order first,
+    then whatever the live buffer added since."""
+    def e(n):
+        return {"timestamp": f"t{n}", "node": "work", "step_id": None,
+                "summary": f"entry {n}", "detail": "", "cost_usd": 0.0}
+
+    # A mid-pass snapshot is SHORTER than the live buffer: keep everything.
+    merged = _fuller_log([e(1), e(2), e(3)], [e(1)])
+    assert [x["summary"] for x in merged] == ["entry 1", "entry 2", "entry 3"]
+
+    # A durable list holding history this process never buffered: keep it,
+    # and append what the buffer has since.
+    merged = _fuller_log([e(3)], [e(1), e(2)])
+    assert [x["summary"] for x in merged] == ["entry 1", "entry 2", "entry 3"]
+
+    assert [x["summary"] for x in _fuller_log(None, [e(1)])] == ["entry 1"]
+    assert [x["summary"] for x in _fuller_log([e(1)], None)] == ["entry 1"]
     assert _fuller_log(None, None) == []
+
+    # The same entry from both sources is one entry.
+    assert len(_fuller_log([e(1)], [e(1)])) == 1
 
 
 # ---------------------------------------------------------------------------
