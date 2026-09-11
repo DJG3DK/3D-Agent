@@ -223,3 +223,71 @@ describe("a stalled agent on a healthy socket", () => {
     expect(hook.result.current.idleSeconds).toBe(0);
   });
 });
+
+describe("residuals found on review", () => {
+  it("adopts a snapshot seq that went BACKWARDS after a server restart", async () => {
+    // The server's counter dies with its process. A browser holding 500 from
+    // the old one would drop every frame from the new one until it climbed
+    // past 500 -- silently, on exactly the reconnect-after-restart path.
+    getTask.mockResolvedValue(snapshot([], 500));
+    const hook = await mount();
+    const ws = sockets[0];
+    act(() => ws.send(JSON.stringify({ seq: 501, cost_so_far: 1 })));
+    expect(hook.result.current.costSoFar).toBe(1);
+
+    // The backend restarts: the socket drops and the new process starts at 1.
+    getTask.mockResolvedValue(snapshot([], 0));
+    act(() => ws.close());
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+    const fresh = sockets[sockets.length - 1];
+    act(() => fresh.send(JSON.stringify({ seq: 1, cost_so_far: 42 })));
+    expect(hook.result.current.costSoFar).toBe(42);
+  });
+
+  it("re-hydrates rather than bare-connecting when a parked task starts running elsewhere", async () => {
+    // An operator approving from another device, or an orphan resumed
+    // elsewhere. This path called connect() alone, which left the
+    // hydrate-window hole open and skipped the seq re-adoption.
+    getTask.mockResolvedValue(snapshot([entry("1", "a")], 3, "awaiting_approval"));
+    const hook = await mount();
+    const ws = sockets[0];
+    const socketsBefore = sockets.length;
+
+    act(() => ws.send(JSON.stringify({ type: "closed" })));   // server parks the run
+    getTask.mockResolvedValue(snapshot([entry("1", "a"), entry("2", "b")], 4, "running"));
+
+    const callsBefore = getTask.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+
+    expect(sockets.length).toBeGreaterThan(socketsBefore);        // reconnected
+    expect(getTask.mock.calls.length).toBeGreaterThan(callsBefore + 1);  // polled AND hydrated
+    expect(hook.result.current.log.map((e) => e.summary)).toEqual(["a", "b"]);
+  });
+
+  it("merges rather than replaces while the socket is closed", async () => {
+    getTask.mockResolvedValue(snapshot([entry("1", "a"), entry("2", "b")], 2));
+    const hook = await mount();
+    const ws = sockets[0];
+    act(() => ws.send(JSON.stringify({ seq: 3, execution_log: [entry("3", "c")] })));
+    expect(hook.result.current.log).toHaveLength(3);
+
+    // Parked, and the REST poll returns the shorter checkpointed list.
+    act(() => ws.send(JSON.stringify({ type: "closed" })));
+    getTask.mockResolvedValue(snapshot([entry("1", "a")], 1, "awaiting_approval"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+
+    expect(hook.result.current.log.map((e) => e.summary)).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not confuse two unstamped entries that differ only in step_id or late detail", () => {
+    // The fallback id ran against an older server's payloads and omitted
+    // step_id, cost and everything past 120 characters of detail, so two
+    // distinct entries could collide and the second be dropped.
+    const base = { timestamp: "t", node: "work" as const, summary: "s", detail: "x".repeat(400), cost_usd: 0 };
+    const a: LogEntry = { ...base, step_id: "step-1" };
+    const b: LogEntry = { ...base, step_id: "step-2" };
+    const c: LogEntry = { ...base, step_id: "step-1", detail: "x".repeat(399) + "y" };
+    expect(mergeLog([a], [b, c])).toHaveLength(3);
+  });
+});

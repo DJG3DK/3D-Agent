@@ -139,3 +139,41 @@ def test_publishing_stamps_entries_and_numbers_events(monkeypatch):
     assert "seq" not in ping
     assert srv._publish("task-1", {"status": "done"}) is None
     assert srv._task_event_seq.current("task-1") == 3
+
+
+# ---------------------------------------------------------------------------
+# Residuals found on review (2026-09-11)
+# ---------------------------------------------------------------------------
+
+def test_the_counter_is_forgotten_with_the_live_log_it_belongs_to(monkeypatch):
+    """One counter per task, kept for the life of the process, is a leak: the
+    live log evicts at a cap and the counter did not."""
+    monkeypatch.setattr(srv, "_live_task_log", {})
+    monkeypatch.setattr(srv, "_task_event_seq", log_stream.SeqCounter())
+    monkeypatch.setattr(srv, "_subscribers", {})
+    monkeypatch.setattr(srv, "_LIVE_LOG_MAX_KEYS", 3)
+
+    for i in range(5):
+        srv._publish(f"task-{i}", {"execution_log": [entry(f"t{i}", f"entry {i}")]})
+
+    assert len(srv._live_task_log) == 3
+    # the evicted tasks' counters went with them
+    assert set(srv._task_event_seq._counters) == set(srv._live_task_log)
+
+
+def test_deleting_a_task_forgets_its_stream_state():
+    """Whatever else delete_task does, it must drop the in-process stream
+    bookkeeping -- nothing will ever stream for that task again."""
+    import inspect
+    source = inspect.getsource(srv.delete_task)
+    assert "_live_task_log.pop" in source
+    assert "_task_event_seq.forget" in source
+
+
+def test_forget_lets_a_key_start_over():
+    seq = log_stream.SeqCounter()
+    seq.next("a")
+    seq.next("a")
+    seq.forget("a")
+    assert seq.current("a") == 0
+    assert seq.next("a") == 1

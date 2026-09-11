@@ -1337,7 +1337,11 @@ def _publish(task_id: str, event: dict) -> None:
     # two sources afterwards without losing or duplicating a line.
     if event.get("execution_log"):
         event["execution_log"] = log_stream.stamp(event["execution_log"])
-        _live_log_append(_live_task_log, task_id, event["execution_log"])
+        # The event counter is per task and lives as long as the task's live
+        # log does: evicting one without the other leaks a counter per task
+        # for the life of the process.
+        _live_log_append(_live_task_log, task_id, event["execution_log"],
+                         on_evict=_task_event_seq.forget)
     if event.get("type") != "ping":
         event["seq"] = _task_event_seq.next(task_id)
     for q, _ws in _subscribers.get(task_id, []):
@@ -1864,11 +1868,14 @@ _task_event_seq = log_stream.SeqCounter()
 _live_planning_log: dict[str, list] = {}
 
 
-def _live_log_append(book: dict, key: str, entries: list) -> None:
+def _live_log_append(book: dict, key: str, entries: list, on_evict=None) -> None:
     buf = book.get(key)
     if buf is None:
         while len(book) >= _LIVE_LOG_MAX_KEYS:
-            book.pop(next(iter(book)))
+            evicted = next(iter(book))
+            book.pop(evicted)
+            if on_evict is not None:
+                on_evict(evicted)
         buf = book[key] = []
     buf.extend(entries)
     if len(buf) > _LIVE_LOG_MAX_ENTRIES:
@@ -3787,6 +3794,9 @@ async def delete_task(task_id: str, repo: str, user: User = Depends(require_full
         if not meta:
             raise HTTPException(404, "task not found")
         await store.adelete(("tasks", repo), task_id)
+        # Nothing will ever stream for this task again.
+        _live_task_log.pop(task_id, None)
+        _task_event_seq.forget(task_id)
         await app.state.checkpointer.adelete_thread(task_id)
         # Also delete the inner deep-agent thread's own checkpoints. Every "work"
         # pass runs the deep agent against a derived thread_id, f"{task_id}:work"
