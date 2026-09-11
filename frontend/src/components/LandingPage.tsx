@@ -133,7 +133,7 @@ const CONTROLS = [
   },
   {
     title: "The agent cannot git push",
-    body: "It is on the blocked-command list. Merges happen through the gate, and each project pushes with its own deploy key, scoped to one repository.",
+    body: "Its shell runs in a throwaway container with no SSH key, no git credentials and no token, so a push has nothing to authenticate with — it fails at the remote, force or not. Merges happen through the gate, on the host, and each project pushes with its own deploy key, scoped to one repository.",
   },
   {
     title: "Work can arrive from GitHub, not only the composer",
