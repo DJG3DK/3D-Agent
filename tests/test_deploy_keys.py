@@ -118,6 +118,39 @@ def test_https_remote_is_flagged_because_a_deploy_key_cannot_authenticate_it(tmp
     assert "set-url" in st.detail, "tell the operator the fix, not just the problem"
 
 
+def test_status_reads_the_configured_url_not_an_insteadof_rewrite(tmp_path, monkeypatch):
+    """A GitHub token helper (or Cursor-style managed auth) rewrites
+    git@github.com: to https://x-access-token:<secret>@github.com/ via
+    insteadOf. The dashboard must still see the SSH remote the operator
+    configured -- both so it offers a deploy key, and so the token never
+    crosses the API."""
+    live = _repo(tmp_path / "proj", remote="git@github.com:owner/repo.git")
+    cfg = tmp_path / "gitconfig"
+    cfg.write_text(
+        '[url "https://x-access-token:super-secret-token@github.com/"]\n'
+        "\tinsteadOf = git@github.com:\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    rewritten = subprocess.run(["git", "remote", "get-url", "origin"], cwd=live,
+                               capture_output=True, text=True).stdout
+    assert "super-secret-token" in rewritten, "the fixture must actually rewrite"
+
+    st = dk.status("proj", str(live))
+    assert st.remote == "git@github.com:owner/repo.git"
+    assert st.remote_kind == "ssh"
+    assert st.detail is None or "cannot authenticate" not in (st.detail or "")
+    assert "super-secret-token" not in json.dumps(st.to_dict())
+
+
+def test_a_configured_https_remote_with_userinfo_is_redacted(tmp_path):
+    live = _repo(tmp_path / "proj", remote="https://user:the-pat@github.com/owner/repo.git")
+    st = dk.status("proj", str(live))
+    assert st.remote_kind == "https"
+    assert st.remote == "https://user:[redacted]@github.com/owner/repo.git"
+    assert "the-pat" not in json.dumps(st.to_dict())
+
+
 def test_remove_deletes_the_key_and_unsets_the_repo_pointer(tmp_path, keys_dir):
     live = _repo(tmp_path / "proj", remote="git@github.com:o/r.git")
     dk.generate_key("proj", str(live))

@@ -114,14 +114,38 @@ def _remote_kind(url: str) -> str | None:
     return "ssh"
 
 
+def _configured_origin(live: str) -> str | None:
+    """The origin URL as written in this repo's config.
+
+    `git remote get-url` applies url.*.insteadOf from global gitconfig, which
+    on a box with a GitHub token helper rewrites `git@github.com:` into
+    `https://x-access-token:<secret>@github.com/`. That would (a) tell the
+    operator their SSH remote is HTTPS and a deploy key cannot work, and
+    (b) put the token on the Settings page. `--local` is the configured
+    value, with no rewrite.
+    """
+    ok, remote = _git(live, ["config", "--local", "--get", "remote.origin.url"])
+    if not ok or not remote.strip():
+        return None
+    return remote.strip()
+
+
+_USERINFO_RE = re.compile(r"(://[^/@:]+:)[^/@]+@")
+
+
+def _redact_remote(url: str) -> str:
+    """Strip a password/token from a URL before it crosses the API."""
+    return _USERINFO_RE.sub(r"\1[redacted]@", url)
+
+
 def status(project: str, live: str) -> KeyStatus:
     """What this project's push path looks like right now. Read-only."""
     st = KeyStatus(project=project, installed=False)
 
-    ok, remote = _git(live, ["remote", "get-url", "origin"])
-    if ok and remote:
-        st.remote = remote.strip()
-        st.remote_kind = _remote_kind(st.remote)
+    remote = _configured_origin(live)
+    if remote:
+        st.remote = _redact_remote(remote)
+        st.remote_kind = _remote_kind(remote)
     else:
         st.detail = ("no `origin` remote -- merges will deploy locally and the push step "
                      "is skipped entirely")

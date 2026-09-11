@@ -14,12 +14,36 @@ def test_slug_from_ssh_and_https_remotes():
     assert repo_slug_from_remote("git@github.com:DJG3DK/3d-bot.git") == "DJG3DK/3d-bot"
     assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent") == "DJG3DK/3D-Agent"
     assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent.git\n") == "DJG3DK/3D-Agent"
+    # HTTPS with userinfo (a PAT in the URL, or an insteadOf rewrite):
+    assert repo_slug_from_remote("https://x-access-token:secret@github.com/DJG3DK/3D-Agent.git") == "DJG3DK/3D-Agent"
     # A deploy key per project means an SSH host alias per project (2026-09-10:
     # two of three live projects resolved to no slug at all until this).
     assert repo_slug_from_remote("git@github-3dsteals:DJG3DK/3DSteals.com.git") == "DJG3DK/3DSteals.com"
     assert repo_slug_from_remote("ssh://git@github.com-work/owner/repo.git") == "owner/repo"
     assert repo_slug_from_remote("git@gitlab.com:x/y.git") is None
     assert repo_slug_from_remote("") is None
+
+
+def test_resolve_slug_uses_the_configured_remote_not_an_insteadof_rewrite(tmp_path, monkeypatch):
+    """Same class of insteadOf rewrite as deploy_keys.status: the slug must
+    still resolve when git remote get-url would return a token HTTPS URL."""
+    import subprocess
+
+    live = tmp_path / "proj"
+    live.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=live, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:owner/proj.git"],
+                   cwd=live, check=True)
+    cfg = tmp_path / "gitconfig"
+    cfg.write_text(
+        '[url "https://x-access-token:super-secret-token@github.com/"]\n'
+        "\tinsteadOf = git@github.com:\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setattr(gh, "PROJECTS", {"proj": {"live": str(live), "sandbox": str(live)}})
+    monkeypatch.setattr(gh, "_slug_cache", {})
+    assert gh.resolve_slug("proj") == "owner/proj"
 
 
 def _data():

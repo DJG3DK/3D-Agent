@@ -37,7 +37,10 @@ _LIST_CAP = 30            # PRs listed
 # A deploy key per project means an SSH host alias per project in ~/.ssh/config
 # ("git@github-3dsteals:owner/repo.git" -- see agent/deploy_keys.py), so any
 # host containing "github" counts, not only github.com itself.
-_REMOTE_RE = re.compile(r"(?:git@[\w.-]*github[\w.-]*:|ssh://git@[\w.-]*github[\w.-]*/|https?://(?:www\.)?github\.com/)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+_REMOTE_RE = re.compile(
+    r"(?:git@[\w.-]*github[\w.-]*:|ssh://git@[\w.-]*github[\w.-]*/|"
+    r"https?://(?:[^/@]+@)?(?:www\.)?github\.com/)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$"
+)
 
 
 def repo_slug_from_remote(url: str) -> str | None:
@@ -59,7 +62,15 @@ def resolve_slug(repo: str) -> str | None:
         if not path:
             continue
         try:
-            r = subprocess.run(["git", "-C", path, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=10)
+            # --local, not `git remote get-url`: insteadOf rewrites (a GitHub
+            # token helper, Cursor's managed auth) turn git@github.com: into
+            # https://x-access-token:...@github.com/ and the slug parser then
+            # fails, or worse, the token would sit in a log. The configured
+            # value is the one the operator set.
+            r = subprocess.run(
+                ["git", "-C", path, "config", "--local", "--get", "remote.origin.url"],
+                capture_output=True, text=True, timeout=10,
+            )
         except Exception:  # noqa: BLE001
             continue
         if r.returncode == 0:
