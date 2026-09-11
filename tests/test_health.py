@@ -7,6 +7,7 @@ concluded the process was healthy -- which proved only that uvicorn was serving
 static files. These tests exist so the route keeps meaning something.
 """
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -90,7 +91,20 @@ def test_a_healthy_process_reports_every_check_true(all_good):
     assert payload["ok"] is True
     assert set(payload["checks"]) == {"postgres", "router", "sandbox_image", "review_secret"}
     assert all(c["ok"] for c in payload["checks"].values())
-    assert payload["projects"] == ["proj"]
+    assert payload["project_count"] == 1
+
+
+def test_the_public_payload_never_names_a_project(all_good):
+    """This route has no session behind it. A project name is the only field
+    that would describe the operator's repos rather than this process, so the
+    payload carries how many are onboarded and nothing more."""
+    payload = asyncio.run(health.collect(
+        FakePool(), "http://127.0.0.1:4000/v1",
+        {"clients-private-repo": {}, "internal-billing": {}},
+    ))
+    body = json.dumps(payload)
+    assert "clients-private-repo" not in body and "internal-billing" not in body
+    assert payload["project_count"] == 2
 
 
 def test_the_secret_is_reported_as_configured_and_never_echoed(all_good):
@@ -222,4 +236,4 @@ def test_the_payload_shape_is_stable_for_a_monitoring_box(all_good):
     assert isinstance(payload["ok"], bool)
     for name, check in payload["checks"].items():
         assert isinstance(check["ok"], bool), name
-    assert SimpleNamespace(**payload).projects == ["proj"]
+    assert SimpleNamespace(**payload).project_count == 1

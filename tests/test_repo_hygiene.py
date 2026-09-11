@@ -1,0 +1,122 @@
+"""Two properties of the repository itself that nothing else would notice.
+
+Both of these were reported by a reviewer rather than by any check:
+
+* CONTRIBUTING.md promises "the exact four things CI does, in order" and then
+  drifted from .github/workflows/ci.yml -- it named `tsc -b --noEmit` while
+  CI ran `tsc --noEmit -p tsconfig.app.json`, and two whole CI steps were
+  missing from it. A contributor who follows a stale list and then watches CI
+  fail stops trusting the document, which is worse than having no list.
+* A raw NUL byte in a TypeScript source made git classify the module as
+  binary, so every diff of it read "Binary files differ" and no reviewer ever
+  saw a line of it change.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import re
+
+import pytest
+import yaml
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+CI = REPO / ".github" / "workflows" / "ci.yml"
+CONTRIBUTING = REPO / "CONTRIBUTING.md"
+
+# Source extensions worth asserting are text. Binary fixtures (images, the
+# screenshots under docs/) are deliberately not in this list.
+_TEXT_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".css", ".html",
+                  ".md", ".json", ".yml", ".yaml", ".sh", ".toml"}
+_SKIP_DIRS = {".git", "node_modules", "dist", ".venv", "__pycache__", "backups",
+              "logs", ".pytest_cache", ".mypy_cache", "coverage"}
+
+
+def _ci_run_lines() -> list[str]:
+    """Every shell line CI actually executes, flattened across steps."""
+    doc = yaml.safe_load(CI.read_text())
+    lines: list[str] = []
+    for job in (doc.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            run = step.get("run")
+            if not run:
+                continue
+            for raw in str(run).splitlines():
+                line = raw.strip()
+                if line and not line.startswith("#"):
+                    lines.append(line)
+    return lines
+
+
+def _contributing_block() -> list[str]:
+    """The commands inside CONTRIBUTING's 'exactly what CI does' block."""
+    text = CONTRIBUTING.read_text()
+    marker = "The exact four things CI does"
+    assert marker in text, "CONTRIBUTING no longer claims to mirror CI -- update this test with it"
+    block = text.split(marker, 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+    # unwrap `\`-continued lines so a wrapped command reads as one command
+    block = block.replace("\\\n", " ")
+    return [ln.strip() for ln in block.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+
+# The commands a contributor most needs to get right: each is a gate whose
+# local spelling must match CI's, or the contributor's green run means
+# nothing. Matched as substrings of a CI line so env prefixes do not matter.
+_MUST_MIRROR = [
+    "pytest -q",
+    "ruff check .",
+    "npx tsc --noEmit -p tsconfig.app.json",
+    "npm run lint",
+    "npm run build",
+    "node --check",
+    "scripts/doctor.py --quiet",
+    "install.sh --dry-run --yes",
+]
+
+
+@pytest.mark.parametrize("command", _MUST_MIRROR)
+def test_contributing_names_the_command_ci_actually_runs(command):
+    ci = "\n".join(_ci_run_lines())
+    assert command in ci, f"{command!r} is no longer in ci.yml -- update CONTRIBUTING and this list"
+    assert any(command in line for line in _contributing_block()), \
+        f"CI runs {command!r} but CONTRIBUTING's block does not"
+
+
+def test_every_node_test_ci_runs_is_listed_for_contributors():
+    """The node suites are the easiest thing to add to CI and forget to
+    document: they are one line each, and a contributor who never runs them
+    only finds out from a red push."""
+    in_ci = {re.search(r"node (tests/\S+\.js)", line).group(1)
+             for line in _ci_run_lines() if re.search(r"node tests/\S+\.js", line)}
+    assert in_ci, "no node tests in ci.yml -- did the step move?"
+    listed = "\n".join(_contributing_block())
+    missing = sorted(t for t in in_ci if t not in listed)
+    assert not missing, f"CI runs these and CONTRIBUTING does not list them: {missing}"
+
+
+def test_contributing_does_not_promise_a_command_ci_skips():
+    """The other direction: a contributor running something CI does not is
+    harmless, but a command that no longer exists anywhere is a trap."""
+    ci = "\n".join(_ci_run_lines())
+    for line in _contributing_block():
+        m = re.match(r"node (tests/\S+\.js)", line)
+        if m:
+            assert m.group(1) in ci, f"CONTRIBUTING lists {m.group(1)}, which CI does not run"
+            assert (REPO / m.group(1)).is_file(), f"{m.group(1)} does not exist"
+
+
+def _source_files():
+    for path in REPO.rglob("*"):
+        if not path.is_file() or path.suffix not in _TEXT_SUFFIXES:
+            continue
+        if any(part in _SKIP_DIRS for part in path.relative_to(REPO).parts):
+            continue
+        yield path
+
+
+def test_no_source_file_contains_a_raw_nul_byte():
+    """One NUL is enough for git to treat a whole file as binary: no diff in
+    review, no `git diff` locally, no blame that means anything. Write the
+    escape (`\\u0000`, `\\0`) instead -- the runtime value is identical."""
+    offenders = [str(p.relative_to(REPO)) for p in _source_files() if b"\x00" in p.read_bytes()]
+    assert not offenders, f"raw NUL byte in: {offenders}"

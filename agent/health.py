@@ -120,5 +120,12 @@ async def collect(pool, litellm_base_url: str, projects: dict) -> dict:
         "ok": all(c["ok"] for c in checks.values()),
         "service": "3d-agent",
         "checks": checks,
-        "projects": sorted(projects),
+        # A COUNT, not the names. This route is unauthenticated so a
+        # monitoring box can reach it, and "the names are already on every
+        # authenticated page" was never an argument for publishing them to
+        # everyone else: a private repo's name is the one thing here that says
+        # something about its owner rather than about this process. The count
+        # answers the only operational question the payload needs to -- is
+        # anything onboarded at all -- and says nothing about what.
+        "project_count": len(projects),
     }

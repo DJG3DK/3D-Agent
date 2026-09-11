@@ -521,8 +521,9 @@ async def health():
 
     Public on purpose: a monitoring box, or a second person with curl, has no
     session. Nothing here is a secret -- a configured secret reports `true`,
-    never its value -- and the project names it lists are already on every
-    authenticated page.
+    never its value, and the payload carries how many projects are onboarded
+    but never which, since a private repo's name is the one thing in it that
+    describes its owner rather than this process.
 
     503 when any check fails, so a probe that only reads the status code is
     still correct. There was no health route at all until 2026-09-11: every

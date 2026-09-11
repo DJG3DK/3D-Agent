@@ -52,15 +52,17 @@ The exact four things CI does, in order, from a clean clone:
 
 ```bash
 # 1. Python -- the suite plus lint. No network, no database, no .env needed.
+#    The planner's repo search shells out to ripgrep, so its tests need `rg`.
 python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check .
+.venv/bin/python -m compileall -q scripts/ agent/
 
 # 2. Frontend -- typecheck, lint, tests, build.
 cd frontend && npm ci
-npx tsc -b --noEmit
+npx tsc --noEmit -p tsconfig.app.json
 npm run lint
-npx vitest run
+npm test
 npm run build
 cd ..
 
@@ -70,12 +72,20 @@ node tests/test_projects_config_merge.js
 node tests/test_reviewer_preexisting.js
 node tests/test_preflight.js
 node tests/test_service_env.js
+node tests/test_health_projects.js
 
-# 4. Shell -- the scripts, and an installer dry-run.
+# 4. Shell -- the scripts, the doctor on an unconfigured tree, a dry-run install.
 bash -n install.sh scripts/*.sh
+python3 scripts/doctor.py --quiet || true
 PG_DSN=postgresql://placeholder@localhost:5432/placeholder \
   OPENROUTER_API_KEY=placeholder ./install.sh --dry-run --yes
 ```
+
+`tests/test_repo_hygiene.py` asserts this block and `.github/workflows/ci.yml`
+still agree, because they drifted twice before anyone noticed: this list said
+`tsc -b --noEmit` while CI ran `tsc --noEmit -p tsconfig.app.json`, and two
+CI steps were missing from it entirely. A contributor who follows a stale
+list and then watches CI fail learns to distrust the document.
 
 The dry-run needs `--yes` and those two placeholders: without them it reads
 its three answers from `/dev/tty`, which does not exist in a pipeline or in
