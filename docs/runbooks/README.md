@@ -1,0 +1,28 @@
+# Runbooks
+
+One page per symptom, all in the same shape: **what you see → what to check →
+what to do**. They assume nothing about who you are beyond shell access to the
+box and the dashboard in a browser.
+
+| Page | You are looking at |
+|---|---|
+| [stuck-task.md](stuck-task.md) | A task the dashboard shows as running, that is not moving |
+| [consolidation.md](consolidation.md) | The consolidation card saying never-run, stale or failed |
+| [router-refusals.md](router-refusals.md) | "No endpoints found", a role that silently answers from its fallback, a reviewer that returns nothing |
+| [merge-vs-github.md](merge-vs-github.md) | A merge that succeeded while GitHub stayed behind |
+
+Before any of them, the cheapest question: **is everything up?**
+
+```bash
+curl -s 127.0.0.1:8100/api/health | python3 -m json.tool   # the agent
+curl -s 127.0.0.1:4100/health     | python3 -m json.tool   # merge + deploy
+curl -s 127.0.0.1:4101/health     | python3 -m json.tool   # the reviewer
+curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:4000/health/liveliness   # the router
+pm2 list
+```
+
+Each health route returns 503 when one of its checks fails and names the
+failing dependency. None of them costs a model call.
+
+The map of what these processes are, and which file holds what, is
+[../architecture.md](../architecture.md).

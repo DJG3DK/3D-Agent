@@ -426,6 +426,20 @@ router restart.
 
 ## 9. Troubleshooting
 
+Each process answers a local health check that costs nothing and makes no
+model call — start there:
+
+```bash
+curl -s 127.0.0.1:8100/api/health | python3 -m json.tool   # agent
+curl -s 127.0.0.1:4100/health     | python3 -m json.tool   # merge + deploy
+curl -s 127.0.0.1:4101/health     | python3 -m json.tool   # reviewer
+curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:4000/health/liveliness
+```
+
+Each returns 503 and names the failing dependency. For a specific symptom, see
+[docs/runbooks/](docs/runbooks/).
+
+
 **The first tool call of the first task fails.** The sandbox image isn't
 built: `docker build -t 3d-agent-sandbox:latest docker/agent-sandbox/`
 
@@ -483,6 +497,26 @@ failed to send`. Usual causes: an account password where an app password or
 token is required, or port 465 instead of 587.
 
 ---
+
+## 9a. Backups
+
+The database holds every task, plan, memory, account and encrypted GitHub
+token. Set this up on day one, not after the first loss:
+
+```bash
+./scripts/backup.sh                       # writes backups/agent-<stamp>.dump
+./scripts/verify_backup_restore.sh        # restores it into a scratch DB and checks it
+```
+
+Nightly:
+
+```
+30 3 * * * /home/3d-agent/scripts/backup.sh >> /home/3d-agent/data/backup.log 2>&1
+```
+
+Keep `.env` with the dump — `AUTH_SECRET_KEY` is what decrypts the 2FA secrets
+and the stored GitHub tokens, and a restore without it locks every user out.
+Full procedure, including what is *not* in the dump: [docs/backup.md](docs/backup.md).
 
 ## 10. Updating
 

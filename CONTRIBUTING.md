@@ -31,27 +31,61 @@ In rough order of value:
 
 ## Setting up to develop
 
+**You do not need to install the agent to work on it.** A fresh clone with no
+`.env`, no database, no Docker and no API key runs every check CI runs. That
+is deliberate: `tests/conftest.py` fills in placeholder environment variables,
+so `agent.config` imports without a real configuration.
+
+**Node 24 or newer.** The floor is 24 (Node 20 left maintenance in April
+2026); `install.sh` and CI both pin it. On Node 22 the node service checks can
+hang rather than fail, which is a miserable way to discover a version mismatch:
+
 ```bash
-git clone https://github.com/DJG3DK/3D-Agent.git
-cd 3D-Agent
-./install.sh                       # see INSTALL.md
-.venv/bin/python -m pytest -q      # Python suite, seconds, no network needed
-.venv/bin/ruff check .             # lint (ruff.toml)
+node --version      # v24.x or newer
+python3 --version   # 3.12+
 ```
 
-Frontend:
+The exact four things CI does, in order, from a clean clone:
 
 ```bash
-cd frontend
-npm ci
-npm run dev        # dev server
-npm run build      # production bundle -> frontend/dist
-npx tsc --noEmit -p tsconfig.app.json
+# 1. Python -- the suite plus lint. No network, no database, no .env needed.
+python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check .
+
+# 2. Frontend -- typecheck, lint, tests, build.
+cd frontend && npm ci
+npx tsc -b --noEmit
 npm run lint
+npx vitest run
+npm run build
+cd ..
+
+# 3. The two Node services -- syntax on every file, then their unit tests.
+for f in services/*/*.js services/shared/*.js; do node --check "$f"; done
+node tests/test_projects_config_merge.js
+node tests/test_reviewer_preexisting.js
+node tests/test_preflight.js
+node tests/test_service_env.js
+
+# 4. Shell -- the scripts, and an installer dry-run.
+bash -n install.sh scripts/*.sh
+PG_DSN=postgresql://placeholder@localhost:5432/placeholder \
+  OPENROUTER_API_KEY=placeholder ./install.sh --dry-run --yes
 ```
 
-The node services have their own checks: `node --check` on each file, and
-`node tests/test_projects_config_merge.js`.
+The dry-run needs `--yes` and those two placeholders: without them it reads
+its three answers from `/dev/tty`, which does not exist in a pipeline or in
+most editor terminals, and the failure looks like a broken installer rather
+than a missing flag. It writes nothing either way.
+
+If all four pass locally, CI will pass. If one behaves differently on your
+machine, that is a bug worth reporting on its own — the point of the offline
+setup is that a contributor's box and CI agree.
+
+To actually *run* the agent (Postgres, Docker, a router, the two services),
+follow [INSTALL.md](INSTALL.md). [docs/architecture.md](docs/architecture.md)
+is the map of what those processes are and which file holds what.
 
 ## House style
 
@@ -84,17 +118,19 @@ so onboarding now refuses to auto-enable a script that makes network calls.
 
 Prefer real fixtures over mocks where it's cheap: the provisioning tests build
 actual git repositories in `tmp_path`, because a mocked git can't catch that a
-worktree's `.git` is a file rather than a directory.
+worktree's `.git` is a file rather than a directory. `tests/test_project_lock.py`
+is the other shape worth copying — it drives real SQL through an injected
+connection, so the advisory lock's behaviour is pinned without CI needing a
+Postgres.
 
 ## Pull requests
 
 - One concern per PR. A refactor bundled with a fix is hard to review and hard
   to revert.
 - Say what breaks if you're wrong. Reviewers calibrate on that.
-- Run the suites above before opening. CI runs the same four (Python tests,
-  frontend typecheck/lint/build, Node service checks, shell + an installer
-  dry-run) on every pull request, all offline — no secrets, no database, no
-  model calls.
+- Run the four blocks under *Setting up to develop* before opening. CI runs
+  exactly those on every pull request, all offline — no secrets, no database,
+  no model calls.
 - Small PRs get read the same week. Large ones may sit — open an issue first
   if you're planning something big, so you don't build the wrong thing.
 

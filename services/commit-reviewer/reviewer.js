@@ -1403,6 +1403,40 @@ async function reviewProject(project, cfg, routerKey) {
 const CONTROL_PORT = 4101;
 function startControlServer(routerKey) {
   const server = http.createServer((req, res) => {
+    // Liveness, unauthenticated on purpose: this port is 127.0.0.1-only and
+    // nothing here is a secret (a configured secret reports `true`, never its
+    // value). No model call, no review started -- safe to poll. 503 when a
+    // dependency is missing, so a status-code-only probe is still correct.
+    if (req.method === 'GET' && req.url === '/health') {
+      const checks = {
+        review_secret: {
+          ok: Boolean(REVIEW_CONTROL_SECRET),
+          detail: REVIEW_CONTROL_SECRET ? null : 'REVIEW_CONTROL_SECRET unset: the control endpoint is disabled',
+        },
+        projects: {
+          ok: Object.keys(PROJECTS).length > 0,
+          count: Object.keys(PROJECTS).length,
+          detail: Object.keys(PROJECTS).length ? null : 'no projects configured',
+        },
+        state_file: (() => {
+          try {
+            loadState();
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, detail: `state.json unreadable: ${e.message}` };
+          }
+        })(),
+      };
+      const ok = Object.values(checks).every((c) => c.ok);
+      res.writeHead(ok ? 200 : 503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok,
+        service: 'commit-reviewer',
+        checks,
+        reviewing: [...inProgressProjects],
+      }));
+      return;
+    }
     const m = req.url.match(/^\/check\/([^/]+)$/);
     if (req.method !== 'POST' || !m) {
       res.writeHead(404, { 'Content-Type': 'application/json' });

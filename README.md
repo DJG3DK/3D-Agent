@@ -92,6 +92,8 @@ Outbound mail is optional and only used for password resets.
 
 ## Contents
 
+Operating it, rather than reading about it: **[docs/architecture.md](docs/architecture.md)** (the four processes, where each secret lives, the three checkouts, the two-node graph), **[docs/runbooks/](docs/runbooks/)** (symptom → check → action), and **[docs/backup.md](docs/backup.md)** (backup, and proving a restore works).
+
 - [How a build task runs](#how-a-build-task-runs)
 - [Planning Chat](#planning-chat)
 - [Frontend routing](#frontend-routing)

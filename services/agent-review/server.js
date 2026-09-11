@@ -207,6 +207,46 @@ app.get('/api/projects/:name/diff', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Can this service do its job right now, and if not, which dependency is
+// missing? No model call, no git write, nothing that costs anything -- safe
+// to poll from a monitoring box or a second person with curl, neither of
+// which has a session. A configured secret reports `true`, never its value.
+// 503 when anything is wrong, so a probe that only reads the status code is
+// still correct.
+app.get('/health', (req, res) => {
+    const checks = {
+        // Unset means every merge this service is asked for is refused, at the
+        // end of a task that has already been paid for.
+        review_secret: {
+            ok: Boolean(REVIEW_CONTROL_SECRET),
+            detail: REVIEW_CONTROL_SECRET ? null : 'REVIEW_CONTROL_SECRET unset: mutating endpoints are disabled',
+        },
+        // A project with no live checkout on disk cannot be merged or deployed.
+        projects: (() => {
+            const names = Object.keys(PROJECTS);
+            const missing = names.filter((n) => !fs.existsSync(PROJECTS[n].live));
+            return {
+                ok: names.length > 0 && missing.length === 0,
+                detail: names.length === 0 ? 'no projects configured'
+                    : missing.length ? `live checkout missing for: ${missing.join(', ')}` : null,
+                count: names.length,
+            };
+        })(),
+        // The reviewer's verdict file is what gates every merge; unreadable
+        // means the gate cannot answer and merges fail closed.
+        review_state: (() => {
+            try {
+                fs.accessSync(REVIEW_STATE_PATH, fs.constants.R_OK);
+                return { ok: true };
+            } catch {
+                return { ok: false, detail: `cannot read ${REVIEW_STATE_PATH} (has commit-reviewer ever run?)` };
+            }
+        })(),
+    };
+    const ok = Object.values(checks).every((c) => c.ok);
+    res.status(ok ? 200 : 503).json({ ok, service: 'agent-review', checks });
+});
+
 // The only WRITE path into a live repo. --ff-only means git itself refuses
 // if live has diverged, or if any uncommitted local file would be clobbered
 // — no custom conflict handling to get wrong, git's own guarantee.

@@ -55,3 +55,5 @@ keys/
 frontend/coverage/
 # first-run admin password, written once by agent/server.py (mode 0600)
 .initial-admin-password
+# database dumps from scripts/backup.sh (keep them off the repo and off GitHub)
+backups/

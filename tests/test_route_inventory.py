@@ -31,6 +31,10 @@ PUBLIC_ROUTES = {
     # The approve link from a Telegram/email alert: the operator is on a phone
     # with no session. Guarded by the HMAC-signed, expiring, single-use token in
     # the URL (agent/github_inbox.py); the GET only renders a button, the POST acts.
+    # Liveness for a monitoring box or a second person with curl, neither of
+    # which has a session. Reports whether each dependency answers, never a
+    # secret's value (agent/health.py).
+    ("GET", "/api/health"),
     ("GET", "/api/github/approve"),
     ("POST", "/api/github/approve"),
 }
@@ -143,6 +147,7 @@ EXPECTED: list[tuple[str, str, str | None]] = [   ('DELETE', '/api/auth/users/{u
     ('GET', '/api/env-config', 'require_full_auth'),
     ('GET', '/api/github/approve', None),
     ('GET', '/api/github/inbox', 'require_full_auth'),
+    ('GET', '/api/health', None),
     ('GET', '/api/model-config', 'require_full_auth'),
     ('GET', '/api/model-config/catalog', 'require_full_auth'),
     ('GET', '/api/model-config/endpoints', 'require_full_auth'),

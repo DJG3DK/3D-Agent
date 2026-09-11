@@ -45,6 +45,7 @@ from agent.model_config import resolve_alias
 from agent.classify import classify_task, TaskClassification, TEST_REMINDER_NOTE
 from agent import runtime_settings
 from agent import github_inbox, github_settings
+from agent import health as health_checks
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.frontend_route import RouteDecision, classify_frontend, normalize_override
 from agent.planning_chat import build_planning_agent, classify_planning_difficulty, planning_thread_config, run_planning_turn, _translate_message as _translate_planning_message
@@ -508,6 +509,32 @@ async def require_full_auth(user: User = Depends(auth.get_current_user)) -> User
     if blocked:
         raise HTTPException(403, blocked)
     return user
+
+
+@app.get("/api/health")
+async def health():
+    """Can this process do its job right now, and if not, which dependency is
+    missing? Postgres, the router, the sandbox image, the review secret --
+    each checked for real, none of them a model call (see agent/health.py).
+
+    Public on purpose: a monitoring box, or a second person with curl, has no
+    session. Nothing here is a secret -- a configured secret reports `true`,
+    never its value -- and the project names it lists are already on every
+    authenticated page.
+
+    503 when any check fails, so a probe that only reads the status code is
+    still correct. There was no health route at all until 2026-09-11: every
+    restart check in this repo's own history curled /api/health and got the
+    SPA's index.html with a 200, which proved only that uvicorn was serving
+    static files.
+    """
+    # auth_pool is the same Postgres this deployment keeps everything in, and
+    # it is a real pool with a liveness check on checkout -- so one SELECT 1
+    # through it answers for the checkpointer and store too.
+    payload = await health_checks.collect(
+        getattr(app.state, "auth_pool", None), config.litellm_base_url, PROJECTS,
+    )
+    return _JSONResponse(payload, status_code=200 if payload["ok"] else 503)
 
 
 @app.post("/api/auth/login")
