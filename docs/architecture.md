@@ -24,8 +24,10 @@ Optional: `llm-auth-gate` (127.0.0.1:**4010**) — a WebAuthn passkey gate in
 front of the LiteLLM admin UI when that UI is on a public hostname. Nothing
 depends on it; it is a door, not a dependency.
 
-**Health.** Each one answers a local `GET /health` that makes no model call
-and costs nothing, so it is safe to poll:
+**Health.** Each one answers a local health route that makes no model call and
+costs nothing, so it is safe to poll. The path differs per process -- the
+agent serves the dashboard at `/`, so its route is under `/api`, and LiteLLM
+brings its own:
 
 ```
 curl -s 127.0.0.1:8100/api/health   # postgres, router, sandbox image, review secret
@@ -36,6 +38,11 @@ curl -s 127.0.0.1:4000/health/liveliness   # LiteLLM's own
 
 Each returns `503` when a check fails, so a probe that reads only the status
 code is still correct. A configured secret reports `true` — never its value.
+
+The project check answers for what this deployment has **onboarded**, not for
+the built-in project map: a name in `projects.json` promises its checkout is
+on disk, and a built-in repo this host never took on is reported as dormant
+rather than broken. A fresh install with nothing onboarded is healthy.
 
 ---
 
@@ -129,7 +136,7 @@ agent/
   github_settings.py   tokens (encrypted) and per-project inbox policy
   github_inbox.py      the poller, the items, the signed approve links
   middleware/          budget_guard, repeat_guard, sanitize_tool_calls,
-                       hidden_tools, pinned_brief, model_pin
+                       hidden_tools, pinned_brief, model_pin, todo_nag
   tools/               files, bash/sandbox, git, review_gate, planning_tools,
                        github_tools, vision, checks
 scripts/

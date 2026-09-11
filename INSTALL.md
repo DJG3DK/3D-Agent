@@ -387,11 +387,20 @@ an admin account and prints a fresh password to the log.
 
 | Path | What it holds |
 |---|---|
-| `.env`, `services/llm-router/.env` | Secrets |
+| `.env` | The agent's secrets |
+| `services/llm-router/.env` | The router's credentials (OpenRouter key, master key) |
+| `services/shared/.env` | `REVIEW_CONTROL_SECRET` for the two Node services |
+| `keys/` | Per-project deploy keys (mode 700) |
+| `services/commit-reviewer/review-secrets/` | Copies of each project's secret files, so its checks can run |
 | `projects.json` | Your projects (written by the wizard) |
 | `skills/local/` | Your own domain knowledge — see `skills/local/README.md` |
 | `services/*/builtin-projects.local.js` | Optional review/deploy overrides — see the `.example` files |
 | `memory/*.md` | Per-project memory the agent maintains |
+| `backups/` | Database dumps from `scripts/backup.sh` — [docs/backup.md](docs/backup.md) |
+| `frontend/dist/` | The built dashboard (shipped prebuilt in a release tarball) |
+
+The full picture, including which of these must agree with each other, is
+[§6c](#6c-where-every-secret-lives); `scripts/doctor.py` checks it.
 
 ---
 

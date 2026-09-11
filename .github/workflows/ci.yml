@@ -133,6 +133,7 @@ jobs:
           node tests/test_reviewer_preexisting.js
           node tests/test_preflight.js
           node tests/test_service_env.js
+          node tests/test_health_projects.js
 
   shell:
     name: Shell — installer and cron scripts

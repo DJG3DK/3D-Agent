@@ -112,7 +112,7 @@ try {
 // Merged with projects.json so a wizard-onboarded project is reviewed without
 // editing this file; the hand-tuned entries above stay authoritative.
 // See services/shared/projects-config.js for the merge rule.
-const { loadProjects } = require('../shared/projects-config');
+const { loadProjects, healthProjectsCheck } = require('../shared/projects-config');
 
 const PROJECTS = loadProjects(BUILTIN_PROJECTS, { section: 'review' });
 
@@ -1413,11 +1413,9 @@ function startControlServer(routerKey) {
           ok: Boolean(REVIEW_CONTROL_SECRET),
           detail: REVIEW_CONTROL_SECRET ? null : 'REVIEW_CONTROL_SECRET unset: the control endpoint is disabled',
         },
-        projects: {
-          ok: Object.keys(PROJECTS).length > 0,
-          count: Object.keys(PROJECTS).length,
-          detail: Object.keys(PROJECTS).length ? null : 'no projects configured',
-        },
+        // Same rule as agent-review, and literally the same function:
+        // healthProjectsCheck in services/shared/projects-config.js.
+        projects: healthProjectsCheck(PROJECTS),
         state_file: (() => {
           try {
             loadState();

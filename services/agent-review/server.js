@@ -51,7 +51,7 @@ try {
 
 // See services/shared/projects-config.js: projects.json supplies onboarded
 // projects (deploy section), these built-ins stay authoritative.
-const { loadProjects } = require('../shared/projects-config');
+const { loadProjects, healthProjectsCheck } = require('../shared/projects-config');
 const { runPreflight, formatPreflightError } = require('./preflight');
 
 const PROJECTS = loadProjects(BUILTIN_PROJECTS, { section: 'deploy' });
@@ -221,25 +221,23 @@ app.get('/health', (req, res) => {
             ok: Boolean(REVIEW_CONTROL_SECRET),
             detail: REVIEW_CONTROL_SECRET ? null : 'REVIEW_CONTROL_SECRET unset: mutating endpoints are disabled',
         },
-        // A project with no live checkout on disk cannot be merged or deployed.
-        projects: (() => {
-            const names = Object.keys(PROJECTS);
-            const missing = names.filter((n) => !fs.existsSync(PROJECTS[n].live));
-            return {
-                ok: names.length > 0 && missing.length === 0,
-                detail: names.length === 0 ? 'no projects configured'
-                    : missing.length ? `live checkout missing for: ${missing.join(', ')}` : null,
-                count: names.length,
-            };
-        })(),
+        // Onboarding, not the merged map, is what this answers for: see
+        // healthProjectsCheck in services/shared/projects-config.js, which
+        // both health routes share so they cannot drift apart.
+        projects: healthProjectsCheck(PROJECTS),
         // The reviewer's verdict file is what gates every merge; unreadable
-        // means the gate cannot answer and merges fail closed.
+        // means the gate cannot answer and merges fail closed. Absent before
+        // commit-reviewer has ever run, which is the same fresh-install case
+        // as above: say so rather than failing.
         review_state: (() => {
+            if (!fs.existsSync(REVIEW_STATE_PATH)) {
+                return { ok: true, detail: 'not written yet (commit-reviewer has not run)' };
+            }
             try {
                 fs.accessSync(REVIEW_STATE_PATH, fs.constants.R_OK);
                 return { ok: true };
             } catch {
-                return { ok: false, detail: `cannot read ${REVIEW_STATE_PATH} (has commit-reviewer ever run?)` };
+                return { ok: false, detail: `cannot read ${REVIEW_STATE_PATH}` };
             }
         })(),
     };

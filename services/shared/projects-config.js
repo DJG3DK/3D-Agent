@@ -75,4 +75,37 @@ function loadProjects(builtins, { section, file } = {}) {
     return out;
 }
 
-module.exports = { loadProjects, readProjectsJson, PROJECTS_JSON };
+/**
+ * The `projects` check both health routes report, kept here because the two
+ * services must answer it the same way and neither one owns the rule.
+ *
+ * The rule is that **onboarding** is what a health route answers for. The
+ * merged map always contains the built-in projects (see loadProjects above),
+ * so "no projects configured" is a state it can never be in -- a fresh
+ * install looks like three built-in names with nothing on disk behind any of
+ * them. Judging health on the merged map made every fresh install answer 503
+ * on its first day, which is the fastest way to teach an operator that the
+ * health check is noise. A name in projects.json, by contrast, is this
+ * deployment's own claim that the checkout exists, so a missing directory
+ * there is a real fault: no commit can be reviewed, merged or deployed in a
+ * directory that is not there.
+ *
+ * @param {object} projects  the merged map (built-ins + projects.json)
+ * @param {object} [opts]
+ * @param {string} [opts.file]    projects.json to read (tests override it)
+ * @param {(p: string) => boolean} [opts.exists]  fs.existsSync, injectable
+ */
+function healthProjectsCheck(projects, { file, exists = fs.existsSync } = {}) {
+    const onboarded = Object.keys(readProjectsJson(file));
+    const missing = onboarded.filter((n) => projects[n] && !exists(projects[n].live));
+    const dormant = Object.keys(projects).filter((n) => !onboarded.includes(n));
+    return {
+        ok: missing.length === 0,
+        count: onboarded.length,
+        detail: missing.length ? `live checkout missing for: ${missing.join(', ')}`
+            : onboarded.length === 0 ? 'none onboarded yet (fresh install)'
+            : dormant.length ? `not onboarded here: ${dormant.join(', ')}` : null,
+    };
+}
+
+module.exports = { loadProjects, readProjectsJson, healthProjectsCheck, PROJECTS_JSON };

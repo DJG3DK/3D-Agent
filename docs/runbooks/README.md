@@ -11,6 +11,19 @@ box and the dashboard in a browser.
 | [router-refusals.md](router-refusals.md) | "No endpoints found", a role that silently answers from its fallback, a reviewer that returns nothing |
 | [merge-vs-github.md](merge-vs-github.md) | A merge that succeeded while GitHub stayed behind |
 
+**The commands assume this deployment's layout.** They are written to be
+pasted, which means they carry concrete paths; on another install, substitute:
+
+| In these pages | Means |
+|---|---|
+| `/home/3d-agent` | your `AGENT_HOME` — where install.sh put the agent |
+| `/root/.pm2/logs/...` | wherever pm2 writes for the user it runs as (`pm2 logs <app>` avoids the path entirely) |
+| `/home/3DSteals`, `/home/3d-bot` | your own projects' live checkouts, from `projects.json` |
+| `.venv/bin/python` | the agent's virtualenv |
+
+Most snippets start with `cd /home/3d-agent`; `cd "$AGENT_HOME"` works just as
+well if you export it.
+
 Before any of them, the cheapest question: **is everything up?**
 
 ```bash

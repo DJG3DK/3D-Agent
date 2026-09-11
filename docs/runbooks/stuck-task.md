@@ -20,6 +20,13 @@ still be showing you a stale view.
 
 **Check:** reload the page. If the task jumps forward, it was the socket.
 
+**Look for the amber banner.** Under the thinking bubbles, past two minutes of
+silence, the task view says *"No activity for N min"*. That banner means the
+opposite of a dead socket: the connection is alive and the server is still
+sending heartbeats, but nothing of substance has arrived. It is the page
+telling you the agent itself is quiet — a long model call, or genuinely stuck.
+If the banner is absent and the bubbles are animating, work is arriving.
+
 If reloading does not change anything, the browser is telling the truth.
 
 ---
