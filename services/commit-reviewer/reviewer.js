@@ -63,12 +63,12 @@ const OPENROUTER_ENV_PATH = path.join(AGENT_HOME, 'services/llm-router/.env');
 // audit C-4: the control port (4101) was unauthenticated on the same "localhost
 // is the boundary" assumption that url_guard already disproved -- browse_page
 // reached it live. Require the shared secret on the one mutating endpoint.
-const REVIEW_CONTROL_SECRET = (() => {
-  try {
-    const m = require('fs').readFileSync(OPENROUTER_ENV_PATH, 'utf8').match(/^REVIEW_CONTROL_SECRET=(.+)$/m);
-    return m ? m[1].trim() : null;
-  } catch { return null; }
-})();
+// services/shared/.env, not the router's: the model proxy's config should not
+// carry the secret that authorises merge and deploy. The legacy path stays a
+// fallback for deployments installed before the split -- see
+// services/shared/service-env.js.
+const REVIEW_CONTROL_SECRET = require('../shared/service-env')
+  .readServiceSecret('REVIEW_CONTROL_SECRET', AGENT_HOME);
 // Route through the shared llm-router instead of calling OpenRouter directly.
 // Before this the model was a hardcoded const and the request went straight to
 // openrouter.ai, so the reviewer was invisible three ways: absent from the

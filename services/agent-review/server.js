@@ -416,14 +416,10 @@ const BALANCE_CACHE_MS = 60_000;
 // header for the authenticated dashboard path; the agent's own review_gate
 // client sends it; a rewritten npm script cannot forge it because the C-2 env
 // allow-list keeps REVIEW_CONTROL_SECRET out of the check process's env.
-function readReviewSecret() {
-    try {
-        const env = fs.readFileSync(path.join(AGENT_HOME, 'services/llm-router/.env'), 'utf8');
-        const m = env.match(/^REVIEW_CONTROL_SECRET=(.+)$/m);
-        return m ? m[1].trim() : null;
-    } catch { return null; }
-}
-const REVIEW_CONTROL_SECRET = readReviewSecret();
+// services/shared/.env, with the router's own .env as a legacy fallback for
+// deployments that predate the split -- see services/shared/service-env.js.
+const { readServiceSecret } = require('../shared/service-env');
+const REVIEW_CONTROL_SECRET = readServiceSecret('REVIEW_CONTROL_SECRET', AGENT_HOME);
 
 function requireControlSecret(req, res, next) {
     // Fail CLOSED: if the secret is unset the mutating surface is disabled, not

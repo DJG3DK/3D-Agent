@@ -633,7 +633,7 @@ All config is environment variables, loaded from `.env` (see `agent/config.py`).
 | `AGENT_PROJECT_ROOTS` | Colon-separated roots a project may be onboarded from (default `/home` — the parent of *all* home directories, not just yours; narrow it). Onboarding grants an agent bash and write access to what it points at, so this is the boundary — the admin check is only *who may ask* |
 | `AGENT_SANDBOX_ROOT` | Where agent worktrees are created (default `/home/agent-workspaces`). Server-owned: never accepted from a request |
 | `GITHUB_TOKEN` | Optional fallback for the PR tools and the GitHub inbox. Per-project tokens in Settings → GitHub are preferred |
-| `REVIEW_CONTROL_SECRET` | Shared secret authorising merge/deploy between the agent and the review service. The two sides read it from different files and must match — `install.sh` generates it into both. See [INSTALL.md](INSTALL.md) |
+| `REVIEW_CONTROL_SECRET` | Shared secret authorising merge/deploy between the agent and the review service. The agent reads its own `.env`; the Node services read `services/shared/.env`. They must match — `install.sh` generates it into both. See [INSTALL.md](INSTALL.md) |
 
 `projects.json` (gitignored; `projects.example.json` is the template) lists the repos this
 deployment can target and each one's sandbox/live checkout paths.

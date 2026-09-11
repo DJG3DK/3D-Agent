@@ -57,3 +57,31 @@ def _test_repo_project(tmp_path_factory):
         PROJECTS["test-repo"] = previous
     else:
         PROJECTS.pop("test-repo", None)
+
+
+@pytest.fixture(autouse=True)
+def _advisory_lock_without_postgres(monkeypatch):
+    """project_lock takes a Postgres advisory lock so two processes cannot run
+    one project (agent/graph.py). CI has no Postgres, and a test that drives
+    _stream_graph should not need one, so the connection is faked here: the
+    lock's own code path still runs, and its real behaviour -- including what
+    happens when another process holds it -- is covered against a fake
+    connection in tests/test_project_lock.py.
+    """
+    from agent import graph as _graph
+
+    class _Cursor:
+        async def fetchone(self):
+            return (True,)          # always free: no other process in a test
+
+    class _Conn:
+        async def execute(self, sql, params=None):
+            return _Cursor()
+
+        async def close(self):
+            return None
+
+    async def _connect(dsn, autocommit=True):
+        return _Conn()
+
+    monkeypatch.setattr(_graph, "_connect", _connect)

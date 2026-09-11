@@ -32,6 +32,25 @@ interface StreamState {
 // the view (the full record lives server-side).
 const MAX_LOG_ENTRIES = 3000;
 
+// Liveness watchdog, the same one planning chat has had since 2026-08-31 and
+// build tasks did not (2026-09-11).
+//
+// onclose is not a reliable death signal. A half-open TCP -- laptop sleep, a
+// NAT idle-kill, a proxy dropping the connection without a FIN -- leaves the
+// browser holding a socket it will never hear from again, and no event ever
+// fires. The task then finishes, escalates or asks for an approval
+// server-side, and every one of those events goes to a socket nobody is
+// listening on: the page sits on "running" forever, showing a step that
+// completed twenty minutes ago. It looks exactly like a stuck agent, which is
+// the one thing this dashboard exists to make visible.
+//
+// The server pings every 20s, so silence past three pings is death. The
+// recovery is just close(): that fires onclose, which reconnects and
+// re-hydrates, and hydration reads status from the server -- the authority on
+// whether the task is actually running.
+const SOCKET_SILENCE_LIMIT_MS = 70_000;
+const SOCKET_WATCHDOG_POLL_MS = 15_000;
+
 const EMPTY_STATE: StreamState = {
   log: [],
   plan: [],
@@ -74,6 +93,11 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
   const [state, setState] = useState<StreamState>(EMPTY_STATE);
   const closedIntentionally = useRef(false);
   const prevTaskId = useRef<string | null>(null);
+  // The live socket and when it last said anything, for the watchdog below.
+  // A ref because the watchdog runs in its own effect and must be able to
+  // close the socket the connect() closure owns.
+  const wsRef = useRef<WebSocket | null>(null);
+  const lastMessageAt = useRef(Date.now());
 
   useEffect(() => {
     if (!taskId || !repo) return;
@@ -245,6 +269,8 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
 
     function connect() {
       ws = new WebSocket(taskStreamUrl(taskId!));
+      wsRef.current = ws;
+      lastMessageAt.current = Date.now();
       // audit H-14: a rejected upgrade (expired/invalid session) fires onclose
       // WITHOUT ever firing onopen, and the old code just reconnected on the
       // same backoff forever against a server that will never accept it.
@@ -253,10 +279,14 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
       ws.onopen = () => {
         openedThisAttempt = true;
         retryDelay = 1000;
+        lastMessageAt.current = Date.now();
         setState((s) => ({ ...s, connected: true }));
       };
 
       ws.onmessage = (ev) => {
+        // Any frame at all, ping or content, parseable or not, proves the
+        // socket is alive -- that is the only question the watchdog asks.
+        lastMessageAt.current = Date.now();
         // A frame that does not parse drops just that frame. Unguarded, the
         // throw escapes into the event loop as a bare SyntaxError with no
         // indication of which socket produced it -- the stream survives
@@ -355,8 +385,32 @@ export function useTaskStream(taskId: string | null, repo: string | null, genera
       clearTimeout(retryTimer);
       clearTimeout(watchTimer);
       ws?.close();
+      wsRef.current = null;
     };
   }, [taskId, repo, generation]);
+
+  // Armed only while the task is running: a settled task has nothing to
+  // recover, and the REST watcher above already covers the paused states.
+  useEffect(() => {
+    if (state.status !== "running") return;
+    const id = window.setInterval(() => {
+      if (Date.now() - lastMessageAt.current < SOCKET_SILENCE_LIMIT_MS) return;
+      lastMessageAt.current = Date.now(); // don't re-fire while the retry runs
+      const ws = wsRef.current;
+      if (ws && ws.readyState !== WebSocket.CLOSED) {
+        // close() fires onclose, which re-hydrates and reconnects. Going
+        // through that path rather than calling connect() directly keeps the
+        // backoff and the auth re-validation in one place.
+        try { ws.close(); } catch { /* already closing */ }
+      } else {
+        // No socket at all and the server still says running: nothing is
+        // coming to reconnect us, so mark the view disconnected and let the
+        // REST watcher pick the task back up.
+        setState((s) => (s.connected ? { ...s, connected: false } : s));
+      }
+    }, SOCKET_WATCHDOG_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [state.status]);
 
   return state;
 }

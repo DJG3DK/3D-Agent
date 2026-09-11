@@ -334,8 +334,13 @@ export function GitHubSettingsCard() {
         </table>
       </div>
       <p className="settings-hint">
-        <b>Propose</b> puts the item in the GitHub inbox and sends an approve link. <b>Auto</b> starts the task immediately, up to the cap; nothing is merged without the review gate and your approval.
+        <b>Propose</b> puts the item in the GitHub inbox and sends an approve link. <b>Auto</b> starts the task immediately, up to the cap.
       </p>
+      <div className="settings-note settings-note--keep gh-invariant">
+        <strong>A task from the inbox is never unattended:</strong> whoever started it, it ignores Auto mode
+        and still prompts for gated actions, and it always requires your merge approval — even if you have
+        turned both off for your own typed tasks. Nobody typed these goals, so the switches do not apply.
+      </div>
       <div className="settings-actions gh-actions">
         <button type="button" className="gh-btn" disabled={polling} onClick={pollNow}>{polling ? "Polling…" : "Poll now"}</button>
         {pollMsg && <span className="settings-hint gh-poll-msg">{pollMsg}</span>}

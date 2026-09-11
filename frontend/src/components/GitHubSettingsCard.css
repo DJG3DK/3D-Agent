@@ -65,3 +65,4 @@
 @media (max-width: 768px) {
   .gh-grid2 { grid-template-columns: 1fr; }
 }
+.gh-invariant { margin-top: 6px; }

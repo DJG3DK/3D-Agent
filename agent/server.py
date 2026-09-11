@@ -763,13 +763,23 @@ async def _github_open_auto_count(repo: str) -> int:
 
 
 async def _github_create_task(repo: str, goal: str, budget: float, route: str) -> str:
-    """Inbox tasks run under the admin account's command policy and always
-    keep the merge review: the operator asked that everything created this
-    way still goes through the gate and their final look."""
-    admin = await auth.get_user_by_email(app.state.auth_pool, config.admin_email)
+    """A task GitHub asked for, not a person. Two invariants, deliberately not
+    reading any per-user toggle:
+
+      * gated actions still prompt (auto_approve_commands=False), even when
+        the admin has auto mode on for their own typed tasks;
+      * merge review is always required, whatever the user preference says.
+
+    Nobody typed this goal and nobody is necessarily watching when it starts.
+    Auto inbox + auto-approve + merge-review-off is the combination that turns
+    this into an unattended merge bot, and a preference toggle set months ago
+    for hand-driven work must not be what decides it. The README promises Auto
+    "keeps the operator's final merge approval"; this function is where that
+    promise is kept, and tests/test_inbox_task_invariants.py pins it.
+    """
     out = await _start_task(
         goal, repo, budget, route,
-        auto_approve_commands=bool(admin and admin.get("auto_approve_commands")),
+        auto_approve_commands=False,
         require_merge_review=True,
         origin="github",
     )
@@ -1512,7 +1522,10 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
     last_meta_cost = starting_cost
 
     try:
-        async with project_lock(repo):
+        # The DSN makes this a Postgres advisory lock rather than an object in
+        # this process, so a second worker or an overlapping restart cannot run
+        # two tasks on one worktree (agent/graph.py).
+        async with project_lock(repo, config.pg_dsn):
             # stream_mode=["updates", "custom"] (not just "updates") -- the
             # graph's own "work" node is a single StateGraph node that
             # manually drives a whole inner deep-agent run inside itself

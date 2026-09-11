@@ -5,13 +5,19 @@ re-exports them from here rather than duplicating them.
 """
 
 import asyncio
+import hashlib
+import logging
+import time
 from contextlib import asynccontextmanager
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from agent.config import Config
+
+logger = logging.getLogger("3d-agent")
 
 # A pool, not a single long-lived connection: a bare connection held open for
 # this process's entire lifetime (it runs for days) goes stale silently
@@ -48,17 +54,84 @@ def _make_pool(config: Config) -> AsyncConnectionPool:
         open=False,
     )
 
-# One task at a time per project. Executing two tasks against the same
-# sandbox directory concurrently would corrupt each other's uncommitted
-# work; this is an in-process guard against that rather than relying on
-# callers to serialize requests correctly.
+# One task at a time per project. Two tasks against the same worktree would
+# overwrite each other's uncommitted work, and the loser's diff is whatever
+# survived the race.
+#
+# This was an in-process asyncio.Lock, which made "one task per project" true
+# only while exactly one process existed. A second uvicorn worker, a restart
+# that overlaps the old process, or an operator running a script against the
+# same database would each hold their own lock object and happily run two
+# tasks on one directory. The rule is a property of the PROJECT, so it has to
+# live where every process can see it: a Postgres session-level advisory lock.
+#
+# Session-level, not transaction-level, on a dedicated connection: Postgres
+# drops it when that connection closes, so a crashed or killed process
+# releases its claim without anyone cleaning up. That is the half an
+# in-process lock can never do.
 _project_locks: dict[str, asyncio.Lock] = {}
 
+# Advisory locks are a flat 64-bit namespace shared with anything else using
+# this database. The two-int form keeps ours in their own corner.
+_LOCK_NAMESPACE = 0x3D46          # "3D" + "46" -- this project's corner
+_LOCK_WAIT_WARN_S = 5.0
 
-def project_lock(repo: str) -> asyncio.Lock:
+# Injectable so tests can drive the SQL without a live Postgres.
+_connect = AsyncConnection.connect
+
+
+def advisory_key(repo: str) -> int:
+    """A stable int4 for a project name. blake2b rather than hash(): Python's
+    hash is salted per process, so two workers would lock different keys for
+    the same repo -- which is exactly the bug this replaces."""
+    return int.from_bytes(hashlib.blake2b(repo.encode(), digest_size=4).digest(), "big", signed=True)
+
+
+def _in_process_lock(repo: str) -> asyncio.Lock:
+    """Kept in front of the database lock: tasks queued inside one process
+    wait on a local object instead of each holding an idle connection."""
     if repo not in _project_locks:
         _project_locks[repo] = asyncio.Lock()
     return _project_locks[repo]
+
+
+@asynccontextmanager
+async def project_lock(repo: str, dsn: str | None = None):
+    """Hold this project for the duration of the block.
+
+    Without `dsn` this is the old in-process lock, which is what callers that
+    have no database (tests, scripts) get. With one, the claim is visible to
+    every process pointed at the same database.
+    """
+    async with _in_process_lock(repo):
+        if not dsn:
+            yield
+            return
+        key = advisory_key(repo)
+        conn = await _connect(dsn, autocommit=True)
+        try:
+            cur = await conn.execute("SELECT pg_try_advisory_lock(%s, %s)", (_LOCK_NAMESPACE, key))
+            row = await cur.fetchone()
+            if not (row and row[0]):
+                # Someone else has this project. Wait, the way the old
+                # in-process lock made callers wait -- but say so, because
+                # "the task just sits there" is otherwise unexplainable.
+                logger.warning(
+                    "project %s is locked by another process; waiting for it to finish "
+                    "(advisory lock %s/%s)", repo, _LOCK_NAMESPACE, key)
+                started = time.monotonic()
+                await conn.execute("SELECT pg_advisory_lock(%s, %s)", (_LOCK_NAMESPACE, key))
+                waited = time.monotonic() - started
+                if waited > _LOCK_WAIT_WARN_S:
+                    logger.warning("project %s acquired after waiting %.0fs", repo, waited)
+            try:
+                yield
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(%s, %s)", (_LOCK_NAMESPACE, key))
+        finally:
+            # Closing would release the lock on its own; the explicit unlock
+            # above is for the case where this connection is somehow reused.
+            await conn.close()
 
 
 @asynccontextmanager
