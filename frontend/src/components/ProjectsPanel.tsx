@@ -215,7 +215,7 @@ export function ProjectsPanel() {
                   <div className="wiz-group">
                     <div className="wiz-group-head">
                       <span className="wiz-group-title">Checks the review gate will run</span>
-                      <span className="wiz-group-help">Taken from the repo's own scripts.</span>
+                      <span className="wiz-group-help">Taken from the repo's own scripts and manifests.</span>
                     </div>
                     {report.checks.length ? report.checks.map((c) => (
                       <div key={c.name} className="wiz-cmd">
@@ -226,8 +226,8 @@ export function ProjectsPanel() {
                   </div>
 
                   <CandidateList
-                    title="Risky test scripts"
-                    help="These make network calls. Enable only if you know they don't touch production."
+                    title="Test commands that make network calls"
+                    help="Enable only if you know they don't touch production. A whole suite is listed when the stack has no per-suite script names (Go, Rust, Ruby, pytest)."
                     items={report.risky_scripts} chosen={risky}
                     onToggle={(v, on) => setRisky((s) => ({ ...s, [v]: on }))}
                   />

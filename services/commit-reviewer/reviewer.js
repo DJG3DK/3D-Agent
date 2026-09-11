@@ -352,6 +352,9 @@ async function setupWorktree(project, cfg, sha, base) {
   const add = await git(cfg.live, ['worktree', 'add', '--detach', worktreePath, sha]);
   if (!add.ok) throw new Error(`worktree add failed: ${add.output.slice(0, 500)}`);
 
+  // Every nodeModulesDirs loop below tolerates the key being absent: a Go,
+  // Rust or Ruby project has no such directories, and neither does a Node
+  // project whose operator deselected them in the onboarding wizard.
   // node_modules aren't part of the git tree — symlink from live rather
   // than reinstall, UNLESS this commit touched a lockfile/package.json, in
   // which case a symlinked node_modules could be silently wrong. A single
@@ -418,7 +421,7 @@ async function setupWorktree(project, cfg, sha, base) {
     // bypassing the worktree's own fresh build entirely. Confirmed via
     // `fs.realpathSync` on the worktree's own node_modules entry.
     const internalPackages = new Map(); // package.json name -> worktree path
-    for (const rel of cfg.nodeModulesDirs) {
+    for (const rel of cfg.nodeModulesDirs || []) {
       const pkgJsonPath = path.join(worktreePath, rel, 'package.json');
       if (!fs.existsSync(pkgJsonPath)) continue;
       try {
@@ -430,7 +433,7 @@ async function setupWorktree(project, cfg, sha, base) {
       }
     }
 
-    for (const rel of cfg.nodeModulesDirs) {
+    for (const rel of cfg.nodeModulesDirs || []) {
       const liveNodeModules = path.join(cfg.live, rel, 'node_modules');
       const targetDir = path.join(worktreePath, rel);
       const targetNodeModules = path.join(targetDir, 'node_modules');
@@ -581,7 +584,7 @@ async function cleanupWorktree(cfg, worktreePath) {
   // silently leave a stale mount pointing at a deleted path) if this were
   // skipped.
   if (cfg.bindMountNodeModules) {
-    for (const rel of cfg.nodeModulesDirs) {
+    for (const rel of cfg.nodeModulesDirs || []) {
       const mounted = path.join(worktreePath, rel, 'node_modules');
       await run('umount', [mounted], '/');
     }

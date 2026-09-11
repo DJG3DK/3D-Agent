@@ -279,3 +279,100 @@ def test_reload_projects_mutates_the_shared_dict_in_place(tmp_path, monkeypatch)
 
     assert borrowed is agent_config.PROJECTS, "reload rebound instead of mutating"
     assert set(borrowed) == {"a"}
+
+
+@pytest.fixture
+def go_repo(tmp_path):
+    """A Go service with one honest suite and one that calls a live host --
+    the same shape as the npm fixture above, in a stack that until now
+    onboarded with no checks at all."""
+    repo = tmp_path / "ledger-svc"
+    (repo / "internal").mkdir(parents=True)
+    (repo / "go.mod").write_text("module example.com/ledger-svc\n\ngo 1.22\n")
+    (repo / ".golangci.yml").write_text("linters:\n  enable: [govet]\n")
+    (repo / ".gitignore").write_text(".env\n")
+    (repo / ".env").write_text("DATABASE_URL=postgres://localhost/ledger\n")
+    (repo / "internal" / "sum_test.go").write_text(
+        "package internal\n\nfunc TestSum(t *testing.T) { _ = 1 + 1 }\n")
+    (repo / "settle_test.go").write_text(
+        'package main\n\nimport "net/http"\n\n'
+        'func TestSettle(t *testing.T) { http.Post("https://payments.example.com/settle", "", nil) }\n')
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    return repo
+
+
+def test_a_go_project_onboards_with_real_checks(go_repo, wired, monkeypatch):
+    """The same journey as test_full_onboarding_flow, for a stack that used to
+    arrive with an empty checks list -- which is how the review gate becomes a
+    no-op: it passes every change because it runs nothing.
+    """
+    _stub_side_effects(monkeypatch)
+    client = TestClient(srv.app)
+
+    report = client.post("/api/projects/detect", json={"path": str(go_repo)}).json()
+    assert report["blockers"] == []
+    assert report["languages"] == ["go"]
+    assert report["package_manager"] is None
+    assert report["node_modules_dirs"] == [], "a Go repo has no node_modules to mount"
+    assert [c["name"] for c in report["checks"]] == ["vet", "build", "lint"], \
+        "the suite POSTs at a live host, so it is proposed flagged rather than as a check"
+    assert [c["cmd"] for c in report["checks"]] == ["go", "go", "golangci-lint"]
+    flagged = {c["value"]: c for c in report["risky_scripts"]}
+    assert flagged["test"]["enabled"] is False
+    assert "settle_test.go" in flagged["test"]["reason"]
+    assert report["db_env_file"] == ".env"
+
+    # The operator reads the flagged suite and accepts it: it is named, never
+    # authored -- the client sends a name and the server substitutes its own
+    # command (test_enabling_a_flagged_suite_runs_our_command_not_the_client_s
+    # in test_provisioning.py holds that boundary directly).
+    body = {
+        "path": report["live"],
+        "choices": {
+            "secret_files": [c["value"] for c in report["secret_files"]],
+            "read_only_mounts": [],
+            "pm2_apps": [],
+            "node_modules_dirs": [],
+            "checks": [*report["checks"], {"name": "test"}],
+            "build_steps": report["build_steps"],
+            "db_env_file": report["db_env_file"],
+        },
+        "grant_access": False,
+    }
+    res = client.post("/api/projects/provision", json=body)
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True
+
+    written = json.loads(wired["projects_file"].read_text())["projects"]["ledger-svc"]
+    checks = {c["name"]: c for c in written["review"]["checks"]}
+    assert checks["test"]["cmd"] == "go" and checks["test"]["args"] == ["test", "./..."]
+    assert checks["lint"]["cmd"] == "golangci-lint"
+    assert written["review"]["secretFiles"] == [".env"]
+    assert "nodeModulesDirs" not in written["review"]
+    assert written["deploy"]["build"] == [{"dir": ".", "cmd": "go", "args": ["build", "./..."]}]
+
+    # And the JS services read the same thing, with no edit to their own files.
+    node_probe = (
+        "const {loadProjects} = require(%s);"
+        "const r = loadProjects({}, {section:'review', file: %s});"
+        "const d = loadProjects({}, {section:'deploy', file: %s});"
+        "console.log(JSON.stringify({"
+        "  checks: (r['ledger-svc'].checks||[]).map(c=>c.cmd + ' ' + c.args.join(' ')),"
+        "  nodeModulesDirs: r['ledger-svc'].nodeModulesDirs || null,"
+        "  build: (d['ledger-svc'].build||[]).map(b=>b.cmd) }));"
+    ) % (
+        json.dumps(str(REPO_ROOT / "services" / "shared" / "projects-config.js")),
+        json.dumps(str(wired["projects_file"])),
+        json.dumps(str(wired["projects_file"])),
+    )
+    out = subprocess.run(["node", "-e", node_probe], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    seen = json.loads(out.stdout)
+    assert "go test ./..." in seen["checks"]
+    assert seen["nodeModulesDirs"] is None, \
+        "the reviewer's node_modules loops must tolerate a project that has none"
+    assert seen["build"] == ["go"]

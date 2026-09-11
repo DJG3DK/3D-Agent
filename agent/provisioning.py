@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field, asdict
+from fnmatch import fnmatch
 from pathlib import Path
 
 # Files that look like credentials, are gitignored, and therefore never
@@ -45,13 +46,48 @@ _SECRET_NAME_HINTS = re.compile(
 
 # Network calls inside a test file. A match doesn't prove the test hits
 # production -- it proves we cannot prove it doesn't.
+#
+# The idioms are listed per ecosystem rather than as one loose pattern
+# because the false-negative and the false-positive cost differently. A
+# missed call is the trading-bot incident again; a spurious match only means
+# the operator is asked about a suite the wizard would otherwise have enabled
+# silently. Bare URLs are deliberately NOT matched: every Go file that cites
+# pkg.go.dev in a comment would flag, and a wizard that flags everything
+# teaches the operator to click through it.
 _NETWORK_CALL = re.compile(
     r"(fetch\s*\(|axios|http\.request|https\.request|got\s*\(|superagent|"
-    r"requests\.(get|post|put|delete)|urllib|httpx\.|127\.0\.0\.1|localhost:\d+)",
+    r"requests\.(get|post|put|delete)|urllib|httpx\.|aiohttp|"
+    # Go
+    r"http\.(Get|Post|Head|PostForm|NewRequest)\b|http\.DefaultClient|"
+    r"\bnet\.Dial\b|grpc\.Dial\b|"
+    # Rust
+    r"\breqwest\b|\bureq\b|hyper::Client|TcpStream::connect|"
+    # Ruby
+    r"Net::HTTP|HTTParty|RestClient|Faraday|Excon|URI\.(open|parse)\s*\(|open-uri|"
+    r"127\.0\.0\.1|localhost:\d+)",
     re.IGNORECASE,
 )
 
 _SCRIPT_REF = re.compile(r"[\w./-]+\.(?:js|mjs|cjs|ts|tsx|py)")
+
+# Which files hold a language's tests. Used only to decide whether a
+# whole-suite check (`go test ./...`, `cargo test`, `bundle exec rspec`)
+# arrives enabled: unlike npm, these ecosystems have no per-suite script
+# names to flag individually, so the unit of suspicion is the suite.
+_TEST_FILE_GLOBS = {
+    "go": ("*_test.go",),
+    "rust": ("*.rs",),
+    "ruby": ("*_spec.rb", "*_test.rb"),
+    "python": ("test_*.py", "*_test.py"),
+}
+
+# A suite scan reads files, so it is bounded twice: by how many files it will
+# open and by how much of each it reads. A monorepo with ten thousand test
+# files must not turn one wizard click into a minute of IO.
+_SCAN_FILE_LIMIT = 600
+_SCAN_BYTES = 200_000
+
+TEST_TIMEOUT_MS_DEFAULT = 900_000
 
 # Directories never worth mounting or scanning.
 _SKIP_DIRS = {
@@ -193,6 +229,11 @@ class Candidate:
     reason: str
     enabled: bool = True
     warning: str | None = None
+    # The check this candidate stands for, when enabling it means running a
+    # whole suite rather than one npm script. validate_choices offers THIS
+    # dict under the candidate's name, so the client still only ever sends a
+    # name -- it cannot author the command that the review service executes.
+    check: dict | None = None
 
 
 @dataclass
@@ -272,6 +313,8 @@ def _detect_languages(live: Path) -> list[str]:
         langs.append("go")
     if (live / "Cargo.toml").is_file():
         langs.append("rust")
+    if any((live / f).is_file() for f in ("Gemfile", "Rakefile", ".ruby-version", "Gemfile.lock")):
+        langs.append("ruby")
     return langs
 
 
@@ -371,16 +414,331 @@ def _detect_node_checks(live: Path, pkg: dict, pm: str) -> tuple[list[dict], lis
     return checks, risky
 
 
-def _detect_python_checks(live: Path) -> list[dict]:
+def _scan_for_network_tests(live: Path, lang: str) -> list[tuple[str, str]]:
+    """Test files whose own text makes network calls, as (path, idiom) pairs.
+
+    npm repos name their suites, so _detect_node_checks can flag one script
+    and keep the rest. Go, Rust, Ruby and pytest have no such names -- the
+    command is the whole suite -- so the suspicion has to be raised by
+    reading the test files themselves. Bounded by _SCAN_FILE_LIMIT and
+    _SCAN_BYTES: this runs inside a wizard click, not a batch job.
+    """
+    globs = _TEST_FILE_GLOBS.get(lang, ())
+    if not globs:
+        return []
+    hits: list[tuple[str, str]] = []
+    scanned = 0
+    for root, dirs, files in os.walk(live):
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS and not d.startswith("."))
+        for fname in sorted(files):
+            if not any(fnmatch(fname, g) for g in globs):
+                continue
+            if scanned >= _SCAN_FILE_LIMIT:
+                return hits
+            scanned += 1
+            path = Path(root) / fname
+            try:
+                body = path.read_text(errors="ignore")[:_SCAN_BYTES]
+            except OSError:
+                continue
+            # Rust keeps unit tests beside the code, so *.rs matches far more
+            # than tests. Only a file that actually declares a test counts.
+            if lang == "rust" and "#[test]" not in body and "#[tokio::test]" not in body \
+                    and "#[actix_rt::test]" not in body:
+                continue
+            m = _NETWORK_CALL.search(body)
+            if m:
+                hits.append((str(path.relative_to(live)), m.group(0)))
+    return hits
+
+
+def _suite_check(name: str, cmd: str, args: list[str], *, timeout: int) -> dict:
+    return {"name": name, "dir": ".", "cmd": cmd, "args": list(args), "timeoutMs": timeout}
+
+
+def _guard_suite(live: Path, lang: str, full: dict, review: dict | None) -> tuple[list[dict], list[Candidate]]:
+    """Apply the network-calling-tests rule to a whole-suite test command.
+
+    Same rule the npm path has followed since the trading-bot incident, with
+    the same three outcomes:
+
+    * the repo declares a curated review suite -> trust it, and offer the
+      unguarded full suite separately as a flagged candidate;
+    * no curated suite and the tests call the network -> the suite is NOT a
+      check, it is a flagged candidate the operator may enable after reading;
+    * nothing suspicious -> the suite is a check.
+    """
+    hits = _scan_for_network_tests(live, lang)
+    if not hits:
+        return [review or full], []
+    where = ", ".join(f"{p} ({idiom})" for p, idiom in hits[:3])
+    more = f" and {len(hits) - 3} more" if len(hits) > 3 else ""
+    warning = ("Excluded from automated review. A test that calls a live service can act on "
+               "production (this deployment learned that from a suite that POSTed real trade "
+               "orders). Enable only after reading it.")
+    if review:
+        # The repo has stated which suite is safe in a detached checkout, so
+        # that one is the check. The full suite stays on offer under its own
+        # name -- narrowing is the operator's to do, not ours to hide.
+        full_named = dict(full, name=f"{full['name']}-all")
+        return [review], [Candidate(
+            value=full_named["name"],
+            reason=f"the full suite makes network calls: {where}{more}",
+            enabled=False, warning=warning, check=full_named,
+        )]
+    return [], [Candidate(
+        value=full["name"],
+        reason=f"test files make network calls: {where}{more}",
+        enabled=False, warning=warning, check=full,
+    )]
+
+
+def _makefile_targets(live: Path) -> set[str]:
+    """Target names from a root Makefile. Deliberately shallow: no includes,
+    no variable expansion, no recursion into sub-makes. This is used to spot
+    a declared `test-review`, not to understand the build."""
+    out: set[str] = set()
+    for fname in ("Makefile", "makefile", "GNUmakefile"):
+        mk = live / fname
+        if not mk.is_file():
+            continue
+        try:
+            text = mk.read_text(errors="ignore")[:_SCAN_BYTES]
+        except OSError:
+            return out
+        for line in text.splitlines():
+            m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.\-]*)\s*:(?!=)", line)
+            if m:
+                out.add(m.group(1))
+        break
+    return out
+
+
+def _make_review_target(targets: set[str]) -> str | None:
+    """The cross-language stand-in for npm's `test:review`: a Makefile target
+    a repo wrote specifically so an outside reviewer could run its safe
+    suites."""
+    for name in ("test-review", "test_review", "review-test"):
+        if name in targets:
+            return name
+    return None
+
+
+def _detect_go_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    checks = [_suite_check("vet", "go", ["vet", "./..."], timeout=CHECK_TIMEOUT_MS_DEFAULT),
+              _suite_check("build", "go", ["build", "./..."], timeout=CHECK_TIMEOUT_MS_DEFAULT)]
+    warnings: list[str] = []
+    if any((live / f).is_file() for f in (".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json")):
+        # Only when the repo configures it: proposing golangci-lint for a repo
+        # that never opted in means every review fails on lints its authors
+        # never agreed to. _missing_toolchain says so if it is not installed.
+        checks.append(_suite_check("lint", "golangci-lint", ["run"], timeout=CHECK_TIMEOUT_MS_DEFAULT))
+    target = _make_review_target(_makefile_targets(live))
+    review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT) if target else None
+    full = _suite_check("test", "go", ["test", "./..."], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    tests, risky = _guard_suite(live, "go", full, review)
+    return checks + tests, risky, warnings
+
+
+def _cargo_alias(live: Path, name: str) -> bool:
+    """Is `name` declared as a cargo alias? The Rust equivalent of a repo
+    naming its own reviewer-safe suite."""
+    for rel in (".cargo/config.toml", ".cargo/config"):
+        cfg = live / rel
+        if not cfg.is_file():
+            continue
+        try:
+            text = cfg.read_text(errors="ignore")[:_SCAN_BYTES]
+        except OSError:
+            continue
+        if re.search(r"^\s*['\"]?" + re.escape(name) + r"['\"]?\s*=", text, re.MULTILINE):
+            return True
+    return False
+
+
+def _detect_rust_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    checks = [_suite_check("build", "cargo", ["build"], timeout=TEST_TIMEOUT_MS_DEFAULT)]
+    if any((live / f).is_file() for f in ("rustfmt.toml", ".rustfmt.toml")):
+        checks.insert(0, _suite_check("fmt", "cargo", ["fmt", "--", "--check"],
+                                      timeout=CHECK_TIMEOUT_MS_DEFAULT))
+    if any((live / f).is_file() for f in ("clippy.toml", ".clippy.toml")):
+        # A repo that configures clippy has opted into it; without -D
+        # warnings clippy exits 0 on every lint it reports, which would make
+        # the check a decoration rather than a gate.
+        checks.append(_suite_check("lint", "cargo", ["clippy", "--all-targets", "--", "-D", "warnings"],
+                                   timeout=TEST_TIMEOUT_MS_DEFAULT))
+    review = None
+    if _cargo_alias(live, "test-review"):
+        review = _suite_check("test", "cargo", ["test-review"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    else:
+        target = _make_review_target(_makefile_targets(live))
+        if target:
+            review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    full = _suite_check("test", "cargo", ["test"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    tests, risky = _guard_suite(live, "rust", full, review)
+    return checks + tests, risky, []
+
+
+def _rake_declares_test_review(live: Path) -> bool:
+    """Does the Rakefile declare a `test:review` task? Both spellings count:
+    the flat `task "test:review"` and the idiomatic `namespace :test` with a
+    `:review` task inside it, which is how most repos actually write it."""
+    rf = live / "Rakefile"
+    if not rf.is_file():
+        return False
+    try:
+        text = rf.read_text(errors="ignore")[:_SCAN_BYTES]
+    except OSError:
+        return False
+    if "test:review" in text:
+        return True
+    return bool(re.search(r"namespace\s+:test\b", text)
+                and re.search(r"task\s+:review\b", text))
+
+
+def _detect_ruby_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    bundled = (live / "Gemfile.lock").is_file() or (live / "Gemfile").is_file()
+    runner = ["bundle", "exec"] if bundled else []
+
+    def cmd(*parts: str) -> dict:
+        args = (runner + list(parts))
+        return _suite_check("", args[0], args[1:], timeout=CHECK_TIMEOUT_MS_DEFAULT)
+
     checks: list[dict] = []
-    if (live / "pytest.ini").is_file() or (live / "pyproject.toml").is_file() \
-            or (live / "tests").is_dir():
-        checks.append({"name": "test", "dir": ".", "cmd": "python", "args": ["-m", "pytest", "-q"],
-                       "timeoutMs": 900_000})
+    if (live / ".rubocop.yml").is_file() or (live / ".rubocop.yaml").is_file():
+        lint = cmd("rubocop")
+        lint["name"] = "lint"
+        checks.append(lint)
+
+    review = None
+    if _rake_declares_test_review(live):
+        review = cmd("rake", "test:review")
+    else:
+        target = _make_review_target(_makefile_targets(live))
+        if target:
+            review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    if review is not None:
+        review["name"] = "test"
+        review["timeoutMs"] = TEST_TIMEOUT_MS_DEFAULT
+
+    if (live / "spec").is_dir():
+        full = cmd("rspec")
+    elif (live / "test").is_dir() and (live / "Rakefile").is_file():
+        full = cmd("rake", "test")
+    elif review is not None:
+        full = dict(review)
+    else:
+        return checks, [], []
+    full["name"] = "test"
+    full["timeoutMs"] = TEST_TIMEOUT_MS_DEFAULT
+
+    tests, risky = _guard_suite(live, "ruby", full, review)
+    return checks + tests, risky, []
+
+
+def _detect_make_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    """Last resort for a repo with no manifest this module recognizes. A
+    Makefile is the one convention every stack shares, so a declared `test`
+    or `lint` target is better evidence than guessing at the language."""
+    targets = _makefile_targets(live)
+    checks: list[dict] = []
+    for name in ("lint", "build"):
+        if name in targets:
+            checks.append(_suite_check(name, "make", [name], timeout=CHECK_TIMEOUT_MS_DEFAULT))
+    review_target = _make_review_target(targets)
+    review = (_suite_check("test", "make", [review_target], timeout=TEST_TIMEOUT_MS_DEFAULT)
+              if review_target else None)
+    if "test" not in targets and review is None:
+        return checks, [], []
+    full = _suite_check("test", "make", ["test"], timeout=TEST_TIMEOUT_MS_DEFAULT) if "test" in targets \
+        else dict(review)
+    # No language is known here, so there is no test-file glob to scan; the
+    # Makefile target is taken at its word. Said plainly in the warning.
+    if review is not None:
+        return checks + [review], [], []
+    return checks + [full], [], [
+        "checks come from Makefile targets, which cannot be read for network calls the way "
+        "test files can -- confirm `make test` is safe to run against a detached checkout"]
+
+
+def _detect_python_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    checks: list[dict] = []
     if (live / ".ruff.toml").is_file() or (live / "ruff.toml").is_file():
-        checks.append({"name": "lint", "dir": ".", "cmd": "python", "args": ["-m", "ruff", "check", "."],
-                       "timeoutMs": CHECK_TIMEOUT_MS_DEFAULT})
-    return checks
+        checks.append(_suite_check("lint", "python", ["-m", "ruff", "check", "."],
+                                   timeout=CHECK_TIMEOUT_MS_DEFAULT))
+    if not ((live / "pytest.ini").is_file() or (live / "pyproject.toml").is_file()
+            or (live / "tests").is_dir()):
+        return checks, [], []
+    target = _make_review_target(_makefile_targets(live))
+    review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT) if target else None
+    full = _suite_check("test", "python", ["-m", "pytest", "-q"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    tests, risky = _guard_suite(live, "python", full, review)
+    return checks + tests, risky, []
+
+
+def _add_checks(report: DetectionReport, checks: list[dict], risky: list[Candidate],
+                *, prefix: str) -> None:
+    """Merge one stack's findings into the report, renaming on collision.
+
+    The first stack to contribute keeps the plain names a single-language
+    repo expects (`test`, `lint`, `build`). Every later stack is prefixed
+    wholesale -- `go-test`, `go-vet`, `go-build` -- rather than only where a
+    name would collide, because a mixed list (`test` from Node next to a bare
+    `build` that happens to be Go's) reads like one stack's checks with a
+    hole in it. Any flagged candidate that stands for a renamed check is
+    renamed with it: validate_choices looks the candidate up by name, so the
+    two must never drift.
+    """
+    taken = {c["name"] for c in report.checks} | {c.value for c in report.risky_scripts}
+    later = bool(taken)
+    rename: dict[str, str] = {}
+    for check in checks:
+        name = f"{prefix}-{check['name']}" if later else check["name"]
+        if name in taken:
+            name = f"{prefix}-{check['name']}"
+        rename[check["name"]] = name
+        check["name"] = name
+        taken.add(name)
+        report.checks.append(check)
+    for cand in risky:
+        name = rename.get(cand.value) or (f"{prefix}-{cand.value}" if later else cand.value)
+        if name in taken:
+            name = f"{prefix}-{cand.value}"
+        cand.value = name
+        if cand.check is not None:
+            cand.check = dict(cand.check, name=name)
+        taken.add(name)
+        report.risky_scripts.append(cand)
+
+
+def _build_steps_for(live: Path, lang: str) -> list[dict]:
+    """What a deploy runs in the LIVE checkout before pm2 restarts it. Only
+    the compile/install step every project of that stack needs -- anything
+    beyond that is a guess, and a wrong guess here runs on merge."""
+    if lang == "go":
+        return [{"dir": ".", "cmd": "go", "args": ["build", "./..."]}]
+    if lang == "rust":
+        return [{"dir": ".", "cmd": "cargo", "args": ["build", "--release"]}]
+    if lang == "ruby" and (live / "Gemfile.lock").is_file():
+        return [{"dir": ".", "cmd": "bundle", "args": ["install"]}]
+    return []
+
+
+# The review service runs checks on this host, not in the task sandbox, so a
+# missing toolchain is not a detection problem -- it is a check that will
+# fail on every single review until someone installs it. Better said at
+# onboarding than discovered on the first merge.
+def _missing_toolchain(checks: list[dict]) -> list[str]:
+    missing: list[str] = []
+    for check in checks:
+        cmd = check["cmd"]
+        # python and make are the interpreter this process already runs under
+        # and a coreutils-era binary; neither is worth a warning.
+        if cmd in ("python", "make") or cmd in missing:
+            continue
+        if not shutil.which(cmd):
+            missing.append(cmd)
+    return missing
 
 
 def _detect_pm2_apps(live: Path) -> list[Candidate]:
@@ -472,18 +830,22 @@ def detect_project(live_path: str, sandbox_root: str | None = None,
     report.languages = _detect_languages(live)
     if not report.languages:
         report.warnings.append(
-            "no recognized project manifest (package.json, pyproject.toml, go.mod, Cargo.toml) -- "
-            "checks cannot be auto-detected; add them by hand after onboarding")
+            "no recognized project manifest (package.json, pyproject.toml, go.mod, Cargo.toml, "
+            "Gemfile) -- falling back to Makefile targets if there are any")
 
     pkg = _read_json(live / "package.json")
     pm = _detect_package_manager(live)
     report.package_manager = pm
 
+    if not pm:
+        # No package manager, no node_modules. Writing ["."] anyway told the
+        # review service to look for a directory that a Go or Ruby project
+        # will never have.
+        report.node_modules_dirs = []
     if pm:
         report.node_modules_dirs = _workspace_dirs(live, pkg)
         checks, risky = _detect_node_checks(live, pkg, pm)
-        report.checks = checks
-        report.risky_scripts = risky
+        _add_checks(report, checks, risky, prefix="node")
         install = {"pnpm": ["install", "--frozen-lockfile"],
                    "yarn": ["install", "--frozen-lockfile"],
                    "npm": ["install", "--no-audit", "--no-fund"]}[pm]
@@ -494,8 +856,32 @@ def detect_project(live_path: str, sandbox_root: str | None = None,
             sub = _read_json(live / d / "package.json")
             if "build" in (sub.get("scripts") or {}):
                 report.build_steps.append({"dir": d, "cmd": pm, "args": ["run", "build"]})
-    elif "python" in report.languages:
-        report.checks = _detect_python_checks(live)
+
+    # Each stack contributes its own checks. A polyglot repo (a Go service
+    # with a Node dashboard, say) gets both, and the second stack onward is
+    # name-prefixed so `test` from one never silently replaces `test` from
+    # the other -- check names are the reviewer's keys, and a collision would
+    # drop a suite without saying so.
+    for lang, detect in (("python", _detect_python_checks),
+                         ("go", _detect_go_checks),
+                         ("rust", _detect_rust_checks),
+                         ("ruby", _detect_ruby_checks)):
+        if lang in report.languages:
+            checks, risky, warns = detect(live)
+            _add_checks(report, checks, risky, prefix=lang)
+            report.warnings.extend(warns)
+            report.build_steps.extend(_build_steps_for(live, lang))
+            missing = _missing_toolchain(checks)
+            if missing:
+                report.warnings.append(
+                    f"{', '.join(missing)} not on PATH -- the {lang} checks that use "
+                    f"{'them' if len(missing) > 1 else 'it'} will fail until installed for the "
+                    "review service, which runs checks on this host rather than in the sandbox")
+
+    if not report.checks:
+        checks, risky, warns = _detect_make_checks(live)
+        _add_checks(report, checks, risky, prefix="make")
+        report.warnings.extend(warns)
 
     if not report.checks:
         report.warnings.append(
@@ -513,7 +899,7 @@ def detect_project(live_path: str, sandbox_root: str | None = None,
     report.db_env_file = db_env
     if report.risky_scripts:
         report.warnings.append(
-            f"{len(report.risky_scripts)} test script(s) make network calls and were left "
+            f"{len(report.risky_scripts)} test command(s) make network calls and were left "
             "disabled -- review each one before enabling")
     return report
 
@@ -546,12 +932,16 @@ def validate_choices(report: DetectionReport, choices: dict) -> dict:
     """
     live = report.live
     offered_checks = {c["name"]: c for c in report.checks}
-    # A flagged script becomes selectable only under its own detected name.
+    # A flagged item becomes selectable only under its own detected name, and
+    # only as the command this server proposed for it: an npm script runs
+    # through the detected package manager, and a whole-suite candidate (Go,
+    # Rust, Ruby, pytest -- ecosystems with no per-suite script names) carries
+    # the exact check it stands for.
     for r in report.risky_scripts:
-        offered_checks.setdefault(r.value, {
+        offered_checks.setdefault(r.value, r.check or {
             "name": r.value, "dir": ".",
             "cmd": report.package_manager or "npm", "args": ["run", r.value],
-            "timeoutMs": 900_000,
+            "timeoutMs": TEST_TIMEOUT_MS_DEFAULT,
         })
     offered_builds = {json.dumps(b, sort_keys=True) for b in report.build_steps}
     offered_secrets = {c.value for c in report.secret_files}
