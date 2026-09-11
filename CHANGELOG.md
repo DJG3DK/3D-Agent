@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 — work that arrives on its own, ten stacks it can check, and a box a second person can run
+
+**2026-09-11**
+
+Thirty-six commits on top of v0.4.0. Three things changed: the agent can pick
+work up from GitHub instead of waiting to be told; onboarding detects real
+checks for ten stacks instead of two, so the review gate is not a no-op for
+most repositories; and the parts that only ever had one operator — a global
+auto-approve switch, an unrecorded approval, a lock that lived in one process
+— now expect a second person.
 
 ### The GitHub inbox
 
@@ -42,6 +51,161 @@ source (code scanning), the frontend seats, billed-cost budgets, runtime
 limits and deploy keys. `MODEL_PLAN` / `MODEL_EXECUTE` / `MODEL_REFLECT` are
 no longer required at startup — they had not been read since the alias
 pipeline. The landing page's Node floor is 24+, matching `install.sh`.
+
+### Onboarding that produces a real gate
+
+Check detection knew npm properly and treated everything else as "a manifest
+exists". A Go, Rust, Ruby, Elixir, Java, PHP or .NET project therefore
+onboarded with an **empty checks list** — which does not make the review gate
+weaker, it makes it a no-op that still reads as a gate, approving every change
+because it runs nothing.
+
+Ten stacks are now read from their own manifests: npm/pnpm/yarn, Python, Go,
+Rust, Ruby, Elixir, Java (Maven, or Gradle through `./gradlew` when the repo
+ships one), PHP, .NET, and Makefile targets as a fallback. Linters are
+proposed only where the repo configures them — a lint its authors never opted
+into would fail every review on findings they never agreed to.
+
+The rules the npm path already followed carried over. A suite whose test files
+call the network arrives **disabled**, with the file and the idiom named; a
+file that stubs or serves its own HTTP (WebMock, httptest, `responses`, nock,
+Bypass, Moq) is not counted as calling out, because flagging every honest
+suite teaches an operator to click through the flags. A repo that declares its
+own reviewer-safe suite is trusted over its aggregate one, in whichever
+spelling its stack uses: `test:review`, a Makefile `test-review` target, a
+cargo or mix alias, a Gradle `testReview` task, a rake task, a composer
+script. And the client may still only narrow what the server proposed —
+enabling a flagged suite sends a name, and the server substitutes its own
+command.
+
+`scripts/verify_stack_checks.py` (new) is why these are worth trusting: it
+runs every proposed command against a fixture repo inside the official
+toolchain image, then re-runs it against a deliberately broken assertion,
+because a check that cannot fail is not a gate. That is how the rust image
+shipping without rustfmt or clippy was found. CI runs the host half on every
+push; the container half is a manual job.
+
+The review checkout can now actually run those checks. A git worktree carries
+what git carries, so PHP's `vendor/`, Elixir's `deps/` and a bundled Ruby
+project's `vendor/bundle` were simply absent and `vendor/bin/phpunit` exited
+127 — which reads as a broken suite rather than as nothing having installed
+it. The reviewer borrows them from the live checkout, **bound read-only**,
+since the code about to run against them is by definition unreviewed. A
+branch that changes its own manifest gets a fresh install instead, with
+scripts and plugins disabled (`composer install --no-scripts --no-plugins`,
+`mix deps.get`) — the same discipline npm's `--ignore-scripts` has always
+had here. Bundler is the exception and says so: `bundle install` builds
+native extensions, so that branch gets neither the install nor the stale
+borrow, and the reason is recorded as a failed setup check.
+
+The same audit found the older node_modules bind had been logging a warning
+and keeping a **writable** mount of live's modules when the read-only remount
+failed. It unmounts now.
+
+### Team-grade control, not more autonomy
+
+**Auto mode is per project.** It was one global boolean: on meant on
+everywhere the account could reach. That was written for a single operator who
+understood the sandbox, and it does not survive a second account — a new user
+handed the same default inherits it for production along with the scratch
+project it was meant for. It now has two halves, the operator's intent and the
+projects they intended it for, and both must agree before a task skips a
+prompt. Turning it on requires naming projects; there is deliberately no "all
+projects" option. Accounts that already had it on are scoped once, at startup,
+to the projects that exist, so no deployment changes behaviour silently.
+
+**An audit log**, in the same Postgres as tasks and memory, shown on Settings
+for admins: who onboarded a project, who approved or rejected a gated command
+and what the command was, who approved a merge, who moved auto-approve or
+merge review and for whom, who set a GitHub source to Auto, who generated or
+deleted a deploy key, and every inbox item that became a task — by a click, by
+a signed link (recorded as *signed link*, because that path carries no
+session), or by the poller itself (*github-inbox*). Telegram is a notification
+channel: best-effort, unordered, and deleted at the whim of whoever owns the
+chat. Writing a record never blocks the action it records.
+
+**Inbox Auto is refused for a project whose review gate runs nothing
+mechanical**, and if a project's checks disappear later its items are proposed
+rather than started. Otherwise "auto" would mean shipping work that a model's
+opinion alone had verified.
+
+**Prompt injection has a fixture test.** SECURITY.md already stated the model;
+`tests/test_prompt_injection.py` is now the regression test for it. A repo file
+tells the agent, in as many words, to disable merge review, read the deploy key
+and force-push, and the tests pin what makes that inert — no tool reaches a
+control, every named endpoint refuses an unauthenticated call, the container
+mounts only the workspace and is handed exactly two environment variables, and
+the approval gate is decided from the account's setting before any file is
+read. It is not a proof; injection is contained here by what the text cannot
+reach.
+
+### One task per project, across processes
+
+"One task per project" was an in-process lock, which made it true only while
+exactly one process existed: a second worker, an overlapping restart, or a
+script run against the same database would each hold their own lock object and
+happily run two tasks on one worktree. It is a Postgres session-level advisory
+lock now, and Postgres drops it when the connection closes, so a crashed
+process releases its claim with nobody cleaning up.
+
+### Operating it without reading the source
+
+- **Health routes** on all four processes (`/api/health` on the agent,
+  `/health` on the two node services, LiteLLM's own), unauthenticated so a
+  monitoring box can reach them, `503` when a check fails, and never echoing a
+  secret's value. There was no health route at all until now: every restart
+  check in this repo's history curled the agent and got the dashboard's
+  `index.html` with a 200.
+- **`scripts/doctor.py`** — file modes, env completeness, the key pairs that
+  must match between the agent and the node services, every project's
+  checkouts, the sandbox image, the pm2 processes. It refuses to print
+  anything shaped like a secret.
+- **Backups** — `scripts/backup.sh` and `scripts/verify_backup_restore.sh`,
+  which restores into a scratch database and checks the tables came back. A
+  backup nobody has restored is a hypothesis. `docs/backup.md` has the rest.
+- **Releases** — `scripts/package_release.sh` builds a tarball with the
+  dashboard prebuilt, so installing needs no Node toolchain.
+- **[docs/architecture.md](docs/architecture.md)** (the processes, the
+  secrets, the three checkouts, the graph), **[docs/runbooks/](docs/runbooks/)**
+  (one page per symptom), **[docs/middleware.md](docs/middleware.md)** (what
+  each middleware forbids and which agent has it — subagents do not inherit the
+  coordinator's chain), and **[docs/playbooks/](docs/playbooks/README.md)**
+  (adding a model role, an inbox source or a runtime knob, each starting with a
+  test that fails until the wiring is finished). Tests keep all four honest.
+
+### The task stream
+
+A task page opened mid-run could show less than it knew. The stream now
+connects the socket **before** hydrating, buffers what arrives during the
+fetch, and merges by content-derived entry id with a monotonic sequence number
+per task, so nothing is dropped and nothing is duplicated. A dead socket is
+detected after 70 seconds of silence and reconnected; past two minutes with a
+live socket the page says *no activity* — the opposite diagnosis, and the one
+that tells you the quiet is the agent's.
+
+The coordinator also gets a nudge when it stops maintaining the plan it wrote:
+a twelve-item task once sat at 0/12 for two hours and snapped to 12/12 at the
+end, with nothing broken except that the list was never touched.
+
+### Smaller things
+
+- Auto mode's delete gate asks git whether the target is repo content or the
+  agent's own scratch, instead of matching destructive markers. Deleting a
+  probe script it just wrote no longer stops the run; deleting anything git
+  tracks still does.
+- `/api/health` reports how many projects are onboarded, never which. The
+  route has no session behind it, and a private repo's name is the one field
+  in that payload that describes its owner rather than the process.
+- A request arriving before the database pool is up answers `401` or `503`
+  rather than `500`.
+- CONTRIBUTING's "exactly what CI does" list is now asserted against
+  `.github/workflows/ci.yml`, in both directions. It had drifted twice.
+- The test suite no longer calls the live router. conftest's placeholder was
+  the real router's address, which is a closed port on a contributor's laptop
+  and the production router on the machine that runs it.
+- A raw NUL byte in `useTaskStream.ts` made git treat the module as binary, so
+  every diff of it read "Binary files differ" and no reviewer ever saw it
+  change.
 
 ## v0.4.0 — a planner that keeps the brief, a Kimi seat for frontend work, costs as the router bills them (pre-release)
 

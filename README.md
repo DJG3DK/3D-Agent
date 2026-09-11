@@ -112,6 +112,7 @@ Operating it, rather than reading about it: **[docs/architecture.md](docs/archit
 - [Running it](#running-it)
 - [Configuration](#configuration)
 - [Adding a project](#adding-a-project)
+- [Operating it](#operating-it)
 - [Testing](#testing)
 - [Tracing and secret redaction](#tracing-and-secret-redaction)
 - [Connection resilience](#connection-resilience)
@@ -309,12 +310,20 @@ first. The app lands on **Planning**, not the raw task composer.
   token counts and latency; tool-call reliability and error rates; and per-task outcomes. Backed by
   LangSmith run data plus the episodic records `verify_and_ship` writes.
 - **Models** (admin only) — the model-pin editor described under [Model routing](#model-routing).
-- **Users** (admin only) — create accounts, scope them to specific projects, revoke access.
+- **Users** (admin only) — create accounts, scope them to specific projects, revoke access, and
+  grant auto mode **for named projects** rather than globally.
+- **Audit log** (admin only, Settings) — who onboarded a project, who approved or rejected a
+  specific gated command, who approved a merge, who moved auto mode or merge review and for whom,
+  who set a GitHub source to Auto, who generated a deploy key, and which inbox items were approved
+  by a click, a signed link, or the poller itself. Kept in the same database as your tasks.
 - **GitHub** (admin only) — the inbox tab: proposed items, approve / dismiss / snooze, and a
   per-repo filter. Settings for it live under Settings → GitHub.
 - **Approvals inline** — when the agent hits a gated action or calls `ask_user`, the request appears
   in the task stream with approve/reject/answer controls; the answer goes straight back into the
-  same paused thread. The New Task form, Build Now and the new-session panel carry an
+  same paused thread. Past two minutes of silence on a running task the stream shows a *no activity*
+  banner: the socket is alive and heartbeating, so the quiet is the agent's, not the connection's —
+  the opposite diagnosis from a dead socket, which the page now detects and reconnects from on its
+  own after 70 seconds. The New Task form, Build Now and the new-session panel carry an
   Auto / Frontend / General selector.
 - **Credit balance** — remaining router credit sits in the sidebar and turns red under 15%, so
   running dry is something you see coming rather than discover through a failing task.
@@ -366,8 +375,18 @@ only; the inbox is a tab of its own). Five sources, each with its own policy per
 
 Policy is **Off** (listed, nothing else), **Propose** (put it in the inbox and send an approve link)
 or **Auto** (start the task at once, up to the project's cap on open auto tasks). Auto removes only
-the click that starts a task: it still runs the review gate, and it always keeps the operator's
-final merge approval. Each project also sets the budget per inbox task and which coder seat it goes to.
+the click that starts a task: it still runs the review gate, it still prompts for gated actions
+whatever your own auto mode says, and it always keeps the operator's final merge approval — nobody
+typed these goals, so those switches do not apply to them. Each project also sets the budget per
+inbox task and which coder seat it goes to.
+
+**Auto needs a gate with something in it.** A project whose review runs no mechanical checks — no
+tests, no lint, no build — cannot be set to Auto: saving is refused with the reason, and if a
+project's checks disappear later its items are proposed instead of started. Otherwise "auto" would
+mean shipping work that a model's opinion alone had verified. Propose always works.
+
+Every start is recorded in the audit log, including the ones nobody clicked: an approve link
+appears as *signed link*, and the poller's own auto-start as *github-inbox*.
 
 Approve links go out over Telegram and, optionally, email. The link is public but carries a signed,
 expiring (48 h), single-use token; it opens a confirmation page with one button, and only the button's
@@ -689,15 +708,30 @@ Two front doors, one implementation (`agent/provisioning.py`):
 
 Both run the same three phases:
 
-1. **Inspect** (read-only) — confirms it's a git repo, detects the package manager and
-   the repo's own `typecheck`/`lint`/`test` scripts, expands monorepo workspaces, finds
-   gitignored files that look like credentials, and looks for pm2 apps serving the path.
+1. **Inspect** (read-only) — confirms it's a git repo, reads the repo's own manifests for
+   the commands its checks should run, expands monorepo workspaces, finds gitignored files
+   that look like credentials, and looks for pm2 apps serving the path. Ten stacks are
+   understood: npm/pnpm/yarn scripts, Python, Go, Rust, Ruby, Elixir, Java (Maven or
+   Gradle, through `./gradlew` when the repo ships one), PHP, .NET, and Makefile targets as
+   a fallback for anything else. Linters are proposed only where the repo configures them —
+   golangci-lint, clippy, credo, phpstan, rubocop — because a lint the authors never opted
+   into would fail every review on findings they never agreed to.
 2. **Confirm** — everything uncertain is *proposed*, not applied. This step is a safety
-   gate, not a formality: any test script that makes network calls arrives **disabled**
-   with the reason attached, because a suite that talks to a live service can act on
-   production. (This deployment learned that from a `test:routes` script that POSTed real
-   trade orders at the running bot.) A repo that declares its own `test:review` script is
-   trusted over its aggregate `test`.
+   gate, not a formality: a test suite that makes network calls arrives **disabled**
+   with the reason and the file named, because a suite that talks to a live service can act
+   on production. (This deployment learned that from a `test:routes` script that POSTed real
+   trade orders at the running bot.) A file that stubs or serves its own HTTP — WebMock,
+   httptest, `responses`, nock, Bypass, Moq — is not counted as calling out, because
+   flagging every honest suite teaches an operator to click through the flags.
+
+   A repo that declares its own reviewer-safe suite is trusted over its aggregate one.
+   That declaration has a spelling per stack: an npm `test:review` script, a Makefile
+   `test-review` target, a cargo or mix alias of the same name, a Gradle `testReview`
+   task, a rake `test:review`, or a composer `test:review` script.
+   Dependencies a stack keeps inside the project — PHP's `vendor/`, Elixir's `deps/`, a
+   bundled Ruby project's `vendor/bundle` — are proposed here too. A review checkout is a
+   git worktree, so it has none of them; the reviewer borrows them from the live checkout,
+   **bound read-only**, since the code about to run against them has not been reviewed yet.
 3. **Provision** — creates the git worktree, writes the `projects.json` entry, reloads it
    into the running process (no restart needed), seeds starter project memory, and builds
    the codebase map. Each step reports independently, so a partial failure is visible
@@ -730,25 +764,81 @@ Configs written by hand keep precedence: `services/shared/projects-config.js` me
 `projects.json` **under** each service's built-in map, so hand-tuned entries are never
 overwritten by generated ones.
 
+## Operating it
+
+The things you reach for when something is wrong, or when a second person has to run this
+box without reading the source.
+
+```bash
+curl -s 127.0.0.1:8100/api/health            # the agent: postgres, router, sandbox image, review secret
+curl -s 127.0.0.1:4100/health                # the deploy service
+curl -s 127.0.0.1:4101/health                # the commit reviewer
+.venv/bin/python scripts/doctor.py           # every dependency, secret and permission, in one pass
+```
+
+**Health routes** are unauthenticated on purpose — a monitoring box has no session — and
+answer `503` when a check fails, so a probe that reads only the status code is correct.
+A configured secret reports `true`, never its value, and the payload says how many
+projects are onboarded but never which.
+
+**`scripts/doctor.py`** is the one to run after an install or when something is off: it
+checks file modes, env completeness, the key pairs that must match between the agent and
+the node services, every project's checkouts, the sandbox image and the pm2 processes,
+and refuses to print anything shaped like a secret.
+
+**Backups** — `scripts/backup.sh` writes a dated dump of the database and the files that
+are not in git (`docs/backup.md`), and `scripts/verify_backup_restore.sh` restores it into
+a scratch database and checks the tables came back. A backup nobody has restored is a
+hypothesis.
+
+**Releases** — `scripts/package_release.sh` builds a tarball with the dashboard already
+built, so installing it needs no Node toolchain.
+
+**When something is wrong**, [docs/runbooks/](docs/runbooks/) has one page per symptom in
+the same shape: what you see, what to check, what to do — a task that is not moving, a
+consolidation that did not run, the router refusing calls, and the difference between a
+merge the agent is waiting on and a GitHub PR.
+
+**When you are adding to it**, [docs/middleware.md](docs/middleware.md) is the inventory of
+what each middleware forbids and which of the six agents it is attached to, and
+[docs/playbooks/](docs/playbooks/README.md) covers adding a model role, a GitHub inbox
+source or a runtime knob — each starting with a test that fails until the wiring is done.
+
 ## Testing
 
 ```bash
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check .
 cd frontend && npm test && npx tsc --noEmit -p tsconfig.app.json && npm run lint
-node tests/test_projects_config_merge.js
-node tests/test_reviewer_preexisting.js
-node tests/test_preflight.js
+for f in tests/*.js; do node "$f"; done
 ```
+
+The exact commands CI runs, in order, are in
+[CONTRIBUTING.md](CONTRIBUTING.md) — and a test asserts that list and
+`.github/workflows/ci.yml` still agree, because they drifted twice before anyone noticed.
 
 Python covers the graph nodes (including the commit gate's plan-completion, stale-review and
 pre-existing-failure handling), budget guard (including billed-vs-estimated cost), model routing,
 Planning Chat's model selection, tool/memory parity, brief-first and draft gate, frontend routing,
-memory-key consistency, auth, GitHub inbox sources (including code scanning grouped per rule),
-onboarding containment, and uploads — against in-memory stores and mocked model calls, no live
-Postgres or real model calls required. Frontend Vitest covers the landing page, settings, inbox
-and streams. The node tests cover `projects.json` merging, pre-existing check classification and
-deploy preflight.
+memory-key consistency, auth and the per-project auto-approve scope, the audit log, GitHub inbox
+sources (including code scanning grouped per rule), check detection for all ten stacks, onboarding
+containment, and uploads — against in-memory stores and mocked model calls, no live Postgres or
+real model calls required. Frontend Vitest covers the landing page, settings, inbox and streams.
+The node tests cover `projects.json` merging, pre-existing check classification, deploy preflight,
+service-secret reading, the health routes' project check, and the reviewer's read-only dependency
+borrow.
+
+Two suites are worth knowing about by name:
+
+- **`tests/test_prompt_injection.py`** is the fixture for a claim SECURITY.md makes. A repo file
+  tells the agent, in as many words, to disable merge review, read the deploy key and force-push;
+  the tests pin what makes that inert — no tool reaches a control, every named endpoint refuses an
+  unauthenticated call, the container mounts only the workspace and carries no credential, and the
+  approval gate is decided from the account's setting before any file is read.
+- **`scripts/verify_stack_checks.py`** runs the commands onboarding would propose against a real
+  toolchain in a container, for each of the ten stacks, and then re-runs them against a
+  deliberately broken assertion — a check that cannot fail is not a gate. CI runs the host half on
+  every push; the container half is a manual job, because it pulls an image per stack.
 
 ## Tracing and secret redaction
 
