@@ -207,6 +207,7 @@ async def test_poll_project_creates_proposes_notifies_and_resolves(monkeypatch):
     })
     monkeypatch.setattr(gi, "resolve_slug", lambda repo: "o/proj")
     monkeypatch.setattr(gi, "pr_text_for", _async_none)
+    _with_checks(monkeypatch)
     created, notes = [], []
 
     async def create_task(repo, goal, budget, route):
@@ -249,6 +250,7 @@ async def test_poll_project_falls_back_to_a_proposal_when_auto_start_fails(monke
     settings = gs.apply_patch(cfg, gs.normalize(None), {"projects": {"proj": {"policies": {"dependabot_prs": "auto"}}}})
     monkeypatch.setattr(gi, "resolve_slug", lambda repo: "o/proj")
     monkeypatch.setattr(gi, "pr_text_for", _async_none)
+    _with_checks(monkeypatch)
     notes = []
 
     async def create_task(repo, goal, budget, route):
@@ -275,6 +277,18 @@ async def test_poll_project_skips_without_a_token_or_a_remote(monkeypatch):
     monkeypatch.setattr(gi, "resolve_slug", lambda repo: "o/proj")
     out = await gi.poll_project(FakeStore(), cfg, settings, "proj", create_task=None, notify=None, open_auto_count=None)
     assert out["skipped"] == "no token"
+
+
+def _with_checks(monkeypatch, value: bool | None = True):
+    """The poll asks the review service whether the project verifies anything
+    before it auto-starts work. In a test there is no review service, so say
+    what the project is: with checks unless the test is about their absence."""
+    import agent.tools.review_gate as rg
+
+    async def _has_checks(repo):
+        return value
+
+    monkeypatch.setattr(rg, "project_has_checks", _has_checks)
 
 
 async def _async_none(*a, **k):
@@ -350,3 +364,79 @@ def test_code_scanning_goal_scopes_the_task_to_this_repository_and_forbids_suppr
     assert "no dismissing alerts on GitHub" in goal and "#7 apps/api/c.ts:189" in goal
     assert "security/code-scanning?query=is%3Aopen+rule%3Ajs/path-injection" in goal
     assert gi.proposal_text(item, None, None, 3.0).startswith("🐙 GitHub: Code scanning alert on proj")
+
+
+# ---------------------------------------------------------------------------
+# Auto needs a gate with something in it (2026-09-11)
+# ---------------------------------------------------------------------------
+
+def test_auto_degrades_to_propose_when_a_project_has_no_checks():
+    """A project whose review gate runs nothing mechanical has no automated
+    verification behind it: a model's opinion would be the only thing between
+    a GitHub alert and a diff waiting for a merge click. The operator loses
+    one click and keeps the review that click is for."""
+    proj = _proj(security_alerts="auto", dependabot_prs="auto")
+    decisions, _ = gi.decide({}, [_item("alert:1", "security_alerts"), _item("pr:1")],
+                             proj, open_auto=0, has_checks=False)
+    assert [d.action for d in decisions] == ["propose", "propose"]
+    assert all(d.item.state == "proposed" for d in decisions)
+    assert all("no checks" in d.reason or "auto needs checks" in d.reason for d in decisions)
+
+
+def test_auto_is_held_back_when_the_reviewer_cannot_be_reached():
+    """Unconfirmed is not the same as none, and both fail the same way: the
+    item is proposed, and the reason says which it was."""
+    decisions, _ = gi.decide({}, [_item("pr:1")], _proj(dependabot_prs="auto"),
+                             open_auto=0, has_checks=None)
+    assert decisions[0].action == "propose"
+    assert "could not confirm" in decisions[0].reason
+
+
+def test_auto_still_works_for_a_project_with_checks():
+    decisions, _ = gi.decide({}, [_item("pr:1")], _proj(dependabot_prs="auto"),
+                             open_auto=0, has_checks=True)
+    assert decisions[0].action == "create"
+
+
+def test_propose_and_off_are_unaffected_by_the_checks_rule():
+    """The rule is about starting work unattended, not about listing it."""
+    decisions, _ = gi.decide({}, [_item("pr:1"), _item("alert:1", "security_alerts")],
+                             _proj(dependabot_prs="propose", security_alerts="off"),
+                             open_auto=0, has_checks=False)
+    actions = {d.item.key: d.action for d in decisions}
+    assert actions["pr:1"] == "propose"
+    assert actions["alert:1"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_a_full_poll_starts_nothing_on_a_project_without_checks(monkeypatch):
+    """End to end through poll_project: Auto is configured, the project has
+    no checks, and the pass must propose rather than create."""
+    cfg = _config()
+    store = FakeStore()
+    settings = gs.apply_patch(cfg, gs.normalize(None),
+                              {"projects": {"proj": {"policies": {"dependabot_prs": "auto"}}}})
+    monkeypatch.setattr(gi, "resolve_slug", lambda repo: "o/proj")
+    monkeypatch.setattr(gi, "pr_text_for", _async_none)
+    _with_checks(monkeypatch, value=False)
+    created, notes = [], []
+
+    async def create_task(repo, goal, budget, route):
+        created.append(repo)
+        return "task-1"
+
+    async def notify(text, repo):
+        notes.append(text)
+
+    async def open_auto(repo):
+        return 0
+
+    gh = FakeGitHub(prs=[_pr(1, "dependabot[bot]")])
+    summary = await gi.poll_project(store, cfg, settings, "proj", create_task=create_task,
+                                    notify=notify, open_auto_count=open_auto, client=gh)
+
+    assert created == [], "auto started work on a project that verifies nothing"
+    assert summary["proposed"] == 1 and summary["created"] == 0
+    item = (await gi.list_items(store, "proj"))["pr:1"]
+    assert item["state"] == "proposed" and "checks" in item["reason"]
+    assert notes and "Approve" in notes[0]

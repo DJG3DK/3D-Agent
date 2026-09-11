@@ -54,6 +54,50 @@ async def trigger_check(project: str) -> dict:
         return r.json()
 
 
+# Cached because the settings page and every poll ask the same question, and
+# the answer changes only when someone edits a project's configuration.
+_CHECKS_CACHE: dict[str, tuple[float, dict]] = {}
+_CHECKS_TTL_S = 60
+
+
+async def project_checks(force: bool = False) -> dict[str, dict]:
+    """How many checks each project runs, by name, from the reviewer.
+
+    The agent cannot answer this itself: `checks` live in projects.json's
+    review section and in the review service's own built-ins, neither of
+    which this process reads. Returns {} when the reviewer cannot be reached
+    -- callers treat that as "cannot confirm", which is not the same as
+    "none", and must fail safe rather than assume.
+    """
+    import time as _time
+    cached = _CHECKS_CACHE.get("all")
+    if cached and not force and _time.monotonic() - cached[0] < _CHECKS_TTL_S:
+        return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"http://127.0.0.1:{REVIEW_CONTROL_PORT}/projects", headers=_CONTROL_HEADERS)
+        if r.status_code != 200:
+            logger.warning("project_checks: reviewer answered %s", r.status_code)
+            return {}
+        projects = r.json().get("projects") or {}
+    except Exception as e:  # noqa: BLE001 -- unreachable is a "cannot confirm", not a crash
+        logger.warning("project_checks: reviewer unreachable (%s)", str(e)[:120])
+        return {}
+    _CHECKS_CACHE["all"] = (_time.monotonic(), projects)
+    return projects
+
+
+async def project_has_checks(project: str) -> bool | None:
+    """True / False / None when it cannot be confirmed."""
+    projects = await project_checks()
+    if not projects:
+        return None
+    entry = projects.get(project)
+    if entry is None:
+        return None
+    return bool(entry.get("checks"))
+
+
 async def _read_state(project: str) -> dict | None:
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(f"http://127.0.0.1:{REVIEW_SERVICE_PORT}/api/review/status")

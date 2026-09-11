@@ -141,3 +141,50 @@ def test_dismiss_link_dismisses(wired):
     assert "Dismissed" in client.post("/api/github/approve", data={"t": tok}).text
     assert wired["store"].data[(("github_inbox", "proj"), "pr:7")]["state"] == "dismissed"
     assert wired["created"] == []
+
+
+# ---------------------------------------------------------------------------
+# Auto is refused for a project that verifies nothing (2026-09-11)
+# ---------------------------------------------------------------------------
+
+def _checks(monkeypatch, value):
+    async def _has_checks(repo):
+        return value
+    monkeypatch.setattr(srv.review_gate, "project_has_checks", _has_checks)
+
+
+def test_setting_auto_is_refused_when_the_project_has_no_checks(wired, monkeypatch):
+    _checks(monkeypatch, False)
+    client = TestClient(srv.app)
+    res = client.post("/api/settings/github",
+                      json={"projects": {"proj": {"policies": {"dependabot_prs": "auto"}}}})
+    assert res.status_code == 400
+    detail = res.json()["detail"]
+    assert "no checks" in detail and "Propose" in detail, detail
+    # ...and nothing was saved.
+    assert srv.github_settings.current()["projects"].get("proj", {}).get("policies", {}).get("dependabot_prs", "off") != "auto"
+
+
+def test_setting_auto_is_refused_when_the_reviewer_cannot_be_reached(wired, monkeypatch):
+    _checks(monkeypatch, None)
+    res = TestClient(srv.app).post("/api/settings/github",
+                                   json={"projects": {"proj": {"policies": {"security_alerts": "auto"}}}})
+    assert res.status_code == 400
+    assert "could not confirm" in res.json()["detail"]
+
+
+def test_propose_is_never_refused(wired, monkeypatch):
+    """The rule is about starting work unattended. Listing it is always fine,
+    and refusing Propose would push an operator towards turning the inbox off."""
+    _checks(monkeypatch, False)
+    res = TestClient(srv.app).post("/api/settings/github",
+                                   json={"projects": {"proj": {"policies": {"dependabot_prs": "propose"}}}})
+    assert res.status_code == 200
+
+
+def test_auto_is_allowed_for_a_project_with_checks(wired, monkeypatch):
+    _checks(monkeypatch, True)
+    res = TestClient(srv.app).post("/api/settings/github",
+                                   json={"projects": {"proj": {"policies": {"dependabot_prs": "auto"}}}})
+    assert res.status_code == 200
+    assert res.json()["settings"]["projects"]["proj"]["policies"]["dependabot_prs"] == "auto"

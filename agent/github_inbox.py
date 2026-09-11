@@ -360,6 +360,14 @@ async def _ci_failures(client: GitHubClient, repo: str, slug: str, branch: str) 
 # policy -- pure
 # ---------------------------------------------------------------------------
 
+# Said in full on the item, because "why did this only get proposed?" is asked
+# at the moment the operator is deciding, not when they set the policy.
+_NO_CHECKS_REASON = ("auto needs checks: this project's review gate runs nothing mechanical, "
+                     "so nothing would verify the work -- proposed instead")
+_UNCONFIRMED_CHECKS_REASON = ("auto held back: could not confirm this project's checks with the "
+                              "review service -- proposed instead")
+
+
 @dataclass
 class Decision:
     item: Item
@@ -367,18 +375,28 @@ class Decision:
     reason: str = ""
 
 
-def decide(existing: dict[str, dict], found: list[Item], proj: dict, open_auto: int, now: float | None = None) -> tuple[list[Decision], list[str]]:
+def decide(existing: dict[str, dict], found: list[Item], proj: dict, open_auto: int,
+           now: float | None = None, has_checks: bool | None = True) -> tuple[list[Decision], list[str]]:
     """Compare what was found with what the store holds.
 
     Returns the decisions for items that are new or changed, and the keys of
     stored items that are no longer present on GitHub (merged, closed, fixed)
     so the caller can mark them resolved. `open_auto` is how many auto-created
     tasks are still open; the cap is enforced here.
+
+    `has_checks` is whether this project's review gate runs anything
+    mechanical (tests, lint, a build), from the review service -- None when
+    that could not be confirmed. Auto needs it: starting work by itself whose
+    gate runs no checks means a model's opinion is the only thing between a
+    GitHub alert and a diff waiting for the operator's merge click. Without
+    confirmed checks, Auto degrades to Propose, with the reason on the item.
+    The operator loses one click and keeps the review that click is for.
     """
     now = now or time.time()
     decisions: list[Decision] = []
     found_keys = {i.key for i in found}
     budget = max(0, int(proj.get("max_open_auto", 2)) - open_auto)
+    auto_allowed = has_checks is True
     for item in found:
         prev = existing.get(item.key)
         mode = proj["policies"].get(item.kind, "off")
@@ -407,7 +425,10 @@ def decide(existing: dict[str, dict], found: list[Item], proj: dict, open_auto: 
             item.state = "proposed"
             decisions.append(Decision(item, "propose", "policy: propose"))
         else:  # auto
-            if budget > 0:
+            if not auto_allowed:
+                item.state = "proposed"
+                decisions.append(Decision(item, "propose", _NO_CHECKS_REASON if has_checks is False else _UNCONFIRMED_CHECKS_REASON))
+            elif budget > 0:
                 budget -= 1
                 item.state = "task_created"
                 decisions.append(Decision(item, "create", "policy: auto"))
@@ -611,7 +632,12 @@ async def poll_project(
     found = await discover(client, repo, slug, proj)
     existing = await list_items(store, repo)
     open_auto = await open_auto_count(repo)
-    decisions, gone = decide(existing, found, proj, open_auto)
+    # Asked at poll time, not at save time only: a project's checks can be
+    # emptied long after its policy was set, and the poll is what actually
+    # starts work.
+    from agent.tools.review_gate import project_has_checks
+    has_checks = await project_has_checks(repo)
+    decisions, gone = decide(existing, found, proj, open_auto, has_checks=has_checks)
     summary = {"repo": repo, "found": len(found), "proposed": 0, "created": 0, "resolved": 0}
     for d in decisions:
         item = d.item

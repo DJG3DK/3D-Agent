@@ -1437,6 +1437,34 @@ function startControlServer(routerKey) {
       }));
       return;
     }
+    // What each project actually verifies. The agent needs this to refuse
+    // "Auto" on the GitHub inbox for a project with no checks: auto-starting
+    // work whose gate runs nothing mechanical is a review in name only, and
+    // the checks live here (projects.json plus this service's own built-ins),
+    // nowhere the agent can read. Names only -- no commands, no paths, no
+    // secrets -- and the shared secret is still required.
+    if (req.method === 'GET' && req.url === '/projects') {
+      if (!REVIEW_CONTROL_SECRET) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'REVIEW_CONTROL_SECRET not configured' }));
+        return;
+      }
+      const provided = Buffer.from(req.headers['x-review-secret'] || '');
+      const expected = Buffer.from(REVIEW_CONTROL_SECRET);
+      if (provided.length !== expected.length || !require('crypto').timingSafeEqual(provided, expected)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid or missing X-Review-Secret' }));
+        return;
+      }
+      const out = {};
+      for (const [name, cfg] of Object.entries(PROJECTS)) {
+        const checks = Array.isArray(cfg.checks) ? cfg.checks : [];
+        out[name] = { checks: checks.length, names: checks.map((c) => c.name).filter(Boolean) };
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, projects: out }));
+      return;
+    }
     const m = req.url.match(/^\/check\/([^/]+)$/);
     if (req.method !== 'POST' || !m) {
       res.writeHead(404, { 'Content-Type': 'application/json' });

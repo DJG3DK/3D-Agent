@@ -340,6 +340,10 @@ export function GitHubSettingsCard() {
         <strong>A task from the inbox is never unattended:</strong> whoever started it, it ignores Auto mode
         and still prompts for gated actions, and it always requires your merge approval — even if you have
         turned both off for your own typed tasks. Nobody typed these goals, so the switches do not apply.
+        <br />
+        <strong>Auto needs a gate with something in it:</strong> a project whose review runs no checks
+        (no tests, no lint, no build) cannot use Auto — saving is refused, and if a project's checks
+        disappear later, its items are proposed instead of started. Propose always works.
       </div>
       <div className="settings-actions gh-actions">
         <button type="button" className="gh-btn" disabled={polling} onClick={pollNow}>{polling ? "Polling…" : "Poll now"}</button>

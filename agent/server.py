@@ -47,6 +47,7 @@ from agent import runtime_settings
 from agent import github_inbox, github_settings
 from agent import health as health_checks
 from agent import log_stream
+from agent.tools import review_gate
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.frontend_route import RouteDecision, classify_frontend, normalize_override
 from agent.planning_chat import build_planning_agent, classify_planning_difficulty, planning_thread_config, run_planning_turn, _translate_message as _translate_planning_message
@@ -737,6 +738,26 @@ async def get_github_settings(user: User = Depends(require_full_auth)):
 async def set_github_settings(req: GitHubSettingsPatch, user: User = Depends(require_full_auth)):
     auth.require_admin(user)
     patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    # Auto on a project whose review gate runs nothing mechanical means a
+    # model's opinion is the only thing between a GitHub alert and a diff.
+    # Refused here so the operator finds out while setting it, rather than
+    # from a reason line on an item three days later. The poller enforces the
+    # same rule independently -- a project's checks can be emptied after the
+    # policy was set (see github_inbox.decide).
+    for repo, project_patch in (patch.get("projects") or {}).items():
+        modes = (project_patch or {}).get("policies") or {}
+        if "auto" not in modes.values():
+            continue
+        has_checks = await review_gate.project_has_checks(repo)
+        if has_checks is False:
+            raise HTTPException(400, (
+                f"{repo} has no checks configured, so its review gate runs nothing mechanical -- "
+                "Auto would start work that nothing verifies. Add checks for the project "
+                "(Settings -> Projects, or projects.json) and try again, or use Propose."))
+        if has_checks is None:
+            raise HTTPException(400, (
+                f"could not confirm {repo}'s checks with the review service, so Auto is refused. "
+                "Start commit-reviewer and try again, or use Propose."))
     try:
         saved = await github_settings.save(app.state.store, config, patch)
     except ValueError as e:
