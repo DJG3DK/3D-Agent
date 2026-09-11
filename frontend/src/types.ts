@@ -11,6 +11,9 @@ export interface CurrentUser {
    *  Destructive commands (rm -rf, force push, sudo...) stay gated regardless
    *  -- see agent/deep_agent.py's interrupt_on_for. */
   auto_approve_commands: boolean;
+  /** Which projects auto mode covers. Both halves must agree before a task
+   *  runs unattended -- see User.auto_approves in agent/auth.py. */
+  auto_approve_repos: string[];
   require_merge_review: boolean;
 }
 

@@ -248,3 +248,54 @@
   .settings-grid,
   .settings-grid--wide { grid-template-columns: 1fr; }
 }
+
+
+/* Auto mode's per-project scope. The picker is deliberately a plain list of
+   checkboxes with no "select all": a switch that covers everything is one
+   nobody chose the reach of. */
+.settings-scope {
+  border-top: 1px solid var(--border, #2a2a2a);
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.settings-projects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.settings-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+/* The audit table stays readable on a phone: it scrolls inside itself
+   rather than widening the settings page. */
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  display: block;
+  overflow-x: auto;
+}
+
+.audit-table th,
+.audit-table td {
+  text-align: left;
+  padding: 0.35rem 0.75rem 0.35rem 0;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  white-space: nowrap;
+}
+
+.audit-table th {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.audit-detail {
+  opacity: 0.7;
+}

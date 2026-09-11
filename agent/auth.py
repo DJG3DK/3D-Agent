@@ -82,6 +82,15 @@ ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS require_merge_review BOOLEAN NO
 ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS telegram_bot_token TEXT;
 ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT;
 
+-- Added 2026-09-11. Auto-approve used to be one global boolean: on meant on
+-- for every project the account could reach. That was written for a single
+-- operator who understood the sandbox, and it does not survive a second
+-- account -- a new user handed the same switch inherits it everywhere at
+-- once. NULL here means "never scoped" and is treated as no projects;
+-- backfill_auto_approve_repos() resolves it once, at startup, for accounts
+-- that already had the switch on, so nobody's behaviour changes silently.
+ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS auto_approve_repos TEXT[];
+
 CREATE TABLE IF NOT EXISTS agent_sessions (
     token_hash TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES agent_users(id) ON DELETE CASCADE,
@@ -129,9 +138,22 @@ class User:
     # auto-approved until an admin opts them in explicitly.
     auto_approve_commands: bool = False
     require_merge_review: bool = True
+    # Which projects the switch above actually covers. NULL/None means it was
+    # never scoped, which is treated as NONE rather than all: a switch whose
+    # blast radius nobody chose should not be the widest one.
+    auto_approve_repos: list[str] | None = None
 
     def can_access(self, repo: str) -> bool:
         return self.role == "admin" or self.allowed_repos is None or repo in self.allowed_repos
+
+    def auto_approves(self, repo: str) -> bool:
+        """Does this account skip the approval gate for THIS project?
+
+        Both halves must say yes. The boolean is the operator's intent; the
+        list is where they intended it. An admin who turned Auto on for a
+        sandbox project does not thereby run unattended against production.
+        """
+        return bool(self.auto_approve_commands) and repo in (self.auto_approve_repos or [])
 
 
 
@@ -269,6 +291,7 @@ def _row_to_user(row: dict) -> User:
         must_change_password=row["must_change_password"],
         auto_approve_commands=row["auto_approve_commands"],
         require_merge_review=row["require_merge_review"],
+        auto_approve_repos=row.get("auto_approve_repos"),
     )
 
 
@@ -324,11 +347,46 @@ async def update_user_access(pool: AsyncConnectionPool, user_id: int, allowed_re
         await conn.execute("UPDATE agent_users SET allowed_repos = %s WHERE id = %s", (allowed_repos, user_id))
 
 
-async def update_auto_approve(pool: AsyncConnectionPool, user_id: int, auto_approve_commands: bool) -> None:
+async def update_auto_approve(pool: AsyncConnectionPool, user_id: int, auto_approve_commands: bool,
+                              repos: list[str] | None = None) -> None:
+    """Set the switch and, when given, the projects it covers.
+
+    `repos=None` leaves the existing scope alone, which is what a caller that
+    only wants to turn the switch OFF should do -- the list is worth keeping
+    so turning it back on does not mean re-picking every project.
+    """
     async with pool.connection() as conn:
-        await conn.execute(
-            "UPDATE agent_users SET auto_approve_commands = %s WHERE id = %s", (auto_approve_commands, user_id)
+        if repos is None:
+            await conn.execute(
+                "UPDATE agent_users SET auto_approve_commands = %s WHERE id = %s",
+                (auto_approve_commands, user_id),
+            )
+        else:
+            await conn.execute(
+                "UPDATE agent_users SET auto_approve_commands = %s, auto_approve_repos = %s WHERE id = %s",
+                (auto_approve_commands, sorted(set(repos)), user_id),
+            )
+
+
+async def backfill_auto_approve_repos(pool: AsyncConnectionPool, projects: list[str]) -> int:
+    """One-time, idempotent: an account that had Auto on before the column
+    existed keeps working exactly as it did, with the scope written down.
+
+    Doing nothing would have silently turned Auto off for the operator who
+    already relies on it -- a safe direction, but a surprising one, and they
+    would have found out from a task that stopped to ask. Doing it on every
+    startup is harmless: after the first run the column is non-NULL, and only
+    NULL rows are touched.
+    """
+    if not projects:
+        return 0
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE agent_users SET auto_approve_repos = %s "
+            "WHERE auto_approve_commands AND auto_approve_repos IS NULL",
+            (sorted(projects),),
         )
+        return cur.rowcount or 0
 
 async def update_telegram(pool: AsyncConnectionPool, user_id: int, bot_token: str | None, chat_id: str | None) -> None:
     """Set (or clear, with Nones/empties) a user's Telegram alert target.
@@ -666,9 +724,14 @@ async def get_current_user(
     request: Request,
     agent_session: str | None = Cookie(default=None),
 ) -> User:
-    pool = request.app.state.auth_pool
+    # The cookie check comes first on purpose: reading app.state before it
+    # answers 401 turns a request that arrives during startup -- or any
+    # unauthenticated request in a context where the pool was never attached
+    # -- into a 500 with a KeyError, which reads like a broken server rather
+    # than a missing login.
     if not agent_session:
         raise HTTPException(401, "not logged in")
+    pool = request.app.state.auth_pool
     user = await resolve_session(pool, agent_session)
     if not user:
         raise HTTPException(401, "session expired or invalid")

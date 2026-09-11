@@ -60,6 +60,21 @@ describe("GitHubSettingsCard", () => {
     getGitHubSettings.mockResolvedValue(response());
   });
 
+  it("says on the card that an inbox task keeps merge review whatever Auto means elsewhere", async () => {
+    // Auto is the word an operator reads as "fully unattended". For inbox
+    // items it is not: the task still prompts for gated actions and still
+    // needs a merge approval, because nobody typed the goal. The invariant
+    // is enforced server-side (tests/test_inbox_task_invariants.py); this is
+    // the half that stops someone turning it on believing otherwise.
+    getGitHubSettings.mockResolvedValue(response());
+    render(<SettingsSaveProvider><GitHubSettingsCard /></SettingsSaveProvider>);
+    const note = await screen.findByText(/never unattended/i);
+    const text = note.parentElement?.textContent ?? "";
+    expect(text).toMatch(/always requires your merge approval/i);
+    expect(text).toMatch(/ignores Auto mode/i);
+    expect(text).toMatch(/cannot use Auto/i);   // the no-checks refusal
+  });
+
   it("lists stored tokens by name and hint only, never a value", async () => {
     mount();
     expect(await screen.findByText("main", { selector: ".gh-token-name" })).toBeInTheDocument();

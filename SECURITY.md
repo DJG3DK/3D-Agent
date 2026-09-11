@@ -51,6 +51,16 @@ capabilities are intended and which would be real vulnerabilities.
   or a task description that causes the agent to take an action the operator's
   settings should have prevented (bypassing the approval gate, pushing without
   review, disabling a control).
+
+  `tests/test_prompt_injection.py` is the fixture for this claim: a repo file
+  that tells the agent, in as many words, to disable merge review, read the
+  deploy key and force-push. It pins the containments that make the text
+  inert — the tool surface has nothing that reaches a control, the endpoints
+  refuse an unauthenticated call, the container mounts only the workspace and
+  carries no credential, and the approval gate is decided from the account's
+  own setting before any file is read. It is a regression test, not a proof:
+  injection is contained here by what the text cannot reach, never by the
+  model declining to follow it.
 - Anything that lets an unauthenticated request reach a code-execution path.
 
 ## Deploying this safely

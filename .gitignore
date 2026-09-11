@@ -11,6 +11,9 @@ __pycache__/
 
 # Local run artifacts
 *.log
+# A stray root-level one appears the moment anything runs npx/vitest from the
+# repo root instead of frontend/ -- it is a cache, never source.
+node_modules/
 projects.json
 .agent-git-excludes
 

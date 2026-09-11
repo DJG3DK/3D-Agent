@@ -481,6 +481,28 @@ unrestricted for `role="admin"`. The first admin account is seeded automatically
 with a random password, printed once to the server log and required to be changed at first login
 (see `ADMIN_EMAIL` below).
 
+### Two operators, not one
+
+Two things change once a second account exists.
+
+**Auto mode is per project.** The switch that lets a task run without stopping for approval has
+two halves — the operator's intent, and the projects they intended it for. Both must agree before
+a task skips a prompt, so auto mode on a scratch project never means auto mode on production, and
+a new account cannot inherit it everywhere by copying the first admin's defaults. Turning it on
+requires naming projects; there is deliberately no "all projects" option. A deployment upgrading
+from the single global switch has its existing accounts scoped to their current projects once, at
+startup, so nothing changes behaviour silently.
+
+**Who changed what is recorded.** An append-only audit log in the same Postgres store as tasks and
+memory (`agent/audit.py`, shown on the Settings page, admin-only): who onboarded a project, who
+approved or rejected a specific gated command and what it was, who approved a merge, who moved
+auto mode or merge review and for whom, who set a GitHub inbox source to Auto, who generated or
+deleted a deploy key. Telegram alerts are a notification channel — best-effort, unordered, and
+deleted at the whim of whoever owns the chat — which is exactly why they are not the record.
+
+Writing the log never blocks the action it records: a failure is logged and the request proceeds.
+That is a deliberate trade, and worth knowing when reading the page as evidence.
+
 ## Attachments (images/PDFs/CSVs)
 
 Both the build-task composer and Planning Chat can attach reference files through the same

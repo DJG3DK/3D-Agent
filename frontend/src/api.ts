@@ -112,16 +112,41 @@ export async function changePassword(currentPassword: string, newPassword: strin
   }
 }
 
-export async function setAutoApprove(autoApproveCommands: boolean): Promise<void> {
+/** Auto mode and the projects it covers. `repos` is required by the server
+ *  when turning it ON: a switch whose blast radius nobody chose should not be
+ *  the widest one (agent/server.py's _validated_auto_repos). */
+export async function setAutoApprove(
+  autoApproveCommands: boolean, repos?: string[],
+): Promise<{ auto_approve_repos: string[] }> {
   const res = await apiFetch(`${API_BASE}/auth/me/auto-approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ auto_approve_commands: autoApproveCommands }),
+    body: JSON.stringify({ auto_approve_commands: autoApproveCommands, repos }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `saving auto mode failed: ${res.status}`);
   }
+  return res.json();
+}
+
+export interface AuditEntry {
+  ts: number;
+  actor: string;
+  action: string;
+  label: string;
+  target: string | null;
+  detail: string | null;
+}
+
+/** Who moved a control, newest first. Admin-only (agent/audit.py). */
+export async function getAuditLog(limit = 50): Promise<AuditEntry[]> {
+  const res = await apiFetch(`${API_BASE}/audit?limit=${limit}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `loading the audit log failed: ${res.status}`);
+  }
+  return (await res.json()).entries;
 }
 
 export async function forgotPassword(email: string): Promise<void> {

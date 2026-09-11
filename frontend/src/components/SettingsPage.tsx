@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import { RuntimeLimitsPanel } from "./RuntimeLimitsPanel";
 import { SettingsSaveBar, SettingsSaveProvider } from "./SettingsSaveBar";
-import { changePassword, setAutoApprove, setMergeReview, getTelegramSettings, setTelegramSettings, sendTelegramTest } from "../api";
+import { changePassword, setAutoApprove, setMergeReview, getTelegramSettings, setTelegramSettings, sendTelegramTest, listProjectsConfig } from "../api";
 import type { CurrentUser } from "../types";
 import "./SettingsPage.css";
 import { ApiKeysPanel } from "./ApiKeysPanel";
 import { ProjectsPanel } from "./ProjectsPanel";
 import { GitHubSettingsCard } from "./GitHubSettingsCard";
+import { AuditLogCard } from "./AuditLogCard";
+
+function sameRepos(a: string[], b: string[]): boolean {
+  return a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
+}
 
 interface Props {
   user: CurrentUser;
@@ -27,6 +32,21 @@ export function SettingsPage({ user, onUserChanged }: Props) {
   // back OFF is always allowed immediately. Friction belongs on the side that
   // removes a safety prompt, never on the side that restores one.
   const [confirmingAuto, setConfirmingAuto] = useState(false);
+  // Auto mode is per project. The picker starts from whatever the account
+  // already covers, so turning it off and on again does not mean re-choosing
+  // every project.
+  const [projects, setProjects] = useState<string[]>([]);
+  const [autoRepos, setAutoRepos] = useState<string[]>(user.auto_approve_repos ?? []);
+
+  useEffect(() => {
+    listProjectsConfig()
+      .then((r) => setProjects(Object.keys(r.projects)))
+      .catch(() => setProjects([]));
+  }, []);
+
+  function toggleRepo(name: string) {
+    setAutoRepos((prev) => (prev.includes(name) ? prev.filter((r) => r !== name) : [...prev, name]));
+  }
 
   async function handlePasswordSave(e: React.FormEvent) {
     e.preventDefault();
@@ -66,12 +86,16 @@ export function SettingsPage({ user, onUserChanged }: Props) {
     }
   }
 
-  async function applyAuto(value: boolean) {
+  async function applyAuto(value: boolean, repos?: string[]) {
     setAutoError(null);
     setAutoSaving(true);
     try {
-      await setAutoApprove(value);
-      onUserChanged({ ...user, auto_approve_commands: value });
+      const res = await setAutoApprove(value, repos);
+      onUserChanged({
+        ...user,
+        auto_approve_commands: value,
+        auto_approve_repos: res.auto_approve_repos ?? user.auto_approve_repos,
+      });
       setConfirmingAuto(false);
     } catch (err) {
       setAutoError(err instanceof Error ? err.message : "saving auto mode failed");
@@ -184,14 +208,66 @@ export function SettingsPage({ user, onUserChanged }: Props) {
           </p>
           {autoError && <div className="settings-error">{autoError}</div>}
           {user.auto_approve_commands ? (
-            <button className="settings-btn settings-btn--off" disabled={autoSaving} onClick={() => applyAuto(false)}>
-              {autoSaving ? "Saving…" : "Turn auto mode off"}
-            </button>
+            <>
+              <div className="settings-scope">
+                <strong>Covers:</strong>{" "}
+                {user.auto_approve_repos?.length
+                  ? user.auto_approve_repos.join(", ")
+                  : "no projects — auto mode is on but applies nowhere"}
+                <p className="settings-body settings-body--dim">
+                  Every other project still asks. Tick a project to change what auto mode covers.
+                </p>
+                <div className="settings-projects">
+                  {projects.map((name) => (
+                    <label key={name} className="settings-project">
+                      <input
+                        type="checkbox"
+                        checked={autoRepos.includes(name)}
+                        disabled={autoSaving}
+                        onChange={() => toggleRepo(name)}
+                      />
+                      {name}
+                    </label>
+                  ))}
+                </div>
+                <button
+                  className="settings-btn"
+                  disabled={autoSaving || sameRepos(autoRepos, user.auto_approve_repos ?? [])}
+                  onClick={() => applyAuto(true, autoRepos)}
+                >
+                  {autoSaving ? "Saving…" : "Save projects"}
+                </button>
+              </div>
+              <button className="settings-btn settings-btn--off" disabled={autoSaving} onClick={() => applyAuto(false)}>
+                {autoSaving ? "Saving…" : "Turn auto mode off"}
+              </button>
+            </>
           ) : confirmingAuto ? (
             <div className="settings-confirm">
-              <span>Run sensitive file and shell operations without asking?</span>
-              <button className="settings-btn settings-btn--danger" disabled={autoSaving} onClick={() => applyAuto(true)}>
-                {autoSaving ? "Saving…" : "Yes, turn it on"}
+              <span>Which projects may run sensitive file and shell operations without asking?</span>
+              <div className="settings-projects">
+                {projects.map((name) => (
+                  <label key={name} className="settings-project">
+                    <input
+                      type="checkbox"
+                      checked={autoRepos.includes(name)}
+                      disabled={autoSaving}
+                      onChange={() => toggleRepo(name)}
+                    />
+                    {name}
+                  </label>
+                ))}
+              </div>
+              <p className="settings-body settings-body--dim">
+                Anything not ticked keeps asking. There is no "all projects" option on purpose:
+                a switch that covers everything is one nobody chose the reach of.
+              </p>
+              <button
+                className="settings-btn settings-btn--danger"
+                disabled={autoSaving || autoRepos.length === 0}
+                onClick={() => applyAuto(true, autoRepos)}
+              >
+                {autoSaving ? "Saving…" : `Turn it on for ${autoRepos.length || "no"} project${autoRepos.length === 1 ? "" : "s"}`}
               </button>
               <button className="settings-btn" disabled={autoSaving} onClick={() => setConfirmingAuto(false)}>
                 Cancel
@@ -274,6 +350,18 @@ export function SettingsPage({ user, onUserChanged }: Props) {
       )}
 
       {user.role === "admin" && <ApiKeysPanel />}
+
+      {/* Who moved a control. Admin only: it names accounts, and the point is
+          that a second operator's actions are visible to the person
+          responsible for the deployment — not to everyone with a login. */}
+      {user.role === "admin" && (
+        <>
+          <h3 className="settings-section-label">Who changed what</h3>
+          <div className="settings-grid">
+            <AuditLogCard />
+          </div>
+        </>
+      )}
 
       {/* One save control for the whole page, pinned bottom-right. It shows
           itself only when a panel above reports a pending edit. */}

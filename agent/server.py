@@ -45,6 +45,7 @@ from agent.model_config import resolve_alias
 from agent.classify import classify_task, TaskClassification, TEST_REMINDER_NOTE
 from agent import runtime_settings
 from agent import github_inbox, github_settings
+from agent import audit
 from agent import health as health_checks
 from agent import log_stream
 from agent.tools import review_gate
@@ -236,6 +237,18 @@ async def lifespan(app: FastAPI):
         app.state.graph = build_outer_graph(config, checkpointer, store).compile(
             checkpointer=checkpointer, store=store
         )
+        # Auto-approve became per-project on 2026-09-11. An account that had
+        # the switch on before that keeps the behaviour it had, with the
+        # scope written down -- see backfill_auto_approve_repos for why this
+        # is a backfill rather than a silent default.
+        try:
+            scoped = await auth.backfill_auto_approve_repos(auth_pool, list(PROJECTS))
+            if scoped:
+                logger.info("auto-approve: scoped %d pre-existing account(s) to %d project(s)",
+                            scoped, len(PROJECTS))
+        except Exception as e:  # noqa: BLE001 -- never block startup on a migration
+            logger.error("auto-approve backfill failed (accounts stay unscoped): %s", e)
+
         # Stored runtime limits, before anything can build an agent with them.
         await runtime_settings.load(app.state.store)
         await github_settings.load(app.state.store)
@@ -456,15 +469,46 @@ class CreateUserRequest(BaseModel):
     role: str
     allowed_repos: list[str] | None = None
     auto_approve_commands: bool = False
+    auto_approve_repos: list[str] | None = None
 
 
 class UpdateAutoApproveRequest(BaseModel):
     auto_approve_commands: bool
+    # Which projects it covers. Required when turning it ON: a switch whose
+    # blast radius nobody chose should not be the widest one.
+    repos: list[str] | None = None
 
 
 class UpdateUserAccessRequest(BaseModel):
     allowed_repos: list[str] | None = None
     auto_approve_commands: bool | None = None
+    auto_approve_repos: list[str] | None = None
+
+
+def _validated_auto_repos(target: User, repos: list[str] | None, *, turning_on: bool) -> list[str] | None:
+    """The projects an auto-approve switch may cover, or None to leave the
+    stored scope alone.
+
+    Turning it ON must name projects. The alternative -- an empty or absent
+    list meaning "everywhere" -- is exactly the inheritance this scoping
+    exists to stop: a second account handed the switch would silently get it
+    for production as well as for the sandbox it was meant for.
+    """
+    if repos is None:
+        if turning_on and not (target.auto_approve_repos or []):
+            raise HTTPException(400, (
+                "auto mode needs the projects it covers -- send `repos` with at least one, "
+                "so turning it on cannot quietly mean every project"))
+        return None
+    unknown = [r for r in repos if r not in PROJECTS]
+    if unknown:
+        raise HTTPException(400, f"unknown project(s): {', '.join(sorted(unknown))}")
+    denied = [r for r in repos if not target.can_access(r)]
+    if denied:
+        raise HTTPException(403, f"{target.email} has no access to: {', '.join(sorted(denied))}")
+    if turning_on and not repos:
+        raise HTTPException(400, "auto mode with no projects does nothing -- name at least one")
+    return repos
 
 
 def _user_public(user: User) -> dict:
@@ -474,6 +518,7 @@ def _user_public(user: User) -> dict:
         "must_change_password": user.must_change_password,
         "require_totp_setup": user.role == "admin" and not user.totp_enabled,
         "auto_approve_commands": user.auto_approve_commands,
+        "auto_approve_repos": user.auto_approve_repos or [],
         "require_merge_review": user.require_merge_review,
     }
 
@@ -686,6 +731,24 @@ async def get_runtime_settings(user: User = Depends(require_full_auth)):
     return {"knobs": runtime_settings.KNOBS, "values": runtime_settings.all_values()}
 
 
+def _audit_store():
+    """The store, or None before lifespan has attached it. An audit write
+    must never be the reason a request 500s -- see agent/audit.py on why the
+    log yields to the action it records."""
+    return getattr(app.state, "store", None)
+
+
+@app.get("/api/audit")
+async def read_audit_log(limit: int = 100, user: User = Depends(require_full_auth)):
+    """Who moved a control, newest first. Admin-only: it names accounts, and
+    the point of the page is that a second operator's actions are visible to
+    the person responsible for the deployment -- not to everyone with a
+    login. See agent/audit.py for what is recorded and what is not."""
+    auth.require_admin(user)
+    return {"entries": await audit.recent(_audit_store(), limit=min(max(limit, 1), 500)),
+            "actions": audit.ACTIONS}
+
+
 @app.post("/api/settings/runtime")
 async def set_runtime_settings(req: RuntimeSettingsRequest, user: User = Depends(require_full_auth)):
     """Values are clamped to each knob's bounds rather than rejected, so a
@@ -764,6 +827,18 @@ async def set_github_settings(req: GitHubSettingsPatch, user: User = Depends(req
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     logger.info("github settings updated by user %s: %s", user.id, sorted(patch))
+    # One record per project whose source policy actually moved. Auto is the
+    # one that matters -- it lets the poller create work without anyone
+    # clicking -- so it is named explicitly rather than folded into "settings
+    # changed".
+    for repo, project_patch in (patch.get("projects") or {}).items():
+        modes = (project_patch or {}).get("policies") or {}
+        if not modes:
+            continue
+        await audit.record(
+            app.state.store, actor=user.email, action="github.source_policy", target=repo,
+            detail=", ".join(f"{name}={mode}" for name, mode in sorted(modes.items())),
+        )
     _github_poll_wake.set()
     return {"ok": True, "settings": github_settings.public_view(saved)}
 
@@ -1020,6 +1095,9 @@ async def set_own_merge_review(req: UpdateMergeReviewRequest, user: User = Depen
     service still gates every merge regardless. Captured onto each task at
     creation, so flipping this never changes a task already in flight."""
     await auth.update_require_merge_review(app.state.auth_pool, user.id, req.require_merge_review)
+    await audit.record(_audit_store(), actor=user.email, action="settings.merge_review",
+                       target=user.email,
+                       detail="on" if req.require_merge_review else "off")
     return {"ok": True, "require_merge_review": req.require_merge_review}
 
 
@@ -1033,8 +1111,14 @@ async def set_own_auto_approve(req: UpdateAutoApproveRequest, user: User = Depen
     is what makes self-service reasonable rather than a way to switch off
     the safety net.
     """
-    await auth.update_auto_approve(app.state.auth_pool, user.id, req.auto_approve_commands)
-    return {"ok": True, "auto_approve_commands": req.auto_approve_commands}
+    repos = _validated_auto_repos(user, req.repos, turning_on=req.auto_approve_commands)
+    await auth.update_auto_approve(app.state.auth_pool, user.id, req.auto_approve_commands, repos)
+    await audit.record(_audit_store(), actor=user.email, action="settings.auto_approve",
+                       target=user.email,
+                       detail=("on for " + ", ".join(repos) if req.auto_approve_commands and repos
+                               else "on" if req.auto_approve_commands else "off"))
+    return {"ok": True, "auto_approve_commands": req.auto_approve_commands,
+            "auto_approve_repos": repos if repos is not None else (user.auto_approve_repos or [])}
 
 
 class TelegramSettingsRequest(BaseModel):
@@ -1115,8 +1199,22 @@ async def create_user_endpoint(req: CreateUserRequest, user: User = Depends(requ
         must_change_password=True,
     )
     if req.auto_approve_commands:
-        await auth.update_auto_approve(app.state.auth_pool, row["id"], True)
-        row = {**row, "auto_approve_commands": True}
+        # A brand-new account cannot be handed a blanket switch: it is scoped
+        # to the projects it was just granted, and an admin account (whose
+        # allowed_repos is None, meaning everything) must name them.
+        scope = req.auto_approve_repos if req.auto_approve_repos is not None else req.allowed_repos
+        if not scope:
+            raise HTTPException(400, (
+                "auto mode for a new account needs the projects it covers -- send "
+                "`auto_approve_repos`, or create the account with `allowed_repos`"))
+        unknown = [r for r in scope if r not in PROJECTS]
+        if unknown:
+            raise HTTPException(400, f"unknown project(s): {', '.join(sorted(unknown))}")
+        await auth.update_auto_approve(app.state.auth_pool, row["id"], True, list(scope))
+        row = {**row, "auto_approve_commands": True, "auto_approve_repos": sorted(set(scope))}
+        await audit.record(_audit_store(), actor=user.email, action="settings.auto_approve",
+                           target=row["email"],
+                           detail="on at account creation for " + ", ".join(sorted(set(scope))))
     return _user_public(auth._row_to_user(row))
 
 
@@ -1137,8 +1235,22 @@ async def update_user_access_endpoint(user_id: int, req: UpdateUserAccessRequest
         if target["role"] == "admin":
             raise HTTPException(400, "the admin account always has full access")
         await auth.update_user_access(app.state.auth_pool, user_id, req.allowed_repos)
-    if req.auto_approve_commands is not None:
-        await auth.update_auto_approve(app.state.auth_pool, user_id, req.auto_approve_commands)
+    if req.auto_approve_commands is not None or req.auto_approve_repos is not None:
+        target_user = auth._row_to_user(target)
+        enabled = (req.auto_approve_commands if req.auto_approve_commands is not None
+                   else target_user.auto_approve_commands)
+        repos = _validated_auto_repos(target_user, req.auto_approve_repos, turning_on=enabled)
+        await auth.update_auto_approve(app.state.auth_pool, user_id, enabled, repos)
+        # An admin granting someone else the right to skip prompts is the
+        # single most consequential thing on the Users panel, and the person
+        # it is granted to has no other way to learn who did it.
+        await audit.record(
+            app.state.store, actor=user.email,
+            action="settings.auto_approve_repos" if req.auto_approve_repos is not None
+            else "settings.auto_approve",
+            target=target["email"],
+            detail=("on for " + ", ".join(repos)) if enabled and repos
+            else ("on" if enabled else "off"))
     return {"ok": True}
 
 
@@ -2632,7 +2744,8 @@ async def create_task(req: CreateTaskRequest, user: User = Depends(require_full_
     # lone space through), matching send_planning_message's own check.
     return await _start_task(
         req.goal, req.repo, req.budget_usd, req.route,
-        auto_approve_commands=user.auto_approve_commands,
+        # Per project, not per account: see User.auto_approves.
+        auto_approve_commands=user.auto_approves(req.repo),
         require_merge_review=user.require_merge_review,
         attachments=[a.model_dump() for a in req.attachments] if req.attachments else None,
     )
@@ -3681,10 +3794,30 @@ async def merge_decision(task_id: str, req: MergeDecisionRequest, user: User = D
             raise HTTPException(400, "decision must be 'approve' or 'request_changes'")
 
         await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
+        await audit.record(
+            app.state.store, actor=user.email,
+            action="merge.approve" if req.decision == "approve" else "merge.request_changes",
+            target=f'{values["repo"]}/{task_id[:8]}',
+            detail=pending.get("sha", "")[:12] if req.decision == "approve" else (req.message or "")[:200],
+        )
         _running_tasks[task_id] = asyncio.create_task(
             _stream_graph(task_id, values["repo"], values["goal"], values.get("budget_usd", 0.0), None)
         )
         return {"ok": True, "decision": req.decision}
+
+
+def _approval_summary(action_request: dict, count: int) -> str:
+    """One line naming what was approved: the tool, and the part of its
+    arguments a person would recognise. Truncated hard -- this is a log
+    entry, not a transcript, and a pasted file can be megabytes."""
+    name = action_request.get("name") or action_request.get("action") or "?"
+    args = action_request.get("args") or action_request.get("arguments") or {}
+    if isinstance(args, dict):
+        shown = args.get("command") or args.get("file_path") or args.get("path") or ""
+    else:
+        shown = str(args)
+    line = f"{name}: {str(shown)[:160]}" if shown else str(name)
+    return f"{line} (+{count - 1} more)" if count > 1 else line
 
 
 @app.post("/api/tasks/{task_id}/approve")
@@ -3749,6 +3882,17 @@ async def approve_task(task_id: str, req: ApprovalRequest, user: User = Depends(
             "pending_feedback": "[operator submitted an approval decision]",
         }
         await graph.aupdate_state(thread_config, patch, as_node="verify_and_ship")
+
+        # What was approved matters as much as that it was: the first action
+        # request's tool and a short form of its arguments, so a later reader
+        # can see which command a person let through.
+        first = (pending.get("action_requests") or [{}])[0]
+        await audit.record(
+            app.state.store, actor=user.email,
+            action="command.approve" if req.decision == "approve" else "command.reject",
+            target=f'{values["repo"]}/{task_id[:8]}',
+            detail=_approval_summary(first, action_count),
+        )
 
         _running_tasks[task_id] = asyncio.create_task(
             _stream_graph(task_id, values["repo"], values["goal"], values["budget_usd"], None)
@@ -4091,6 +4235,12 @@ async def provision_project_endpoint(req: ProvisionProjectRequest, user: User = 
         except Exception as e:  # noqa: BLE001
             _step("access", False, _public_error(e))
 
+    # Onboarding hands an agent bash and write access to a directory, which
+    # makes "who added this project, and when" a question worth being able to
+    # answer later.
+    await audit.record(_audit_store(), actor=user.email, action="project.onboard",
+                       target=name, detail=report.live)
+
     return {
         "ok": True,
         "steps": steps,
@@ -4160,6 +4310,10 @@ async def generate_deploy_key(name: str, user: User = Depends(require_full_auth)
     except deploy_keys.DeployKeyError as e:
         raise HTTPException(400, str(e))
     logger.info("deploy key generated for %s by %s", name, user.email)
+    # A deploy key is push access to the real repository. The log line above
+    # is in a file that rotates; this one is in the store.
+    await audit.record(_audit_store(), actor=user.email, action="deploy_key.generate",
+                       target=name, detail=st.to_dict().get("fingerprint"))
     return st.to_dict()
 
 
@@ -4182,6 +4336,7 @@ async def delete_deploy_key(name: str, user: User = Depends(require_full_auth)):
     live = _project_live_or_404(name)
     st = await asyncio.to_thread(deploy_keys.remove_key, name, live)
     logger.info("deploy key removed for %s by %s", name, user.email)
+    await audit.record(_audit_store(), actor=user.email, action="deploy_key.delete", target=name)
     return st.to_dict()
 
 
