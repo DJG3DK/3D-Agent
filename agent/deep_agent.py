@@ -41,6 +41,7 @@ from agent.middleware.repeat_guard import RepeatCallGuardMiddleware
 from agent.middleware.sanitize_tool_calls import SanitizeToolCallsMiddleware
 from agent.middleware.budget_guard import BudgetMeterCallback, BudgetGuardMiddleware, BudgetTracker
 from agent.middleware.model_pin import PlanCodeModelMiddleware
+from agent.middleware.todo_nag import StaleTodoMiddleware
 from agent.tools.agent_tools import make_agent_tools
 from agent.tools.project_db import make_project_db_tool
 from agent.tools.checks import run_all_checks
@@ -1396,6 +1397,9 @@ async def build_deep_agent(
             # harness profiles, not universally, so it's added explicitly
             # here.
             TodoListMiddleware(),
+            # ...and a reminder when the model stops maintaining the list it
+            # just wrote -- the 0/12-until-done plan strip of 2026-09-11.
+            StaleTodoMiddleware(),
             # Defense-in-depth backstop against a runaway loop -- see this
             # module's own comment on MODEL_CALL_RUN_LIMIT/TOOL_CALL_RUN_LIMIT
             # for why these are generous limits, not a normal-operation cap.
