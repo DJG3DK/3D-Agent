@@ -197,3 +197,74 @@ def test_raw_device_writes_still_gate(destructive):
 
 def test_dd_to_dev_null_is_fine():
     assert not _matches_dangerous("dd if=big.bin of=/dev/null bs=1M")
+
+
+# ---------------------------------------------------------------------------
+# The repo-aware half (2026-09-11, second report): auto mode still stopped for
+# the coder's own throwaway probe files, because a command string cannot tell
+# repo content from scratch. With a repo root, git answers that.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def worktree(tmp_path):
+    """A git repo with one tracked file under a tracked directory."""
+    import subprocess
+    root = tmp_path / "wt"
+    (root / "apps" / "storefront" / "src").mkdir(parents=True)
+    (root / "apps" / "storefront" / "src" / "html.ts").write_text("export const x = 1;\n")
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"], ["-c", "user.email=t@t.t",
+                "-c", "user.name=t", "commit", "-qm", "i"]):
+        subprocess.run(["git", "-C", str(root), *cmd], check=True, capture_output=True)
+    return str(root)
+
+
+def _auto_when(repo_root=None):
+    return interrupt_on_for(True, repo_root)["bash"]["when"]
+
+
+def test_the_agents_own_scratch_file_is_deleted_without_asking(worktree):
+    """The exact shape that interrupted a live task: write a probe, run it,
+    delete it. git never heard of the probe, so removing it changes nothing
+    in the diff the operator reviews."""
+    probe = (
+        "cd /workspace/apps/storefront && cat > scripts/probe-html.test.mjs <<'EOF'\n"
+        "import { htmlToPlainText } from '../src/utils/html.ts';\n"
+        "console.log('PROBE', 1);\n"
+        "EOF\n"
+        "npx vitest run scripts/probe-html.test.mjs 2>&1 | head -20; rm -f scripts/probe-html.test.mjs"
+    )
+    assert _auto_when(worktree)(_req(probe)) is False
+    # ...and without a repo root the same command still asks: unknown means ask.
+    assert _auto_when()(_req(probe)) is True
+
+
+def test_deleting_tracked_content_still_asks(worktree):
+    for command in [
+        "rm -rf /workspace/apps/storefront/src",
+        "cd /workspace && rm -rf apps",
+        "cd /workspace/apps/storefront && rm src/html.ts",
+        "cd /workspace/apps/storefront && find src -name '*.ts' -delete",
+        "rm -rf .",                       # the worktree root
+        "rm -rf /workspace",
+    ]:
+        assert _auto_when(worktree)(_req(command)) is True, command
+
+
+def test_a_path_git_cannot_speak_for_always_asks(worktree):
+    """.git holds no tracked files, so the tracked-content check would wave a
+    history delete through. Same for a target that cannot be read at all."""
+    for command in ["rm -rf .git", "rm -rf /workspace/.git", 'rm -rf "$BUILD_DIR"',
+                    "rm -rf", "git clean -fdx", "rm -rf /etc", "rm -rf /home/other-project"]:
+        assert _auto_when(worktree)(_req(command)) is True, command
+
+
+def test_scratch_and_build_output_never_ask_even_with_a_repo(worktree):
+    for command in ["cd /tmp && rm -rf u && mkdir u", "rm -rf /tmp/x", "rm -rf dist",
+                    "rm -rf node_modules", "rm -rf coverage .pytest_cache",
+                    "cd /workspace/apps/api && rm -f scratch-check.ts"]:
+        assert _auto_when(worktree)(_req(command)) is False, command
+
+
+def test_a_broken_repo_root_fails_closed(tmp_path):
+    """git failing (not a repo, gone, slow) must mean ask, not run."""
+    assert _auto_when(str(tmp_path / "nope"))(_req("rm -rf /workspace/src")) is True

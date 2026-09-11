@@ -160,10 +160,12 @@ export function SettingsPage({ user, onUserChanged }: Props) {
             <strong>Still always asks, even with auto mode on:</strong>
             <ul>
               <li>
-                Deletions that lose work — the repo itself, anything under <code>.git</code>, a path
-                outside the sandbox's scratch space, <code>git clean -f</code>, or a target it cannot
-                read (a shell variable). Clearing <code>/tmp</code> or a build folder like{" "}
-                <code>dist</code> or <code>node_modules</code> runs without asking: nothing is lost.
+                Deletions that lose work — anything git tracks in the checkout, the checkout itself,
+                anything under <code>.git</code>, a path outside the sandbox, <code>git clean -f</code>,
+                or a target it cannot read (a shell variable). Deleting its own scratch — a probe
+                script it just wrote, <code>/tmp</code>, a build folder like <code>dist</code> or{" "}
+                <code>node_modules</code> — runs without asking: git never heard of it, so nothing
+                reaches your diff.
               </li>
               <li>Questions the agent asks you directly, so it gets your real answer</li>
             </ul>

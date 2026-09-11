@@ -5,6 +5,7 @@ keys) by the outer "work" node.
 """
 
 import json
+import subprocess
 import warnings
 
 from langchain.agents.middleware import (
@@ -377,7 +378,11 @@ _SANDBOX_CWD = "/workspace"
 
 _SEGMENT_SPLIT = _re.compile(r"\|\||&&|[;|\n()]")
 _DELETE_COMMANDS = ("rm", "rmdir", "shred", "unlink")
-_UNPARSEABLE = "\x00unparseable"
+# Marks a loss entry that is not a path to look up: a shell variable, an
+# unparseable segment, `rm` with only flags, a wholesale `git clean -f`.
+# Those always ask, whatever git says about the worktree.
+_ALWAYS = "\x00"
+_UNPARSEABLE = _ALWAYS + "unparseable"
 
 
 def _segments(command: str) -> list[list[str]]:
@@ -433,6 +438,23 @@ def _deletions_that_lose_work(command: str) -> list[str]:
     the caller asks about it rather than assuming."""
     cwd = _SANDBOX_CWD
     losses: list[str] = []
+
+    def _record(targets: list[str]) -> None:
+        for t in targets:
+            if any(ch in t for ch in "$`") or t.startswith(_ALWAYS):
+                losses.append(_ALWAYS + t)                    # unreadable: ask, never resolve
+                continue
+            if _target_is_scratch(t, cwd):
+                continue
+            resolved = _resolve(t, cwd)
+            if ".git" in resolved.lower().split("/"):
+                # git cannot report on its own directory -- ls-files lists
+                # nothing under .git, so the tracked-content check would wave
+                # a `rm -rf .git` straight through. Always ask.
+                losses.append(_ALWAYS + resolved)
+            else:
+                losses.append(resolved)
+
     for tokens in _segments(command):
         head = tokens[0].rsplit("/", 1)[-1]
         if head == "cd" and len(tokens) > 1 and not any(ch in tokens[1] for ch in "$`"):
@@ -440,7 +462,7 @@ def _deletions_that_lose_work(command: str) -> list[str]:
             continue
         if head == "git" and "clean" in tokens[1:4] and any(
                 t.startswith("-") and not t.startswith("--") and "f" in t for t in tokens):
-            losses.append("git clean -f")                     # removes untracked work
+            losses.append(_ALWAYS + "git clean -f")           # removes untracked work wholesale
             continue
         if head == "find" and "-delete" in tokens:
             paths = []
@@ -448,20 +470,65 @@ def _deletions_that_lose_work(command: str) -> list[str]:
                 if tok.startswith("-"):
                     break                                     # find's paths come before its tests
                 paths.append(tok)
-            losses += [t for t in (paths or ["."]) if not _target_is_scratch(t, cwd)]
+            _record(paths or ["."])
             continue
         if head in _DELETE_COMMANDS:
             targets = [t for t in tokens[1:] if not t.startswith("-")]
             if not targets:
-                losses.append(" ".join(tokens))               # flags only: unreadable, so ask
+                losses.append(_ALWAYS + " ".join(tokens))     # flags only: unreadable, so ask
                 continue
-            losses += [t for t in targets if not _target_is_scratch(t, cwd)]
+            _record(targets)
     return losses
 
 
-def _bash_deletes_real_work(req) -> bool:
-    """Auto mode's only bash gate -- see the block comment above."""
-    return bool(_deletions_that_lose_work(str(req.tool_call["args"].get("command", ""))))
+def _covers_tracked_files(repo_root: str, target: str) -> bool:
+    """Does this delete target cover anything git tracks in the worktree?
+
+    The second half of "loses work", and the half a command string cannot
+    answer on its own (2026-09-11, second report: the coder writes a probe
+    script, runs it, and deletes it -- `cat > scripts/probe.mjs <<EOF ... EOF;
+    node scripts/probe.mjs; rm -f scripts/probe.mjs` -- and every cleanup
+    asked for approval). A file git never heard of is the agent's own
+    scratch: deleting it changes nothing in the diff the operator reviews.
+    A tracked path is repo content, and removing it is exactly the deletion
+    worth stopping for.
+
+    `git ls-files -- <path>` lists tracked paths under a directory as well as
+    a file, so a bare `src` or `.` answers correctly. Anything that fails --
+    no repo, a timeout, a path git refuses -- returns True: unknown means ask.
+    """
+    rel = target[len(_SANDBOX_CWD) + 1:] if target.startswith(_SANDBOX_CWD + "/") else target
+    if not rel or rel == _SANDBOX_CWD:
+        return True                                          # the worktree root itself
+    try:
+        r = subprocess.run(["git", "-C", repo_root, "ls-files", "--", rel],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:  # noqa: BLE001 -- unknown means ask
+        return True
+    if r.returncode != 0:
+        return True
+    return bool(r.stdout.strip())
+
+
+def _bash_deletes_real_work(req, repo_root: str | None = None) -> bool:
+    """Auto mode's only bash gate -- see the block comment above.
+
+    With `repo_root`, a delete inside the worktree is judged against git:
+    tracked content asks, the agent's own untracked scratch does not. Without
+    it (the module-level default, and what the tests pin) every non-scratch
+    delete asks, which is the safe direction to be wrong in.
+    """
+    targets = _deletions_that_lose_work(str(req.tool_call["args"].get("command", "")))
+    if not targets or repo_root is None:
+        return bool(targets)
+    for target in targets:
+        if target.startswith(_ALWAYS):
+            return True                                      # unreadable, or a wholesale clean
+        if not (target == _SANDBOX_CWD or target.startswith(_SANDBOX_CWD + "/")):
+            return True                                      # outside the worktree: always ask
+        if _covers_tracked_files(repo_root, target):
+            return True
+    return False
 
 
 def _bash_is_destructive(req) -> bool:
@@ -621,8 +688,21 @@ INTERRUPT_ON_AUTO_APPROVE = {
 }
 
 
-def interrupt_on_for(auto_approve_commands: bool) -> dict:
-    return INTERRUPT_ON_AUTO_APPROVE if auto_approve_commands else INTERRUPT_ON
+def interrupt_on_for(auto_approve_commands: bool, repo_root: str | None = None) -> dict:
+    """The gate map for this task. In auto mode, `repo_root` lets the bash
+    predicate ask git whether a delete target is repo content or the agent's
+    own scratch; without it every non-scratch delete asks."""
+    if not auto_approve_commands:
+        return INTERRUPT_ON
+    if repo_root is None:
+        return INTERRUPT_ON_AUTO_APPROVE
+    return {
+        **INTERRUPT_ON_AUTO_APPROVE,
+        "bash": {
+            **INTERRUPT_ON_AUTO_APPROVE["bash"],
+            "when": lambda req: _bash_deletes_real_work(req, repo_root),
+        },
+    }
 
 
 def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None = None, timeout: int | None = None, callbacks: list | None = None) -> ChatOpenAI:
@@ -1093,7 +1173,9 @@ async def build_deep_agent(
     repo_root = PROJECTS[repo]["sandbox"]
     # One gate, shared by the coordinator and every subagent -- investigator
     # carries the full bash tool too, so a laxer gate there would be a hole.
-    interrupt_on = interrupt_on_for(auto_approve_commands)
+    # repo_root so auto mode can tell repo content from the agent's own
+    # scratch when it judges a delete (see _bash_deletes_real_work).
+    interrupt_on = interrupt_on_for(auto_approve_commands, repo_root)
     tracker = BudgetTracker(budget_usd=budget_usd, starting_cost=starting_cost)
     backend = build_memory_backend(repo, store)
 
