@@ -35,6 +35,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 IMAGES = {
     "go": "golang:1.22-alpine",
+    "elixir": "elixir:1.16-alpine",
+    "java": "maven:3.9-eclipse-temurin-21",
+    "php": "composer:2",
+    "dotnet": "mcr.microsoft.com/dotnet/sdk:8.0",
     # Built locally from rust:1 -- see RUST_DOCKERFILE. The official image
     # installs rustup's minimal profile, which has neither rustfmt nor
     # clippy, so `cargo fmt` in it fails with "run rustup component add"
@@ -50,6 +54,25 @@ CONTAINER_ENV = {
            "-e", "GOFLAGS=-mod=mod"],
     "rust": ["-e", "HOME=/tmp", "-e", "CARGO_HOME=/tmp/cargo"],
     "ruby": ["-e", "HOME=/tmp"],
+    "elixir": ["-e", "HOME=/tmp", "-e", "MIX_ENV=test"],
+    "java": ["-e", "HOME=/tmp", "-e", "MAVEN_OPTS=-Dmaven.repo.local=/tmp/m2"],
+    "php": ["-e", "HOME=/tmp", "-e", "COMPOSER_HOME=/tmp/composer"],
+    "dotnet": ["-e", "HOME=/tmp", "-e", "DOTNET_CLI_TELEMETRY_OPTOUT=1",
+               "-e", "DOTNET_NOLOGO=1", "-e", "NUGET_PACKAGES=/tmp/nuget"],
+}
+
+# Stacks whose fixture cannot build without fetching. Maven downloads its own
+# plugins before it can run a single test, NuGet the test framework, Composer
+# the phpunit package -- none of that is optional and none of it is under this
+# script's control. The command spelling is still what is being verified; the
+# --network none default just stops being available as extra evidence.
+NEEDS_NETWORK = {"java", "php", "dotnet"}
+
+# Some toolchains need a step before the checks that is not itself a check:
+# fetching dependencies the fixture declares. Run once, before the proposed
+# commands, so a failure there is not reported as the check failing.
+SETUP = {
+    "php": ["composer", "install", "--no-interaction", "--no-progress"],
 }
 
 
@@ -94,6 +117,110 @@ def fixture_ruby(root: Path) -> Path:
     return repo
 
 
+def fixture_elixir(root: Path) -> Path:
+    repo = root / "elixir-app"
+    (repo / "lib").mkdir(parents=True)
+    (repo / "test").mkdir()
+    (repo / "mix.exs").write_text(
+        'defmodule Calc.MixProject do\n'
+        '  use Mix.Project\n'
+        '  def project, do: [app: :calc, version: "0.1.0", elixir: "~> 1.14"]\n'
+        '  def application, do: []\n'
+        'end\n')
+    (repo / ".formatter.exs").write_text('[inputs: ["lib/**/*.ex", "test/**/*.exs", "mix.exs"]]\n')
+    (repo / "lib" / "calc.ex").write_text(
+        "defmodule Calc do\n  def sum(a, b), do: a + b\nend\n")
+    (repo / "test" / "test_helper.exs").write_text("ExUnit.start()\n")
+    (repo / "test" / "calc_test.exs").write_text(
+        "defmodule CalcTest do\n  use ExUnit.Case\n\n"
+        "  test \"adds\" do\n    assert Calc.sum(1, 2) == 3\n  end\nend\n")
+    return repo
+
+
+def fixture_java(root: Path) -> Path:
+    repo = root / "java-svc"
+    (repo / "src" / "main" / "java").mkdir(parents=True)
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "pom.xml").write_text(
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        '  <modelVersion>4.0.0</modelVersion>\n'
+        '  <groupId>example</groupId>\n  <artifactId>svc</artifactId>\n'
+        '  <version>1.0</version>\n'
+        '  <properties>\n'
+        '    <maven.compiler.release>17</maven.compiler.release>\n'
+        '    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n'
+        '  </properties>\n'
+        '  <dependencies>\n'
+        '    <dependency>\n'
+        '      <groupId>org.junit.jupiter</groupId>\n'
+        '      <artifactId>junit-jupiter</artifactId>\n'
+        '      <version>5.10.2</version>\n'
+        '      <scope>test</scope>\n'
+        '    </dependency>\n'
+        '  </dependencies>\n'
+        '  <build><plugins><plugin>\n'
+        '    <groupId>org.apache.maven.plugins</groupId>\n'
+        '    <artifactId>maven-surefire-plugin</artifactId>\n'
+        '    <version>3.2.5</version>\n'
+        '  </plugin></plugins></build>\n'
+        '</project>\n')
+    (repo / "src" / "main" / "java" / "Calc.java").write_text(
+        "public class Calc {\n  public static int sum(int a, int b) { return a + b; }\n}\n")
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text(
+        "import org.junit.jupiter.api.Test;\n"
+        "import static org.junit.jupiter.api.Assertions.assertEquals;\n\n"
+        "class CalcTest {\n  @Test void adds() { assertEquals(3, Calc.sum(1, 2)); }\n}\n")
+    return repo
+
+
+def fixture_php(root: Path) -> Path:
+    repo = root / "php-app"
+    (repo / "src").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    (repo / "composer.json").write_text(
+        '{\n  "name": "example/app",\n'
+        '  "require-dev": {"phpunit/phpunit": "^10"},\n'
+        '  "autoload": {"psr-4": {"App\\\\": "src/"}},\n'
+        '  "scripts": {"test": "phpunit --colors=never"},\n'
+        '  "config": {"vendor-dir": "vendor"}\n}\n')
+    (repo / "phpunit.xml").write_text(
+        '<phpunit bootstrap="vendor/autoload.php">\n'
+        '  <testsuites><testsuite name="unit"><directory>tests</directory></testsuite></testsuites>\n'
+        '</phpunit>\n')
+    (repo / "src" / "Calc.php").write_text(
+        "<?php\nnamespace App;\nclass Calc { public static function sum($a, $b) { return $a + $b; } }\n")
+    (repo / "tests" / "CalcTest.php").write_text(
+        "<?php\nuse PHPUnit\\Framework\\TestCase;\nuse App\\Calc;\n\n"
+        "class CalcTest extends TestCase {\n"
+        "  public function testAdds(): void { $this->assertSame(3, Calc::sum(1, 2)); }\n}\n")
+    return repo
+
+
+def fixture_dotnet(root: Path) -> Path:
+    repo = root / "dotnet-app"
+    repo.mkdir(parents=True)
+    (repo / "App.Tests.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        '  <PropertyGroup>\n'
+        '    <TargetFramework>net8.0</TargetFramework>\n'
+        '    <IsPackable>false</IsPackable>\n'
+        '    <Nullable>enable</Nullable>\n'
+        '  </PropertyGroup>\n'
+        '  <ItemGroup>\n'
+        '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />\n'
+        '    <PackageReference Include="xunit" Version="2.7.0" />\n'
+        '    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.7" />\n'
+        '  </ItemGroup>\n'
+        '</Project>\n')
+    (repo / "Calc.cs").write_text(
+        "namespace App;\n\npublic static class Calc\n{\n"
+        "    public static int Sum(int a, int b) => a + b;\n}\n")
+    (repo / "CalcTests.cs").write_text(
+        "using Xunit;\nusing App;\n\npublic class CalcTests\n{\n"
+        "    [Fact]\n    public void Adds() => Assert.Equal(3, Calc.Sum(1, 2));\n}\n")
+    return repo
+
+
 def fixture_make(root: Path) -> Path:
     repo = root / "make-proj"
     repo.mkdir(parents=True)
@@ -113,6 +240,10 @@ FIXTURES = {
     "go": fixture_go,
     "rust": fixture_rust,
     "ruby": fixture_ruby,
+    "elixir": fixture_elixir,
+    "java": fixture_java,
+    "php": fixture_php,
+    "dotnet": fixture_dotnet,
     "make": fixture_make,
     "python": fixture_python,
 }
@@ -156,9 +287,36 @@ def break_python(repo: Path) -> None:
         shutil.rmtree(cache, ignore_errors=True)
 
 
+def break_elixir(repo: Path) -> None:
+    (repo / "test" / "calc_test.exs").write_text(
+        "defmodule CalcTest do\n  use ExUnit.Case\n\n"
+        "  test \"adds\" do\n    assert Calc.sum(1, 2) == 4\n  end\nend\n")
+
+
+def break_java(repo: Path) -> None:
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text(
+        "import org.junit.jupiter.api.Test;\n"
+        "import static org.junit.jupiter.api.Assertions.assertEquals;\n\n"
+        "class CalcTest {\n  @Test void adds() { assertEquals(4, Calc.sum(1, 2)); }\n}\n")
+
+
+def break_php(repo: Path) -> None:
+    (repo / "tests" / "CalcTest.php").write_text(
+        "<?php\nuse PHPUnit\\Framework\\TestCase;\nuse App\\Calc;\n\n"
+        "class CalcTest extends TestCase {\n"
+        "  public function testAdds(): void { $this->assertSame(4, Calc::sum(1, 2)); }\n}\n")
+
+
+def break_dotnet(repo: Path) -> None:
+    (repo / "CalcTests.cs").write_text(
+        "using Xunit;\nusing App;\n\npublic class CalcTests\n{\n"
+        "    [Fact]\n    public void Adds() => Assert.Equal(4, Calc.Sum(1, 2));\n}\n")
+
+
 BREAKERS = {
     "go": break_go, "rust": break_rust, "ruby": break_ruby,
-    "make": break_make, "python": break_python,
+    "elixir": break_elixir, "java": break_java, "php": break_php,
+    "dotnet": break_dotnet, "make": break_make, "python": break_python,
 }
 def git_init(repo: Path) -> None:
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
@@ -169,7 +327,8 @@ def run_check(stack: str, repo: Path, check: dict, use_docker: bool) -> tuple[bo
     if stack in IMAGES:
         if not use_docker:
             return None, "needs docker"
-        argv = ["docker", "run", "--rm", "--network", "none",
+        net = "bridge" if stack in NEEDS_NETWORK else "none"
+        argv = ["docker", "run", "--rm", "--network", net,
                 "-v", f"{repo}:/w", "-w", "/w", *CONTAINER_ENV[stack], IMAGES[stack], *cmd]
     else:
         argv = cmd
@@ -217,7 +376,15 @@ def main() -> int:
             repo = build(root)
             git_init(repo)
             report = prov.detect_project(str(repo))
-            print(f"\n{stack}: {[c['name'] for c in report.checks]}")
+            print(f"\n{stack}: {[c['name'] for c in report.checks]}", flush=True)
+            if stack in SETUP and use_docker:
+                cmd = SETUP[stack]
+                ok, detail = run_check(stack, repo, {"cmd": cmd[0], "args": cmd[1:]}, use_docker)
+                print(f"  {'ok  ' if ok else 'FAIL'} setup  {' '.join(cmd)}"
+                      + (f"   -- {detail}" if detail else ""), flush=True)
+                if not ok:
+                    failures += 1
+                    continue
             if not report.checks:
                 print("  NO CHECKS DETECTED")
                 failures += 1
@@ -226,7 +393,8 @@ def main() -> int:
                 shown = " ".join([check["cmd"], *check["args"]])
                 ok, detail = run_check(stack, repo, check, use_docker)
                 label = "skip" if ok is None else ("ok  " if ok else "FAIL")
-                print(f"  {label} {check['name']:<6} {shown}" + (f"   -- {detail}" if detail else ""))
+                print(f"  {label} {check['name']:<8} {shown}"
+                      + (f"   -- {detail}" if detail else ""), flush=True)
                 if ok is False:
                     failures += 1
 

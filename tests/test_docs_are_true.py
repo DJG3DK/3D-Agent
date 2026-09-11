@@ -145,3 +145,16 @@ def test_the_inventory_is_reachable_from_the_map():
     arch = ARCH.read_text()
     assert "middleware.md" in arch, "docs/architecture.md does not link the middleware inventory"
     assert "playbooks" in arch, "docs/architecture.md does not link the playbooks"
+
+
+def test_the_readme_describes_the_lock_that_actually_exists():
+    """The opening section said one task per project was "enforced by an
+    in-process lock". It was, once. It has been a Postgres session-level
+    advisory lock since the in-process version was found to be true only
+    while exactly one process existed -- and the whole point of the change is
+    that a reader must not believe the old sentence."""
+    readme = pathlib.Path("README.md").read_text()
+    graph = pathlib.Path("agent/graph.py").read_text()
+    assert "pg_try_advisory_lock" in graph, "the lock is no longer a Postgres advisory lock"
+    assert "advisory lock" in readme, "the README does not say how one-task-per-project is enforced"
+    assert "enforced by an in-process lock" not in readme

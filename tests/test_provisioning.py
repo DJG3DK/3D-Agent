@@ -798,3 +798,249 @@ def test_a_repo_with_no_bundler_gets_neither(tmp_path):
     r = prov.detect_project(str(repo))
     assert _cmd(r, "test") == "rspec"
     assert r.build_steps == []
+
+
+# ---------------------------------------------------------------------------
+# Elixir, Java, PHP and .NET
+#
+# The last four stacks that onboarded with an empty checks list. Same three
+# rules as everywhere else: the repo's own commands, a suite that calls the
+# network arrives disabled, and the client may only narrow what was proposed.
+# scripts/verify_stack_checks.py runs every command below in the official
+# toolchain image -- that is where the spelling is proven, not here.
+# ---------------------------------------------------------------------------
+
+def test_elixir_project_gets_mix_commands(tmp_path):
+    repo = tmp_path / "elixirapp"
+    (repo / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text("defmodule App.MixProject do\n  def project, do: [app: :app]\nend\n")
+    (repo / "test" / "calc_test.exs").write_text(
+        "defmodule CalcTest do\n  use ExUnit.Case\n  test \"adds\" do\n    assert 1 + 1 == 2\n  end\nend\n")
+    _git_init(repo)
+
+    r = prov.detect_project(str(repo))
+    assert r.languages == ["elixir"]
+    assert _names(r) == ["test"], "neither .formatter.exs nor .credo.exs means neither is proposed"
+    assert _cmd(r, "test") == "mix test"
+    assert {"dir": ".", "cmd": "mix", "args": ["deps.get"]} in r.build_steps
+
+    (repo / ".formatter.exs").write_text('[inputs: ["lib/**/*.ex"]]\n')
+    (repo / ".credo.exs").write_text("%{configs: []}\n")
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "format") == "mix format --check-formatted"
+    assert _cmd(r, "lint") == "mix credo --strict"
+
+
+def test_a_mix_alias_is_elixirs_declared_review_suite(tmp_path):
+    repo = tmp_path / "curated-elixir"
+    (repo / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text(
+        'defmodule App.MixProject do\n'
+        '  defp aliases, do: ["test.review": ["test --only safe"]]\n'
+        'end\n')
+    (repo / "test" / "live_test.exs").write_text(
+        'defmodule LiveTest do\n  test "hits" do\n    HTTPoison.get!("https://prod/x")\n  end\nend\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "mix test.review"
+    assert [c.value for c in r.risky_scripts] == ["test-all"]
+
+
+def test_an_elixir_test_using_bypass_is_not_flagged(tmp_path):
+    """Bypass is an in-process HTTP server the test itself starts."""
+    repo = tmp_path / "bypassed"
+    (repo / "test").mkdir(parents=True)
+    (repo / "mix.exs").write_text("defmodule App.MixProject do\nend\n")
+    (repo / "test" / "client_test.exs").write_text(
+        'defmodule ClientTest do\n  setup do\n    bypass = Bypass.open()\n    {:ok, bypass: bypass}\n  end\n'
+        '  test "fetches", %{bypass: bypass} do\n    HTTPoison.get!("http://localhost:#{bypass.port}/x")\n  end\nend\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r) and r.risky_scripts == []
+
+
+def test_a_maven_project_runs_in_batch_mode(tmp_path):
+    repo = tmp_path / "mavensvc"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "pom.xml").write_text("<project><artifactId>svc</artifactId></project>\n")
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text("class CalcTest { void t() {} }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert r.languages == ["java"]
+    # -B, because the reviewer has no terminal and Maven otherwise fills the
+    # captured output with progress bars
+    assert _cmd(r, "test") == "mvn -B test"
+    assert _cmd(r, "build") == "mvn -B -DskipTests package"
+
+
+def test_a_gradle_project_prefers_the_wrapper_the_repo_ships(tmp_path):
+    """A repo with a gradlew is pinning a Gradle version on purpose; running
+    the host's own `gradle` is how a build works for the author and not for
+    the reviewer."""
+    repo = tmp_path / "gradlesvc"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "build.gradle").write_text("plugins { id 'java' }\n")
+    (repo / "src" / "test" / "java" / "CalcTest.java").write_text("class CalcTest { void t() {} }\n")
+    _git_init(repo)
+    assert _cmd(prov.detect_project(str(repo)), "test") == "gradle test"
+
+    (repo / "gradlew").write_text("#!/bin/sh\n")
+    (repo / "gradlew").chmod(0o755)
+    assert _cmd(prov.detect_project(str(repo)), "test") == "./gradlew test"
+
+
+def test_a_gradle_test_review_task_is_preferred(tmp_path):
+    repo = tmp_path / "curated-gradle"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "build.gradle").write_text("plugins { id 'java' }\ntask testReview(type: Test) { }\n")
+    (repo / "src" / "test" / "java" / "ApiTest.java").write_text(
+        'class ApiTest { void t() { new java.net.URL("https://prod/x").openStream(); } }\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "test") == "gradle testReview"
+    assert [c.value for c in r.risky_scripts] == ["test-all"]
+
+
+def test_a_jvm_test_using_wiremock_is_not_flagged(tmp_path):
+    repo = tmp_path / "wiremocked"
+    (repo / "src" / "test" / "java").mkdir(parents=True)
+    (repo / "pom.xml").write_text("<project><artifactId>x</artifactId></project>\n")
+    (repo / "src" / "test" / "java" / "ApiTest.java").write_text(
+        'import com.github.tomakehurst.wiremock.WireMockServer;\n'
+        'class ApiTest { void t() { new java.net.URL("http://localhost:8089/x").openStream(); } }\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r) and r.risky_scripts == []
+
+
+def test_php_prefers_the_repos_own_composer_script(tmp_path):
+    repo = tmp_path / "phpapp"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "composer.json").write_text(json.dumps({"scripts": {"test": "phpunit"}}))
+    (repo / "tests" / "CalcTest.php").write_text("<?php class CalcTest { function testAdds() {} }\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert r.languages == ["php"]
+    # run-script, never the bare shorthand: a script named like a composer
+    # subcommand would otherwise run composer's own command
+    assert _cmd(r, "test") == "composer run-script test"
+    assert {"dir": ".", "cmd": "composer",
+            "args": ["install", "--no-interaction", "--no-progress"]} in r.build_steps
+
+
+def test_php_falls_back_to_phpunit_when_no_script_is_declared(tmp_path):
+    repo = tmp_path / "phpbare"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "composer.json").write_text(json.dumps({"require": {"php": "^8.2"}}))
+    (repo / "phpunit.xml").write_text("<phpunit/>\n")
+    (repo / "tests" / "CalcTest.php").write_text("<?php class CalcTest {}\n")
+    _git_init(repo)
+    assert _cmd(prov.detect_project(str(repo)), "test") == "vendor/bin/phpunit"
+
+
+def test_php_static_analysis_is_proposed_only_when_configured(tmp_path):
+    repo = tmp_path / "phpstan-app"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "composer.json").write_text(json.dumps({"scripts": {"test": "phpunit"}}))
+    (repo / "tests" / "CalcTest.php").write_text("<?php class CalcTest {}\n")
+    _git_init(repo)
+    assert "analyse" not in _names(prov.detect_project(str(repo)))
+
+    (repo / "phpstan.neon").write_text("parameters:\n  level: 5\n")
+    (repo / "phpcs.xml").write_text("<ruleset/>\n")
+    r = prov.detect_project(str(repo))
+    assert _cmd(r, "analyse") == "vendor/bin/phpstan analyse --no-progress"
+    assert _cmd(r, "lint") == "vendor/bin/phpcs -q"
+
+
+def test_a_php_test_hitting_a_live_host_is_flagged(tmp_path):
+    repo = tmp_path / "phpnet"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "composer.json").write_text(json.dumps({"scripts": {"test": "phpunit"}}))
+    (repo / "tests" / "PayTest.php").write_text(
+        "<?php\nclass PayTest {\n  function testCharges() {\n"
+        "    (new GuzzleHttp\\Client())->post('https://payments.example.com/charge');\n  }\n}\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+    assert r.risky_scripts[0].check["args"] == ["run-script", "test"]
+
+
+def test_a_php_test_using_http_fake_is_not_flagged(tmp_path):
+    repo = tmp_path / "phpfake"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "composer.json").write_text(json.dumps({"scripts": {"test": "phpunit"}}))
+    (repo / "tests" / "PayTest.php").write_text(
+        "<?php\nclass PayTest {\n  function testCharges() {\n"
+        "    Http::fake();\n    Http::post('https://payments.example.com/charge');\n  }\n}\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r) and r.risky_scripts == []
+
+
+def test_a_dotnet_solution_is_detected_from_the_root_or_one_level_down(tmp_path):
+    repo = tmp_path / "netapp"
+    (repo / "src" / "App").mkdir(parents=True)
+    (repo / "src" / "App" / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert r.languages == ["dotnet"]
+    assert _cmd(r, "test") == "dotnet test --nologo"
+    assert _cmd(r, "build") == "dotnet build --nologo"
+    assert {"dir": ".", "cmd": "dotnet",
+            "args": ["build", "--nologo", "-c", "Release"]} in r.build_steps
+
+
+def test_dotnet_format_needs_an_editorconfig(tmp_path):
+    """`dotnet format` reads .editorconfig and nothing else; without one it
+    would enforce defaults the repo never chose."""
+    repo = tmp_path / "netfmt"
+    repo.mkdir()
+    (repo / "App.sln").write_text("Microsoft Visual Studio Solution File\n")
+    _git_init(repo)
+    assert "format" not in _names(prov.detect_project(str(repo)))
+    (repo / ".editorconfig").write_text("root = true\n")
+    assert _cmd(prov.detect_project(str(repo)), "format") == "dotnet format --verify-no-changes"
+
+
+def test_a_dotnet_test_calling_out_is_flagged_and_moq_is_not(tmp_path):
+    repo = tmp_path / "nettests"
+    repo.mkdir()
+    (repo / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+    (repo / "PayTests.cs").write_text(
+        "public class PayTests {\n  public async Task Charges() {\n"
+        "    using var c = new HttpClient();\n"
+        "    await c.PostAsync(\"https://payments.example.com/charge\", null);\n  }\n}\n")
+    _git_init(repo)
+    r = prov.detect_project(str(repo))
+    assert "test" not in _names(r)
+
+    (repo / "PayTests.cs").write_text(
+        "using Moq;\npublic class PayTests {\n  public void Charges() {\n"
+        "    var handler = new Mock<HttpMessageHandler>();\n"
+        "    var c = new HttpClient(handler.Object);\n  }\n}\n")
+    r = prov.detect_project(str(repo))
+    assert "test" in _names(r) and r.risky_scripts == []
+
+
+def test_every_supported_stack_is_reachable_from_detect_languages(tmp_path):
+    """One fixture per stack, asserting detection fires at all. A stack whose
+    trigger file stops matching produces an empty checks list, which is the
+    silent failure this whole slice exists to remove."""
+    fixtures = {
+        "node": ("package.json", "{}"),
+        "python": ("pyproject.toml", "[project]\nname='x'\n"),
+        "go": ("go.mod", "module x\n"),
+        "rust": ("Cargo.toml", "[package]\nname='x'\n"),
+        "ruby": ("Gemfile", "source 'https://rubygems.org'\n"),
+        "elixir": ("mix.exs", "defmodule X do\nend\n"),
+        "java": ("pom.xml", "<project/>\n"),
+        "php": ("composer.json", "{}"),
+        "dotnet": ("App.csproj", "<Project/>\n"),
+    }
+    for lang, (fname, body) in fixtures.items():
+        repo = tmp_path / f"probe-{lang}"
+        repo.mkdir()
+        (repo / fname).write_text(body)
+        _git_init(repo)
+        assert lang in prov.detect_project(str(repo)).languages, f"{fname} no longer means {lang}"

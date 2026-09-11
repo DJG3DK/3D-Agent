@@ -14,7 +14,11 @@ and repos.
 The agent targets a fixed set of local projects (`PROJECTS` in `agent/config.py` /
 `projects.json`). Each task runs against that project's own **workspace** — a git worktree of the
 live repo at `/home/agent-workspaces/<project>`, on a per-task branch `agent/<task-id>` — one task per project
-at a time, enforced by an in-process lock.
+at a time, enforced by a Postgres session-level advisory lock (`agent/graph.py`). The lock lives in
+the database rather than in the process because the rule is a property of the project: a second
+worker, an overlapping restart, or a script run against the same database would each hold their own
+in-process lock and happily run two tasks on one worktree. Postgres drops the claim when the
+connection closes, so a crashed process releases it with nobody cleaning up.
 
 ## Screenshots
 
@@ -597,6 +601,13 @@ The first admin login is printed once to the server log on first startup (see `A
 
 Paths follow the checkout — nothing is hardcoded to one install location — and per-project
 configuration lives in `projects.json` (written by the onboarding wizard), not in source.
+
+The wizard proposes the checks the review gate will run, read from the repo's own manifests:
+npm/pnpm/yarn scripts, Python, Go, Rust, Ruby, Elixir, Java (Maven or Gradle), PHP, .NET, and
+Makefile targets as a fallback. A suite whose test files call the network arrives **disabled** and
+named, because no static analysis can tell a test server from your production one — and a repo that
+declares its own reviewer-safe suite (`test:review`, a `test-review` Make target, a cargo or mix
+alias, a `testReview` Gradle task) has that preferred over the full suite.
 
 In production this runs under pm2 (`ecosystem.config.js`) as a single process —
 `agent/server.py` mounts `frontend/dist` itself, so there's no separate frontend process. Rebuild

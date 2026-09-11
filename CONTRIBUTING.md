@@ -23,12 +23,14 @@ In rough order of value:
 2. **Make it run somewhere new.** It's been exercised on one Linux box. Other
    distros, other Postgres versions, non-root installs, ARM — every one of
    those will surface something.
-3. **Support another stack.** Check detection (`agent/provisioning.py`) now
-   covers npm/pnpm/yarn, Python, Go, Rust, Ruby, and Makefile targets as a
-   fallback. Elixir, Java, PHP and .NET still onboard with no checks detected,
-   which makes the review gate a no-op for them. The shape to copy is
-   `_detect_go_checks`, and `scripts/verify_stack_checks.py` runs whatever you
-   add against a real toolchain in a container.
+3. **Support another stack.** Check detection (`agent/provisioning.py`) covers
+   npm/pnpm/yarn, Python, Go, Rust, Ruby, Elixir, Java (Maven and Gradle), PHP,
+   .NET, and Makefile targets as a fallback. Anything else onboards with no
+   checks detected, which makes the review gate a no-op for it. The shape to
+   copy is `_detect_go_checks`; add a fixture to
+   `scripts/verify_stack_checks.py` and it will run your commands against the
+   real toolchain in a container, including against deliberately broken code
+   to prove the check can fail.
 4. **Improve the docs.** If [INSTALL.md](INSTALL.md) misled you, that's a bug
    worth a PR.
 

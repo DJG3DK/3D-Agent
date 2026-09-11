@@ -65,6 +65,14 @@ _NETWORK_CALL = re.compile(
     # Ruby. URI.parse is NOT here: parsing a string opens nothing, and it
     # appears in every spec that builds a URL for a stubbed request.
     r"Net::HTTP|HTTParty|RestClient|Faraday|Excon|URI\.open\s*\(|open-uri|"
+    # JVM
+    r"HttpURLConnection|RestTemplate|OkHttpClient|WebClient\.|java\.net\.URL\b|"
+    # PHP
+    r"curl_init|GuzzleHttp|Http::(get|post|put|delete)\b|file_get_contents\s*\(\s*['\"]https?|"
+    # .NET
+    r"\bHttpClient\b|WebRequest\.|\bRestSharp\b|"
+    # Elixir
+    r"HTTPoison|\bTesla\b|\bFinch\b|:httpc\b|\bReq\.(get|post)\b|Mint\.HTTP|"
     r"127\.0\.0\.1|localhost:\d+)",
     re.IGNORECASE,
 )
@@ -88,7 +96,10 @@ _NETWORK_STUBBED = re.compile(
     r"mockito|wiremock|MockWebServer|"                       # Rust/JVM
     r"\bWebMock\b|\bVCR\b|Rack::Test|ActionDispatch::IntegrationTest|"  # Ruby
     r"\bresponses\b|\brespx\b|requests_mock|httpretty|pytest_httpserver|"  # Python
-    r"\bnock\b|msw/node|setupServer\s*\()",              # JS
+    r"\bnock\b|msw/node|setupServer\s*\(|"                # JS
+    r"Http::fake|MockHandler|createMock\s*\(|"             # PHP
+    r"\bMoq\b|MockHttpMessageHandler|WireMock|"            # .NET / JVM
+    r"\bBypass\b|\bMox\b|Plug\.Test|ExVCR)",            # Elixir
     re.IGNORECASE,
 )
 
@@ -103,6 +114,10 @@ _TEST_FILE_GLOBS = {
     "rust": ("*.rs",),
     "ruby": ("*_spec.rb", "*_test.rb"),
     "python": ("test_*.py", "*_test.py"),
+    "elixir": ("*_test.exs",),
+    "java": ("*Test.java", "*Tests.java", "*IT.java", "*Test.kt", "*Tests.kt"),
+    "php": ("*Test.php",),
+    "dotnet": ("*Test.cs", "*Tests.cs"),
 }
 
 # A suite scan reads files, so it is bounded twice: by how many files it will
@@ -339,7 +354,27 @@ def _detect_languages(live: Path) -> list[str]:
         langs.append("rust")
     if any((live / f).is_file() for f in ("Gemfile", "Rakefile", ".ruby-version", "Gemfile.lock")):
         langs.append("ruby")
+    if (live / "mix.exs").is_file():
+        langs.append("elixir")
+    if any((live / f).is_file() for f in ("pom.xml", "build.gradle", "build.gradle.kts",
+                                          "settings.gradle", "settings.gradle.kts")):
+        langs.append("java")
+    if (live / "composer.json").is_file() or any((live / f).is_file()
+                                                 for f in ("phpunit.xml", "phpunit.xml.dist")):
+        langs.append("php")
+    if _dotnet_project(live):
+        langs.append("dotnet")
     return langs
+
+
+def _dotnet_project(live: Path) -> bool:
+    """A solution or project file at the root, or one level down -- the two
+    layouts .NET repos actually use (`App.sln` beside `src/App/App.csproj`).
+    Not a full-tree walk: this runs on every detect, and a project file eight
+    directories deep is a vendored sample, not the repo's own build."""
+    patterns = ("*.sln", "*.csproj", "*.fsproj", "*/*.csproj", "*/*.fsproj",
+                "src/*/*.csproj", "src/*/*.fsproj")
+    return any(next(live.glob(pat), None) is not None for pat in patterns)
 
 
 def _workspace_dirs(live: Path, pkg: dict) -> list[str]:
@@ -694,6 +729,152 @@ def _detect_ruby_checks(live: Path) -> tuple[list[dict], list[Candidate], list[s
     return checks + tests, risky, []
 
 
+def _mix_alias(live: Path, name: str) -> bool:
+    """Is `name` declared in mix.exs's `aliases`? Elixir's answer to an npm
+    script: the repo names a task and says what it runs."""
+    mix = live / "mix.exs"
+    if not mix.is_file():
+        return False
+    try:
+        text = mix.read_text(errors="ignore")[:_SCAN_BYTES]
+    except OSError:
+        return False
+    return bool(re.search(r"""['\"]?""" + re.escape(name) + r"""['\"]?\s*:\s*\[""", text))
+
+
+def _detect_elixir_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    checks: list[dict] = []
+    if (live / ".formatter.exs").is_file():
+        checks.append(_suite_check("format", "mix", ["format", "--check-formatted"],
+                                   timeout=CHECK_TIMEOUT_MS_DEFAULT))
+    if any((live / f).is_file() for f in (".credo.exs", "config/.credo.exs")):
+        checks.append(_suite_check("lint", "mix", ["credo", "--strict"],
+                                   timeout=CHECK_TIMEOUT_MS_DEFAULT))
+    review = None
+    if _mix_alias(live, "test.review"):
+        review = _suite_check("test", "mix", ["test.review"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    else:
+        target = _make_review_target(_makefile_targets(live))
+        if target:
+            review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    full = _suite_check("test", "mix", ["test"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    tests, risky = _guard_suite(live, "elixir", full, review)
+    return checks + tests, risky, []
+
+
+def _gradle_cmd(live: Path) -> str:
+    """The wrapper if the repo ships one. A repo with a gradlew is pinning a
+    Gradle version on purpose, and running the host's `gradle` against it is
+    how a build works for the author and not for the reviewer."""
+    return "./gradlew" if (live / "gradlew").is_file() else "gradle"
+
+
+def _detect_java_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    maven = (live / "pom.xml").is_file()
+    gradle = any((live / f).is_file() for f in ("build.gradle", "build.gradle.kts",
+                                                "settings.gradle", "settings.gradle.kts"))
+    checks: list[dict] = []
+    review = None
+    target = _make_review_target(_makefile_targets(live))
+
+    if maven:
+        # -B (batch mode) because the reviewer has no terminal: without it
+        # Maven writes progress bars into the captured output and nothing
+        # else. Tests are what this gate is for, so `package` skips them and
+        # `test` runs them, rather than one slow `verify` doing both.
+        checks.append(_suite_check("build", "mvn", ["-B", "-DskipTests", "package"],
+                                   timeout=TEST_TIMEOUT_MS_DEFAULT))
+        full = _suite_check("test", "mvn", ["-B", "test"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    else:
+        cmd = _gradle_cmd(live)
+        checks.append(_suite_check("build", cmd, ["assemble"], timeout=TEST_TIMEOUT_MS_DEFAULT))
+        if _gradle_declares(live, "testReview"):
+            review = _suite_check("test", cmd, ["testReview"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+        full = _suite_check("test", cmd, ["test"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+        if not gradle:
+            return [], [], []
+    if review is None and target:
+        review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT)
+
+    tests, risky = _guard_suite(live, "java", full, review)
+    return checks + tests, risky, []
+
+
+def _gradle_declares(live: Path, task: str) -> bool:
+    for name in ("build.gradle", "build.gradle.kts"):
+        f = live / name
+        if not f.is_file():
+            continue
+        try:
+            if re.search(r"\b" + re.escape(task) + r"\b", f.read_text(errors="ignore")[:_SCAN_BYTES]):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _composer_scripts(live: Path) -> dict:
+    data = _read_json(live / "composer.json")
+    scripts = data.get("scripts")
+    return scripts if isinstance(scripts, dict) else {}
+
+
+def _detect_php_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    scripts = _composer_scripts(live)
+    checks: list[dict] = []
+
+    # Static analysis and style, each only when the repo configures it: a
+    # phpstan run a repo never opted into fails every review on findings its
+    # authors never agreed to.
+    if any((live / f).is_file() for f in ("phpstan.neon", "phpstan.neon.dist", "phpstan.dist.neon")):
+        checks.append(_suite_check("analyse", "vendor/bin/phpstan", ["analyse", "--no-progress"],
+                                   timeout=TEST_TIMEOUT_MS_DEFAULT))
+    if any((live / f).is_file() for f in ("phpcs.xml", "phpcs.xml.dist", ".phpcs.xml")):
+        checks.append(_suite_check("lint", "vendor/bin/phpcs", ["-q"],
+                                   timeout=CHECK_TIMEOUT_MS_DEFAULT))
+
+    review = None
+    if "test:review" in scripts:
+        # run-script, not the bare `composer test:review` shorthand: the
+        # shorthand is only reached for names that are not already composer
+        # subcommands, so a script called `install` or `check` would run
+        # composer's own command instead of the repo's.
+        review = _suite_check("test", "composer", ["run-script", "test:review"],
+                              timeout=TEST_TIMEOUT_MS_DEFAULT)
+    else:
+        target = _make_review_target(_makefile_targets(live))
+        if target:
+            review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT)
+
+    # The repo's own script first, the framework's runner second -- same rule
+    # the npm path follows.
+    if "test" in scripts:
+        full = _suite_check("test", "composer", ["run-script", "test"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    elif any((live / f).is_file() for f in ("phpunit.xml", "phpunit.xml.dist")):
+        full = _suite_check("test", "vendor/bin/phpunit", [], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    elif review is not None:
+        full = dict(review)
+    else:
+        return checks, [], []
+
+    tests, risky = _guard_suite(live, "php", full, review)
+    return checks + tests, risky, []
+
+
+def _detect_dotnet_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
+    checks = [_suite_check("build", "dotnet", ["build", "--nologo"], timeout=TEST_TIMEOUT_MS_DEFAULT)]
+    if (live / ".editorconfig").is_file():
+        # `dotnet format` reads .editorconfig and nothing else; without one it
+        # would enforce defaults the repo never chose.
+        checks.append(_suite_check("format", "dotnet", ["format", "--verify-no-changes"],
+                                   timeout=TEST_TIMEOUT_MS_DEFAULT))
+    target = _make_review_target(_makefile_targets(live))
+    review = _suite_check("test", "make", [target], timeout=TEST_TIMEOUT_MS_DEFAULT) if target else None
+    full = _suite_check("test", "dotnet", ["test", "--nologo"], timeout=TEST_TIMEOUT_MS_DEFAULT)
+    tests, risky = _guard_suite(live, "dotnet", full, review)
+    return checks + tests, risky, []
+
+
 def _detect_make_checks(live: Path) -> tuple[list[dict], list[Candidate], list[str]]:
     """Last resort for a repo with no manifest this module recognizes. A
     Makefile is the one convention every stack shares, so a declared `test`
@@ -777,6 +958,20 @@ def _build_steps_for(live: Path, lang: str) -> list[dict]:
         return [{"dir": ".", "cmd": "go", "args": ["build", "./..."]}]
     if lang == "rust":
         return [{"dir": ".", "cmd": "cargo", "args": ["build", "--release"]}]
+    if lang == "elixir":
+        return [{"dir": ".", "cmd": "mix", "args": ["deps.get"]},
+                {"dir": ".", "cmd": "mix", "args": ["compile"]}]
+    if lang == "java":
+        if (live / "pom.xml").is_file():
+            return [{"dir": ".", "cmd": "mvn", "args": ["-B", "-DskipTests", "package"]}]
+        return [{"dir": ".", "cmd": _gradle_cmd(live), "args": ["assemble"]}]
+    if lang == "php" and (live / "composer.json").is_file():
+        # --no-dev is deliberately absent: the review checkout runs the test
+        # suite, and phpunit lives in require-dev.
+        return [{"dir": ".", "cmd": "composer",
+                 "args": ["install", "--no-interaction", "--no-progress"]}]
+    if lang == "dotnet":
+        return [{"dir": ".", "cmd": "dotnet", "args": ["build", "--nologo", "-c", "Release"]}]
     if lang == "ruby" and _uses_bundler(live):
         # The same predicate the checks use. Keying the deploy step on
         # Gemfile.lock alone left a Gemfile-only repo -- normal for a library
@@ -927,7 +1122,11 @@ def detect_project(live_path: str, sandbox_root: str | None = None,
     for lang, detect in (("python", _detect_python_checks),
                          ("go", _detect_go_checks),
                          ("rust", _detect_rust_checks),
-                         ("ruby", _detect_ruby_checks)):
+                         ("ruby", _detect_ruby_checks),
+                         ("elixir", _detect_elixir_checks),
+                         ("java", _detect_java_checks),
+                         ("php", _detect_php_checks),
+                         ("dotnet", _detect_dotnet_checks)):
         if lang in report.languages:
             checks, risky, warns = detect(live)
             _add_checks(report, checks, risky, prefix=lang)
