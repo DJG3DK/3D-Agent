@@ -1,0 +1,210 @@
+"""Analytics computed from this box's own records, not from LangSmith.
+
+Three panels -- per-role model usage, tool reliability, run health -- used to
+be read back out of a third-party service. That made an optional, off-box
+dependency load-bearing for "what is this agent doing", and the redacting
+tracer needed to make those traces safe was measured burning ~100% of a core,
+on the event loop (2026-09-12).
+
+Everything they need is written here already: the router's per-call ledger and
+the work node's tool-result log. The ledger is strictly better than the traces
+were -- it knows what the router was BILLED and how much of each prompt came
+from cache, neither of which LangSmith ever saw.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+
+import pytest
+
+from agent import metrics, tool_events
+
+
+def _routing(tmp_path, rows):
+    p = tmp_path / "routing.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return p
+
+
+def _call(**over):
+    row = {
+        "ts": time.time(),
+        "call_id": "c",
+        # The field names are historically crossed: requested_model holds the
+        # UNDERLYING model, routed_model holds the alias the proxy served.
+        "requested_model": "deepseek/deepseek-v4.1-flash",
+        "routed_model": "agent-coder",
+        "prompt_tokens": 1000,
+        "completion_tokens": 100,
+        "cached_tokens": 0,
+        "cost": 0.01,
+        "duration_s": 3.0,
+        "task_id": "T1",
+    }
+    row.update(over)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# model usage
+# ---------------------------------------------------------------------------
+
+def test_usage_is_grouped_by_role_and_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(), _call(),
+        _call(routed_model="agent-test-writer"),
+        _call(routed_model="agent-coder", requested_model="poolside/laguna-s-2.1"),
+    ]))
+    models = metrics.model_usage()["models"]
+    assert {(m["role"], m["model"], m["calls"]) for m in models} == {
+        ("agent-coder", "deepseek/deepseek-v4.1-flash", 2),
+        ("agent-test-writer", "deepseek/deepseek-v4.1-flash", 1),
+        ("agent-coder", "poolside/laguna-s-2.1", 1),
+    }
+    assert [m["calls"] for m in models] == sorted([m["calls"] for m in models], reverse=True)
+
+
+def test_it_reports_what_the_router_was_billed(tmp_path, monkeypatch):
+    """The column LangSmith could never have: the traces knew tokens, the
+    router knows what OpenRouter charged for them."""
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(cost=0.02), _call(cost=0.03),
+    ]))
+    assert metrics.model_usage()["models"][0]["cost_usd"] == 0.05
+
+
+def test_it_reports_how_much_of_the_prompt_was_cached(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(prompt_tokens=1000, cached_tokens=750),
+        _call(prompt_tokens=1000, cached_tokens=250),
+    ]))
+    m = metrics.model_usage()["models"][0]
+    assert m["cached_tokens"] == 1000
+    assert m["cache_hit_rate"] == pytest.approx(0.5)
+
+
+def test_calls_that_are_not_this_agent_are_left_out(tmp_path, monkeypatch):
+    """The router is shared -- the review service and the tier system use it
+    too. Only agent-* aliases are this agent's roles."""
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(), _call(routed_model="smart-router"), _call(routed_model="reasoning-tier"),
+    ]))
+    models = metrics.model_usage()["models"]
+    assert len(models) == 1 and models[0]["role"] == "agent-coder"
+
+
+def test_the_window_excludes_older_calls(tmp_path, monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(ts=now - 2 * 86400), _call(ts=now - 40 * 86400),
+    ]))
+    assert metrics.model_usage(window_days=7, now=now)["models"][0]["calls"] == 1
+
+
+def test_latency_is_averaged_only_over_calls_that_reported_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(duration_s=2.0), _call(duration_s=4.0), _call(duration_s=None),
+    ]))
+    assert metrics.model_usage()["models"][0]["avg_latency_s"] == pytest.approx(3.0)
+
+
+def test_a_missing_or_torn_log_answers_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", tmp_path / "nope.jsonl")
+    assert metrics.model_usage()["models"] == []
+
+    p = tmp_path / "routing.jsonl"
+    p.write_text(json.dumps(_call()) + "\n" + '{"ts": 1, "half\n')
+    monkeypatch.setattr(metrics, "ROUTING_LOG", p)
+    assert metrics.model_usage()["models"][0]["calls"] == 1
+
+
+def test_the_shape_the_dashboard_expects_is_unchanged(tmp_path, monkeypatch):
+    """AgentModelUsage in frontend/src/types.ts. Extra columns are fine; a
+    missing one blanks the panel."""
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [_call()]))
+    row = metrics.model_usage()["models"][0]
+    for field in ("role", "model", "calls", "tokens_in", "tokens_out", "avg_latency_s"):
+        assert field in row
+
+
+# ---------------------------------------------------------------------------
+# tool reliability
+# ---------------------------------------------------------------------------
+
+def test_tool_results_are_counted_and_failures_separated(tmp_path, monkeypatch):
+    log = tmp_path / "tool_events.jsonl"
+    for tool, ok in (("bash", True), ("bash", True), ("bash", False), ("edit", True)):
+        tool_events.record(tool=tool, ok=ok, task_id="T1", path=log)
+    monkeypatch.setattr(metrics, "TOOL_EVENTS_LOG", log)
+
+    data = metrics.tool_reliability()
+    by = {t["tool"]: t for t in data["tools"]}
+    assert by["bash"]["calls"] == 3 and by["bash"]["errors"] == 1
+    assert by["bash"]["error_rate"] == pytest.approx(1 / 3)
+    assert by["edit"]["errors"] == 0
+    assert data["daily"] and data["daily"][0]["errors"] == 1
+
+
+def test_the_tool_log_never_carries_the_tool_output(tmp_path):
+    """The output is the part that carries secrets, and it is already in the
+    task stream. Only a short reason is kept, and only for a failure."""
+    log = tmp_path / "tool_events.jsonl"
+    tool_events.record(tool="bash", ok=True, task_id="T", detail="SECRET=hunter2", path=log)
+    tool_events.record(tool="bash", ok=False, task_id="T", detail="x" * 500, path=log)
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert rows[0]["detail"] == "SECRET=hunter2"[:200]  # caller's choice, still capped
+    assert len(rows[1]["detail"]) == 200, "a failure reason is capped, never the whole output"
+
+
+def test_recording_never_raises(tmp_path):
+    """Telemetry must not be able to break the pass it describes."""
+    tool_events.record(tool="bash", ok=True, path=tmp_path / "no" / "such" / "dir" / "x.jsonl")
+
+
+def test_the_tool_log_is_trimmed_rather_than_growing(tmp_path, monkeypatch):
+    log = tmp_path / "tool_events.jsonl"
+    monkeypatch.setattr(tool_events, "MAX_BYTES", 4000)
+    for i in range(400):
+        tool_events.record(tool=f"tool{i}", ok=True, task_id="T", path=log)
+    assert log.stat().st_size <= 4000 * 1.5
+    assert log.read_text().splitlines(), "trimming must not empty it"
+
+
+def test_tool_reliability_with_no_log_is_empty_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "TOOL_EVENTS_LOG", tmp_path / "nope.jsonl")
+    assert metrics.tool_reliability() == {"tools": [], "daily": [], "window_days": 7,
+                                          "source": "tool-events"}
+
+
+# ---------------------------------------------------------------------------
+# run summary
+# ---------------------------------------------------------------------------
+
+def test_the_summary_counts_tasks_and_their_wall_clock(tmp_path, monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(ts=now - 600, task_id="T1"), _call(ts=now - 300, task_id="T1"),
+        _call(ts=now - 100, task_id="T2"), _call(ts=now - 40, task_id="T2"),
+    ]))
+    s = metrics.run_summary(now=now)
+    assert s["trace_count"] == 2, "two tasks, not four calls"
+    assert s["avg_latency_s"] == pytest.approx((300 + 60) / 2)
+    assert s["model_calls"] == 4
+    assert s["total_input_tokens"] == 4000
+
+
+def test_the_summary_reports_the_error_rate_over_calls(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(), _call(error=True), _call(), _call(),
+    ]))
+    assert metrics.run_summary()["error_rate"] == pytest.approx(0.25)
+
+
+def test_the_summary_keeps_the_field_names_the_dashboard_reads(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [_call()]))
+    s = metrics.run_summary()
+    for field in ("trace_count", "avg_latency_s", "error_rate",
+                  "total_input_tokens", "total_output_tokens"):
+        assert field in s

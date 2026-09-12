@@ -18,6 +18,10 @@ services/llm-router/config.yaml
 
 # Local run artifacts
 *.log
+# Telemetry this deployment writes about itself: one line per tool result,
+# read back by the Analytics page (agent/tool_events.py). Size-trimmed, local,
+# and nobody else's business.
+logs/
 # A stray root-level one appears the moment anything runs npx/vitest from the
 # repo root instead of frontend/ -- it is a cache, never source.
 node_modules/

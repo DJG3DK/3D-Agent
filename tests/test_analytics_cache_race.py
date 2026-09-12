@@ -1,55 +1,46 @@
-"""Regression test for a cold-start race in the LangSmith-backed analytics
-caches (2026-08-24): _refresh_trace_summary (and its two siblings,
-_refresh_model_usage/_refresh_tool_reliability) used a bare boolean
-"refreshing" flag to avoid duplicate concurrent scans. That flag doesn't let
-a second caller actually WAIT for the in-flight scan -- it just sees the
-flag already set and returns immediately, leaving its own read of the cache
-empty. This bites hardest right after a restart: the lifespan pre-warm task
-kicks off a scan, and the very first real page load races it, sees "already
-refreshing", and reads nothing back instead of the real data -- confirmed
-live against the actual running server right after a restart, not just
-reasoned about (GET /api/analytics/trace-summary came back all zeros with
-cached: false immediately after a restart, despite 900 real traces existing).
+"""The cold-start race that the analytics caches used to have is now absent
+by construction, because the caches are gone.
 
-A real asyncio.Lock fixes it: a second concurrent caller blocks on the lock
-until the in-flight scan finishes, then finds the cache already fresh and
-skips its own redundant scan -- but critically, it only reads the cache
-AFTER that wait, never before.
+History worth keeping: those three panels were served from LangSmith, a paged
+remote query slow enough to need serve-stale-while-revalidate. The caches used
+a bare boolean "refreshing" flag, so a second caller saw "already refreshing"
+and read an empty cache instead of waiting -- confirmed live in 2026-08-24
+(trace-summary returned all zeros right after a restart despite 900 real
+traces). That was fixed with a real asyncio.Lock.
+
+They now read this box's own logs (agent/metrics.py): a file scan measured in
+milliseconds, run in a thread, with no cache, no lock and no pre-warm. A cold
+call returns real numbers on the first request -- which is what this test
+pins, so nobody reintroduces a cache without a reason.
 """
 
-import asyncio
-import time
-
 import agent.server as srv
+from agent import metrics
 
 
-async def test_a_concurrent_caller_waits_for_the_in_flight_scan_instead_of_reading_an_empty_cache(monkeypatch):
-    srv._trace_summary_cache["data"] = None
-    srv._trace_summary_cache["at"] = 0.0
+def test_the_analytics_endpoints_hold_no_cache_state():
+    for gone in ("_model_usage_cache", "_tool_reliability_cache", "_trace_summary_cache",
+                 "_refresh_model_usage", "_refresh_tool_reliability", "_refresh_trace_summary",
+                 "_scan_langsmith_model_usage", "_scan_langsmith_tool_reliability",
+                 "_scan_langsmith_trace_summary"):
+        assert not hasattr(srv, gone), (
+            f"{gone} is back: if a cache is needed again, so is the lock that made "
+            "a concurrent cold caller wait instead of reading an empty one")
 
-    def fake_scan():
-        # Runs inside asyncio.to_thread -- a real (short) sleep here blocks
-        # only that worker thread, giving the event loop a window to run
-        # the second concurrent caller while the first is still "scanning".
-        time.sleep(0.05)
-        return {
-            "trace_count": 900, "avg_latency_s": 56.5, "error_rate": 0.08,
-            "total_input_tokens": 0, "total_output_tokens": 0,
-        }
 
-    monkeypatch.setattr(srv, "_scan_langsmith_trace_summary", fake_scan)
+def test_a_cold_call_computes_rather_than_returning_empty(tmp_path, monkeypatch):
+    """The failure mode the lock existed for -- an empty first answer -- is
+    impossible when the first answer is computed from a local file."""
+    import json
+    import time
 
-    results = []
+    log = tmp_path / "routing.jsonl"
+    log.write_text(json.dumps({
+        "ts": time.time(), "call_id": "a", "routed_model": "agent-coder",
+        "requested_model": "deepseek/deepseek-v4.1-flash", "prompt_tokens": 100,
+        "completion_tokens": 10, "cost": 0.01, "duration_s": 2.0, "task_id": "T",
+    }) + "\n")
+    monkeypatch.setattr(metrics, "ROUTING_LOG", log)
 
-    async def endpoint_like_call():
-        # Mirrors get_trace_summary's own cold-cache branch: await the
-        # refresh, then read whatever the cache holds right after.
-        await srv._refresh_trace_summary()
-        results.append(srv._trace_summary_cache["data"])
-
-    await asyncio.gather(endpoint_like_call(), endpoint_like_call())
-
-    assert all(r is not None for r in results), (
-        "a concurrent caller read an empty cache instead of waiting for the in-flight scan"
-    )
-    assert all(r["trace_count"] == 900 for r in results)
+    assert metrics.model_usage()["models"][0]["calls"] == 1
+    assert metrics.run_summary()["trace_count"] == 1

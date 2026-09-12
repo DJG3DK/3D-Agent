@@ -41,13 +41,13 @@ from agent.outer_graph import build_outer_graph, initial_state, open_checkpointe
 from agent.messages import add_message
 from agent.tools.model_rates import warm_rates
 from agent import model_config
-from agent.model_config import resolve_alias
 from agent.classify import classify_task, TaskClassification, TEST_REMINDER_NOTE
 from agent import runtime_settings
 from agent import github_inbox, github_settings
 from agent import audit
 from agent import health as health_checks
 from agent import log_stream
+from agent import metrics
 from agent import plan_progress
 from agent.tools import review_gate
 from agent.middleware.budget_guard import BudgetExceededError
@@ -254,11 +254,13 @@ async def lifespan(app: FastAPI):
         await runtime_settings.load(app.state.store)
         await github_settings.load(app.state.store)
 
-        # Pre-warm the model-usage cache in the background so the first
-        # Analytics page load after a restart doesn't pay the cold
-        # LangSmith scan inline (see get_model_usage's own docstring).
-        warm_task = asyncio.create_task(_refresh_model_usage())
-        # Same reasoning, different cache: model_rates.estimate_cost's rate
+        # No analytics pre-warm any more: those three panels read this box's
+        # own logs now (agent/metrics.py), which is a file scan measured in
+        # milliseconds rather than a paged LangSmith query that could exceed
+        # nginx's proxy timeout. The caches, their locks and their
+        # serve-stale-while-revalidate dance went with the scans.
+        #
+        # The rate table still warms: model_rates.estimate_cost's rate
         # table load includes a synchronous network call to OpenRouter's
         # pricing endpoint -- pre-warming it here means that blocking call
         # happens in a background thread before any real task needs a cost
@@ -270,14 +272,6 @@ async def lifespan(app: FastAPI):
         # model call.
         rates_warm_task = asyncio.create_task(warm_rates())
         rates_warm_task.add_done_callback(_log_warm_rates_failure)
-        # Same reasoning again for the tool-call reliability scan.
-        tool_reliability_warm_task = asyncio.create_task(_refresh_tool_reliability())
-        # Same reasoning again for the trace-summary scan. Token totals in
-        # its result read from _model_usage_cache, which may still be empty
-        # the very first time this runs concurrently with warm_task above --
-        # harmless, the next 600s refresh picks up real numbers once
-        # model-usage has actually warmed.
-        trace_summary_warm_task = asyncio.create_task(_refresh_trace_summary())
         # Reconnect any build task a restart orphaned -- see the function's
         # own docstring. Backgrounded so startup never blocks on it.
         auto_resume_task = asyncio.create_task(_auto_resume_orphaned_tasks())
@@ -308,10 +302,7 @@ async def lifespan(app: FastAPI):
         # CancelledError handler finish its banking write. The 15s ceiling is
         # generous -- banking is one store read + one write.
         await _drain_planning_turns(timeout=15.0)
-        warm_task.cancel()
         rates_warm_task.cancel()
-        tool_reliability_warm_task.cancel()
-        trace_summary_warm_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -3126,30 +3117,18 @@ def _spawn_background(coro, label: str) -> None:
     task.add_done_callback(_done)
 
 
-_model_usage_cache: dict = {"at": 0.0, "data": None}
-_model_usage_lock = asyncio.Lock()
-_MODEL_USAGE_TTL_S = 600
+# How far back each Analytics panel looks. No caches, TTLs, locks or
+# pre-warm any more: these are served from this box's own logs
+# (agent/metrics.py), which is a local file scan rather than the paged
+# LangSmith query that needed all of that machinery. The practical ceiling is
+# the logs' own size trim, not these numbers.
 _MODEL_USAGE_WINDOW_DAYS = 14
-_MODEL_USAGE_MAX_RUNS = 800
-
-_tool_reliability_cache: dict = {"at": 0.0, "data": None}
-_tool_reliability_lock = asyncio.Lock()
-_TOOL_RELIABILITY_TTL_S = 600
 _TOOL_RELIABILITY_WINDOW_DAYS = 14
-_TOOL_RELIABILITY_MAX_RUNS = 3000
-
-_trace_summary_cache: dict = {"at": 0.0, "data": None}
-_trace_summary_lock = asyncio.Lock()
-_TRACE_SUMMARY_TTL_S = 600
 _TRACE_SUMMARY_WINDOW_DAYS = 14
-_TRACE_SUMMARY_MAX_RUNS = 3000
 
-
-# The model-usage section deliberately never looks earlier than when the
-# per-role model pins went live, so a prior era's routing history doesn't
-# pollute the current per-role breakdown.
-from datetime import datetime as _dt
-_MODEL_PINNING_CUTOVER = _dt(2026, 8, 20, 12, 45, tzinfo=UTC)
+# Consolidation status parses its marker's timestamp; this alias outlived the
+# LangSmith scans it was introduced beside.
+from datetime import datetime as _dt  # noqa: E402
 
 
 def _classify_model_usage_role(metadata: dict, alias: str | None) -> str:
@@ -3221,113 +3200,6 @@ def _classify_model_usage_role(metadata: dict, alias: str | None) -> str:
     return "background"
 
 
-def _scan_langsmith_model_usage() -> list[dict]:
-    """Aggregates this agent's real per-model usage from LangSmith traces.
-
-    Scoped by construction to the current (deepagents-based) system: tracing
-    was enabled the day this system shipped, so nothing from a prior
-    iteration can appear here. The real underlying model per call comes from
-    response_metadata.model_name (the router's return_raw_model_name), not
-    the router alias. Sync client -> runs via asyncio.to_thread.
-    """
-    from datetime import datetime, timedelta
-
-    import langsmith as ls
-
-    # audit M-6: don't touch LangSmith when tracing is off. The help text
-    # promises "no trace data leaves this machine at all"; the old code built a
-    # bare ls.Client() and 401'd on every boot and 600s refresh.
-    if not config.langsmith_tracing:
-        return []
-
-    client = ls.Client()
-    project = __import__("os").environ.get("LANGSMITH_PROJECT", "3d-agent")
-    # Never scan earlier than the model-pinning cutover: an earlier
-    # pool/classifier era used many different coordinator models, which
-    # aren't relevant to the current pinned-role breakdown this section shows.
-    start = max(
-        datetime.now(tz=UTC) - timedelta(days=_MODEL_USAGE_WINDOW_DAYS),
-        _MODEL_PINNING_CUTOVER,
-    )
-    usage: dict[str, dict] = {}
-    scanned = 0
-    for run in client.list_runs(project_name=project, run_type="llm", start_time=start):
-        scanned += 1
-        if scanned > _MODEL_USAGE_MAX_RUNS:
-            break
-        model = None
-        tokens_in = tokens_out = 0
-        try:
-            generations = (run.outputs or {}).get("generations") or []
-            if generations and generations[0]:
-                kwargs = (generations[0][0].get("message") or {}).get("kwargs") or {}
-                response_metadata = kwargs.get("response_metadata") or {}
-                model = response_metadata.get("model_name") or response_metadata.get("model")
-                # Pinned-role aliases (agent-coder, agent-planner, ...) echo
-                # the alias, not the underlying model (return_raw_model_name
-                # only works for auto_router deployments). The alias is also
-                # the robust role key -- classify coordinator turns by it
-                # before resolving, so swapping which model backs a role
-                # can never mislabel history scanned across the swap boundary.
-                alias = model
-                model = resolve_alias(model)
-                # Canonicalize before aggregation keys on it: the same model
-                # arrives as "openrouter/x/y" from some paths and "x/y" from
-                # others, which rendered as two visually identical rows under
-                # one role -- the "doubled reporting" the operator flagged.
-                if isinstance(model, str) and model.startswith("openrouter/"):
-                    model = model.removeprefix("openrouter/")
-                usage_metadata = kwargs.get("usage_metadata") or {}
-                tokens_in = int(usage_metadata.get("input_tokens") or 0)
-                tokens_out = int(usage_metadata.get("output_tokens") or 0)
-        except (AttributeError, TypeError, IndexError):
-            pass
-        if not model:
-            continue
-        metadata = (run.extra or {}).get("metadata", {}) if run.extra else {}
-        role = _classify_model_usage_role(metadata, alias)
-        bucket = usage.setdefault((role, model), {
-            "role": role, "model": model, "calls": 0, "tokens_in": 0, "tokens_out": 0, "duration_total_s": 0.0, "duration_count": 0,
-        })
-        bucket["calls"] += 1
-        bucket["tokens_in"] += tokens_in
-        bucket["tokens_out"] += tokens_out
-        if run.start_time and run.end_time:
-            bucket["duration_total_s"] += (run.end_time - run.start_time).total_seconds()
-            bucket["duration_count"] += 1
-    result = []
-    for u in usage.values():
-        avg_latency_s = (u["duration_total_s"] / u["duration_count"]) if u["duration_count"] else None
-        result.append({
-            "role": u["role"], "model": u["model"], "calls": u["calls"],
-            "tokens_in": u["tokens_in"], "tokens_out": u["tokens_out"], "avg_latency_s": avg_latency_s,
-        })
-    return sorted(result, key=lambda u: u["calls"], reverse=True)
-
-
-async def _refresh_model_usage() -> None:
-    """A real asyncio.Lock, not a bare boolean flag -- a concurrent caller
-    (e.g. the very first page load after a restart, racing the lifespan's
-    own pre-warm task) actually waits for the in-flight scan and then reuses
-    its result, rather than seeing "a refresh is already running" and
-    returning immediately with the cache still empty. The old boolean-flag
-    version did exactly that: get_model_usage's own cold-cache branch awaits
-    this function expecting real data back, but if the pre-warm task had
-    already flipped the flag, this call was a silent no-op and the endpoint
-    fell through to an empty result instead of blocking -- confirmed live,
-    not hypothetical (the same pattern reproduced this exact way on
-    /api/analytics/trace-summary right after a restart)."""
-    async with _model_usage_lock:
-        if _model_usage_cache["data"] is not None and time.time() - _model_usage_cache["at"] < _MODEL_USAGE_TTL_S:
-            return  # someone else refreshed it while we were waiting for the lock
-        try:
-            data = await asyncio.to_thread(_scan_langsmith_model_usage)
-            _model_usage_cache["data"] = data
-            _model_usage_cache["at"] = time.time()
-        except Exception as e:  # noqa: BLE001 -- LangSmith being down must never break the page
-            logger.warning("model usage scan failed: %s", e)
-
-
 @app.get("/api/analytics/models")
 async def get_model_usage(user: User = Depends(require_full_auth)):
     """Serve-stale-while-revalidate -- the LangSmith scan can exceed nginx's
@@ -3340,92 +3212,14 @@ async def get_model_usage(user: User = Depends(require_full_auth)):
     (see lifespan) makes even that rare.
     """
     auth.require_admin(user)
-    now = time.time()
-    data = _model_usage_cache["data"]
-    if data is not None:
-        if now - _model_usage_cache["at"] >= _MODEL_USAGE_TTL_S:
-            _spawn_background(_refresh_model_usage(), "refresh_model_usage")
-        return {"models": data, "cached": True, "tracing_disabled": not config.langsmith_tracing}
-    await _refresh_model_usage()
-    return {"models": _model_usage_cache["data"] or [], "cached": False, "tracing_disabled": not config.langsmith_tracing}
-
-
-def _scan_langsmith_tool_reliability() -> dict:
-    """Aggregates real tool-call error rates from LangSmith traces: per-tool
-    totals/errors for the reliability bar chart, plus a daily error-count
-    series so a spike (e.g. the binary-file-dump incident, or a genuinely
-    flaky tool) is visible over time rather than buried in a single lifetime
-    percentage. Sync client -> runs via asyncio.to_thread, same as the
-    model-usage scan.
-
-    Excludes the background consolidation agent's own tool calls (thread_id
-    starting "consolidation:") -- same reasoning as
-    _classify_model_usage_role: that's unrelated background traffic, not
-    live task execution, and would dilute the real per-tool error rate.
-    """
-    from collections import defaultdict
-    from datetime import datetime, timedelta
-
-    import langsmith as ls
-
-    # audit M-6: skip when tracing is off (see the model-usage scan).
-    if not config.langsmith_tracing:
-        return {"tools": [], "daily": []}
-
-    client = ls.Client()
-    project = __import__("os").environ.get("LANGSMITH_PROJECT", "3d-agent")
-    start = datetime.now(tz=UTC) - timedelta(days=_TOOL_RELIABILITY_WINDOW_DAYS)
-
-    by_tool: dict[str, dict] = {}
-    daily_errors: dict[str, int] = defaultdict(int)
-    scanned = 0
-    for run in client.list_runs(project_name=project, run_type="tool", start_time=start):
-        scanned += 1
-        if scanned > _TOOL_RELIABILITY_MAX_RUNS:
-            break
-        metadata = (run.extra or {}).get("metadata", {}) if run.extra else {}
-        thread_id = metadata.get("thread_id") or ""
-        if thread_id.startswith("consolidation:"):
-            continue
-        name = run.name or "unknown"
-        bucket = by_tool.setdefault(name, {"tool": name, "calls": 0, "errors": 0})
-        bucket["calls"] += 1
-        is_error = bool(run.error)
-        if is_error:
-            bucket["errors"] += 1
-            if run.start_time:
-                daily_errors[run.start_time.strftime("%Y-%m-%d")] += 1
-
-    tools = sorted(
-        [{**t, "error_rate": (t["errors"] / t["calls"]) if t["calls"] else 0.0} for t in by_tool.values()],
-        key=lambda t: t["errors"], reverse=True,
-    )
-
-    # Zero-filled daily series over the same window, matching /api/analytics'
-    # own daily-spend series convention -- a quiet day is a real, informative
-    # zero, not a gap.
-    today = datetime.now(tz=UTC).date()
-    daily = [
-        {"date": (today - timedelta(days=offset)).strftime("%Y-%m-%d"),
-         "errors": daily_errors.get((today - timedelta(days=offset)).strftime("%Y-%m-%d"), 0)}
-        for offset in range(_TOOL_RELIABILITY_WINDOW_DAYS - 1, -1, -1)
-    ]
-
-    return {"tools": tools, "daily": daily}
-
-
-async def _refresh_tool_reliability() -> None:
-    """Real lock, not a bare flag -- see _refresh_model_usage's own
-    docstring for why."""
-    async with _tool_reliability_lock:
-        if _tool_reliability_cache["data"] is not None and time.time() - _tool_reliability_cache["at"] < _TOOL_RELIABILITY_TTL_S:
-            return
-        try:
-            data = await asyncio.to_thread(_scan_langsmith_tool_reliability)
-            _tool_reliability_cache["data"] = data
-            _tool_reliability_cache["at"] = time.time()
-        except Exception as e:  # noqa: BLE001 -- LangSmith being down must never break the page
-            logger.warning("tool reliability scan failed: %s", e)
+    # Read from this deployment's own router ledger, not from LangSmith. The
+    # ledger knows two things the traces never did -- what the router was
+    # actually BILLED, and how much of each prompt the provider served from
+    # cache -- and it exists whether or not tracing is on, which is the point:
+    # an optional off-box service was load-bearing for "what is this agent
+    # doing" (see agent/metrics.py).
+    usage = await asyncio.to_thread(metrics.model_usage, _MODEL_USAGE_WINDOW_DAYS)
+    return {**usage, "cached": False, "tracing_disabled": not config.langsmith_tracing}
 
 
 @app.get("/api/analytics/tool-reliability")
@@ -3433,80 +3227,10 @@ async def get_tool_reliability(user: User = Depends(require_full_auth)):
     """Same serve-stale-while-revalidate contract as /api/analytics/models
     -- see that endpoint's own docstring."""
     auth.require_admin(user)
-    now = time.time()
-    data = _tool_reliability_cache["data"]
-    if data is not None:
-        if now - _tool_reliability_cache["at"] >= _TOOL_RELIABILITY_TTL_S:
-            _spawn_background(_refresh_tool_reliability(), "refresh_tool_reliability")
-        return {**data, "cached": True, "tracing_disabled": not config.langsmith_tracing}
-    await _refresh_tool_reliability()
-    return {**(_tool_reliability_cache["data"] or {"tools": [], "daily": []}), "cached": False, "tracing_disabled": not config.langsmith_tracing}
-
-
-def _scan_langsmith_trace_summary() -> dict:
-    """Top-level trace health: how many full traces ran, how long they took
-    end-to-end, and what fraction errored -- distinct from the per-llm-call
-    scan above (_scan_langsmith_model_usage) and the per-tool-call scan
-    above that (_scan_langsmith_tool_reliability). A "trace" here is a root
-    run (is_root=True): one per work/verify pass, planning turn, or
-    subagent invocation started fresh -- not every individual llm/tool call
-    inside it.
-
-    Token totals are summed from the model-usage cache instead of walking
-    LLM runs a second time here -- same underlying runs, no need to re-scan
-    them just to get a different aggregate.
-    """
-    from datetime import datetime, timedelta
-
-    import langsmith as ls
-
-    # audit M-6: skip when tracing is off (see the model-usage scan).
-    if not config.langsmith_tracing:
-        return {"trace_count": 0, "avg_latency_s": None, "error_rate": 0.0,
-                "total_input_tokens": 0, "total_output_tokens": 0}
-
-    client = ls.Client()
-    project = __import__("os").environ.get("LANGSMITH_PROJECT", "3d-agent")
-    start = datetime.now(tz=UTC) - timedelta(days=_TRACE_SUMMARY_WINDOW_DAYS)
-
-    trace_count = 0
-    error_count = 0
-    duration_total_s = 0.0
-    duration_count = 0
-    scanned = 0
-    for run in client.list_runs(project_name=project, is_root=True, start_time=start):
-        scanned += 1
-        if scanned > _TRACE_SUMMARY_MAX_RUNS:
-            break
-        trace_count += 1
-        if run.error:
-            error_count += 1
-        if run.start_time and run.end_time:
-            duration_total_s += (run.end_time - run.start_time).total_seconds()
-            duration_count += 1
-
-    model_usage = _model_usage_cache.get("data") or []
-    return {
-        "trace_count": trace_count,
-        "avg_latency_s": (duration_total_s / duration_count) if duration_count else None,
-        "error_rate": (error_count / trace_count) if trace_count else 0.0,
-        "total_input_tokens": sum(u["tokens_in"] for u in model_usage),
-        "total_output_tokens": sum(u["tokens_out"] for u in model_usage),
-    }
-
-
-async def _refresh_trace_summary() -> None:
-    """Real lock, not a bare flag -- see _refresh_model_usage's own
-    docstring for why."""
-    async with _trace_summary_lock:
-        if _trace_summary_cache["data"] is not None and time.time() - _trace_summary_cache["at"] < _TRACE_SUMMARY_TTL_S:
-            return
-        try:
-            data = await asyncio.to_thread(_scan_langsmith_trace_summary)
-            _trace_summary_cache["data"] = data
-            _trace_summary_cache["at"] = time.time()
-        except Exception as e:  # noqa: BLE001 -- LangSmith being down must never break the page
-            logger.warning("trace summary scan failed: %s", e)
+    # From the work node's own tool-result log (agent/tool_events.py), not
+    # from LangSmith's run_type="tool" runs.
+    data = await asyncio.to_thread(metrics.tool_reliability, _TOOL_RELIABILITY_WINDOW_DAYS)
+    return {**data, "cached": False, "tracing_disabled": not config.langsmith_tracing}
 
 
 @app.get("/api/analytics/trace-summary")
@@ -3514,15 +3238,10 @@ async def get_trace_summary(user: User = Depends(require_full_auth)):
     """Same serve-stale-while-revalidate contract as /api/analytics/models
     -- see that endpoint's own docstring."""
     auth.require_admin(user)
-    now = time.time()
-    data = _trace_summary_cache["data"]
-    if data is not None:
-        if now - _trace_summary_cache["at"] >= _TRACE_SUMMARY_TTL_S:
-            _spawn_background(_refresh_trace_summary(), "refresh_trace_summary")
-        return {**data, "cached": True, "tracing_disabled": not config.langsmith_tracing}
-    await _refresh_trace_summary()
-    empty = {"trace_count": 0, "avg_latency_s": None, "error_rate": 0.0, "total_input_tokens": 0, "total_output_tokens": 0}
-    return {**(_trace_summary_cache["data"] or empty), "cached": False, "tracing_disabled": not config.langsmith_tracing}
+    # Per TASK now, not per traced root run -- see metrics.run_summary for why
+    # that is the number the panel was always trying to convey.
+    data = await asyncio.to_thread(metrics.run_summary, _TRACE_SUMMARY_WINDOW_DAYS)
+    return {**data, "cached": False, "tracing_disabled": not config.langsmith_tracing}
 
 
 @app.post("/api/tasks/{task_id}/message")

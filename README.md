@@ -303,7 +303,10 @@ first. The app lands on **Planning**, not the raw task composer.
 - **Consolidation status** — nightly memory-consolidation health on the Models tab: healthy, stale,
   failed, or never-run. That last state is the one a log tail can never show you: if cron stops
   firing entirely, an empty log looks exactly like a quiet night.
-- **Analytics** (admin only) — spend by day, by project, and by category; the **commit reviewer's**
+- **Analytics** (admin only) — computed from this box's own records: the router's per-call ledger
+  (`services/llm-router/logs/routing.jsonl`) and the work node's tool-result log. Per-role model
+  usage carries two columns traces never could — what the router was **billed**, and how much of
+  each prompt the provider served **from cache**. Spend by day, by project, and by category; the **commit reviewer's**
   own spend as its own section (the agent's budget and the gate's are different things, and until
   2026-08-25 the reviewer called OpenRouter directly and never read the response's `usage`, so its
   cost was structurally invisible here); per-role model usage with
@@ -856,12 +859,26 @@ inside its sandbox. The human-in-the-loop gate gates a call by its *path and com
 runs; it has no idea what the output will contain, so a secret sitting in an unremarkably-named
 file could still land in a `ToolMessage` and go straight out in a trace.
 
-`agent/observability.py` installs a redacting LangSmith client as the backstop: an anonymizer runs
-over every payload before it leaves the process, scrubbing key/value pairs with credential-shaped
-names, database DSN passwords (keeping host/port/dbname, which aren't secrets), bearer tokens, JWTs,
-cloud access keys, and whole PEM private-key blocks. It also stamps per-task metadata so a specific
-task's trace is findable in the UI. Covered by `tests/test_observability.py`, which asserts against
-real-shaped (fake) secrets rather than trusting the patterns by eye.
+So when tracing is on, `agent/observability.py` sends **no payloads at all**: it installs a client
+with `hide_inputs`/`hide_outputs`, and what reaches the third party is the shape of a run — the
+tree, the timings, the errors, token counts — with no prompt, argument or result content. That is
+both safer than redacting and vastly cheaper.
+
+Cheaper matters more than it sounds. Profiled on 2026-09-12, the redacting anonymizer that used to
+run instead was **~219 ms per traced run** over a long conversation's payload, and LangGraph traces
+every run in the tree — the graph, the agent node, each middleware wrapper, the model, each tool.
+Nine of nine profiler samples landed in it, two of three on the MainThread, blocking the event loop
+that serves the dashboard. It was costing roughly a full core per turn.
+
+The redactor still exists, tested, for a session that genuinely needs to read payloads:
+`LANGSMITH_TRACE_PAYLOADS=1` puts it back, logs a warning saying what it costs, and scrubs
+credential-shaped key/value pairs, DSN passwords (keeping host/port/dbname, which aren't secrets),
+bearer tokens, JWTs, cloud access keys and whole PEM private-key blocks. `tests/test_observability.py`
+asserts it against real-shaped (fake) secrets rather than trusting the patterns by eye.
+
+**Nothing in the dashboard depends on tracing any more.** Analytics reads this deployment's own
+records — see [Operating it](#operating-it) — so tracing is a debugging tool you switch on when you
+want a run tree, not a requirement for knowing what the agent is doing or what it cost.
 
 ## Connection resilience
 

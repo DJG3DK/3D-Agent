@@ -1,0 +1,212 @@
+"""The dashboard's metrics, computed from this deployment's own records.
+
+Until now three Analytics panels -- per-role model usage, tool reliability and
+trace health -- were read back out of LangSmith. That made an optional,
+third-party, off-box service load-bearing for the question "what is this agent
+doing", and it cost more than it looked: profiled on 2026-09-12, the redacting
+tracer that has to run for those traces to be safe was burning ~100% of a core
+and doing it on the event loop.
+
+Everything those panels need, this box already writes down:
+
+* `services/llm-router/logs/routing.jsonl` -- one line per model call, with
+  the alias asked for, the model that served it, prompt and completion tokens,
+  the router's BILLED cost, the duration, and (since 2026-09-12) the cached
+  prompt tokens and the task the call belonged to. This is strictly better
+  data than the traces were: LangSmith never knew what OpenRouter charged.
+* `logs/tool_events.jsonl` -- one line per tool result, written by the work
+  node as it streams (see agent/tool_events.py).
+* the Store -- tasks and their outcomes.
+
+Retention is the honest limitation. Both logs are trimmed by size, so these
+numbers cover the recent past rather than all time; the window each panel
+actually had is reported alongside it rather than implied.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from collections import defaultdict
+from pathlib import Path
+
+logger = logging.getLogger("3d-agent")
+
+ROUTING_LOG = Path(
+    os.environ.get("LLM_ROUTER_ROUTING_LOG")
+    or (Path(__file__).resolve().parents[1] / "services" / "llm-router" / "logs" / "routing.jsonl")
+)
+TOOL_EVENTS_LOG = Path(
+    os.environ.get("AGENT_TOOL_EVENTS_LOG")
+    or (Path(__file__).resolve().parents[1] / "logs" / "tool_events.jsonl")
+)
+
+
+def _rows(path: Path, since: float) -> list[dict]:
+    """Every parseable line newer than `since`. A torn line is skipped, never
+    fatal: these files are appended to by a live process."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    out = []
+    for line in data.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        ts = row.get("ts")
+        if isinstance(ts, (int, float)) and ts >= since:
+            out.append(row)
+    return out
+
+
+def _role_and_model(row: dict) -> tuple[str | None, str]:
+    """(role alias, underlying model) for one routing line.
+
+    The field names are historically crossed: the callback records
+    `requested_model` from litellm's kwargs (the UNDERLYING model) and
+    `routed_model` from the response (the alias the proxy served). Read them
+    for what they hold, not what they are called.
+    """
+    alias = str(row.get("routed_model") or "")
+    model = str(row.get("requested_model") or "")
+    if not alias.startswith("agent-"):
+        # The router is shared: the review service and the tier system use it
+        # too. Those calls are not this agent's roles.
+        return None, model
+    return alias, model or alias
+
+
+def model_usage(window_days: int = 7, now: float | None = None) -> dict:
+    """Per (role, model): calls, tokens, latency, billed cost, cache hits.
+
+    Same shape the LangSmith scan produced, plus the two columns it could
+    never have: what the router actually charged, and how much of each prompt
+    the provider served from cache.
+    """
+    now = now if now is not None else time.time()
+    since = now - window_days * 86400
+    rows = _rows(ROUTING_LOG, since)
+    buckets: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        role, model = _role_and_model(row)
+        if role is None:
+            continue
+        b = buckets.setdefault((role, model), {
+            "role": role, "model": model, "calls": 0, "tokens_in": 0, "tokens_out": 0,
+            "cached_tokens": 0, "cost_usd": 0.0, "_duration": 0.0, "_timed": 0, "errors": 0,
+        })
+        b["calls"] += 1
+        b["tokens_in"] += int(row.get("prompt_tokens") or 0)
+        b["tokens_out"] += int(row.get("completion_tokens") or 0)
+        cached = row.get("cached_tokens")
+        if isinstance(cached, int):
+            b["cached_tokens"] += cached
+        cost = row.get("cost")
+        if isinstance(cost, (int, float)):
+            b["cost_usd"] += float(cost)
+        if row.get("error"):
+            b["errors"] += 1
+        duration = row.get("duration_s")
+        if isinstance(duration, (int, float)):
+            b["_duration"] += float(duration)
+            b["_timed"] += 1
+
+    models = []
+    for b in buckets.values():
+        models.append({
+            "role": b["role"],
+            "model": b["model"],
+            "calls": b["calls"],
+            "tokens_in": b["tokens_in"],
+            "tokens_out": b["tokens_out"],
+            "avg_latency_s": (b["_duration"] / b["_timed"]) if b["_timed"] else None,
+            "cost_usd": round(b["cost_usd"], 4),
+            "cached_tokens": b["cached_tokens"],
+            # What share of the prompt tokens the provider served from cache.
+            # None when no call reported the field at all, which is different
+            # from a real zero: it means the provider says nothing.
+            "cache_hit_rate": (b["cached_tokens"] / b["tokens_in"]) if b["tokens_in"] else None,
+            "errors": b["errors"],
+        })
+    models.sort(key=lambda m: m["calls"], reverse=True)
+    return {"models": models, "window_days": window_days, "source": "router-ledger"}
+
+
+def tool_reliability(window_days: int = 7, now: float | None = None) -> dict:
+    """Per tool: calls, errors, error rate; plus errors per day."""
+    now = now if now is not None else time.time()
+    since = now - window_days * 86400
+    by_tool: dict[str, dict] = {}
+    daily: dict[str, int] = defaultdict(int)
+    for row in _rows(TOOL_EVENTS_LOG, since):
+        name = str(row.get("tool") or "unknown")
+        b = by_tool.setdefault(name, {"tool": name, "calls": 0, "errors": 0})
+        b["calls"] += 1
+        if row.get("ok") is False:
+            b["errors"] += 1
+            day = time.strftime("%Y-%m-%d", time.gmtime(row["ts"]))
+            daily[day] += 1
+    tools = []
+    for b in by_tool.values():
+        tools.append({**b, "error_rate": (b["errors"] / b["calls"]) if b["calls"] else 0.0})
+    tools.sort(key=lambda t: t["calls"], reverse=True)
+    return {
+        "tools": tools,
+        "daily": [{"date": d, "errors": n} for d, n in sorted(daily.items())],
+        "window_days": window_days,
+        "source": "tool-events",
+    }
+
+
+def run_summary(window_days: int = 7, now: float | None = None) -> dict:
+    """Top-line health, per TASK rather than per traced root run.
+
+    The LangSmith version counted root runs -- a work pass, a planning turn, a
+    subagent invocation -- which is an artefact of how tracing nests rather
+    than a thing an operator asks about. This counts what they do ask about:
+    how many tasks spent money in the window, how long they took wall-clock,
+    how many model calls failed, and what it all cost.
+    """
+    now = now if now is not None else time.time()
+    since = now - window_days * 86400
+    rows = _rows(ROUTING_LOG, since)
+    spans: dict[str, list[float]] = defaultdict(list)
+    calls = errors = 0
+    tokens_in = tokens_out = 0
+    cost = 0.0
+    for row in rows:
+        role, _ = _role_and_model(row)
+        if role is None:
+            continue
+        calls += 1
+        if row.get("error"):
+            errors += 1
+        tokens_in += int(row.get("prompt_tokens") or 0)
+        tokens_out += int(row.get("completion_tokens") or 0)
+        c = row.get("cost")
+        if isinstance(c, (int, float)):
+            cost += float(c)
+        task_id = row.get("task_id")
+        if task_id:
+            spans[task_id].append(float(row["ts"]))
+    durations = [max(ts) - min(ts) for ts in spans.values() if len(ts) > 1]
+    return {
+        # Kept under the old names so the dashboard does not have to change in
+        # the same breath: "trace_count" is now tasks, which is the number the
+        # panel was always trying to convey.
+        "trace_count": len(spans),
+        "avg_latency_s": (sum(durations) / len(durations)) if durations else None,
+        "error_rate": (errors / calls) if calls else 0.0,
+        "total_input_tokens": tokens_in,
+        "total_output_tokens": tokens_out,
+        "model_calls": calls,
+        "cost_usd": round(cost, 4),
+        "window_days": window_days,
+        "source": "router-ledger",
+    }

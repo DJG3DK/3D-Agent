@@ -66,6 +66,7 @@ from agent.config import Config
 from agent.deep_agent import build_deep_agent
 from agent.message_text import content_text
 from agent import plan_progress
+from agent import tool_events
 from agent.messages import pop_messages
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.model_config import resolve_alias
@@ -145,11 +146,22 @@ def _translate_message(task_id: str, node_label: str, msg) -> dict | None:
         }
 
     if isinstance(msg, ToolMessage):
+        text = content_text(msg.content)
+        # One line per result, so the reliability panel is ours rather than
+        # LangSmith's (agent/tool_events.py). Name and outcome only -- the
+        # output is the part that carries secrets, and it is already in the
+        # stream this function feeds.
+        tool_events.record(
+            tool=getattr(msg, "name", None) or "unknown",
+            ok=getattr(msg, "status", "success") != "error",
+            task_id=task_id,
+            detail=text[:200] if getattr(msg, "status", "success") == "error" else None,
+        )
         return {
             "node": node_label,
             "step_id": task_id,
-            "summary": f"tool result: {content_text(msg.content)[:200]}",
-            "detail": content_text(msg.content)[:2000],
+            "summary": f"tool result: {text[:200]}",
+            "detail": text[:2000],
             "cost_usd": 0.0,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
