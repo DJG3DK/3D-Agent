@@ -181,3 +181,31 @@ describe("AutoGrowTextarea", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
+
+/* The Analytics page renders one group per pinned role.
+ *
+ * Reported live on 2026-09-12, within an hour of the metrics rewrite: every
+ * role appeared twice. The page keys its curated labels on short role names
+ * ("coder"), the new backend returned the raw alias ("agent-coder"), so each
+ * role rendered once as an empty curated row and again as an unknown role
+ * carrying the real numbers. */
+describe("analytics model usage", () => {
+  it("renders one group per role when the backend uses short names", async () => {
+    const { rolesToRender } = await import("./AnalyticsView");
+    const models = [
+      { role: "coder" }, { role: "test-writer" }, { role: "planning-chat-hard" },
+    ];
+    const roles = rolesToRender(models);
+    expect(roles.filter((r) => r === "coder")).toHaveLength(1);
+    expect(roles).not.toContain("agent-coder");
+    // a role outside the core eight still appears, appended
+    expect(roles).toContain("planning-chat-hard");
+  });
+
+  it("a raw alias would duplicate, which is what the backend must not send", async () => {
+    const { rolesToRender } = await import("./AnalyticsView");
+    const roles = rolesToRender([{ role: "agent-coder" }]);
+    expect(roles).toContain("coder");        // the empty curated row
+    expect(roles).toContain("agent-coder");  // and the raw one: two groups
+  });
+});

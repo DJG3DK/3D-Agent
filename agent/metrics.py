@@ -130,7 +130,12 @@ def model_usage(window_days: int = 7, now: float | None = None) -> dict:
     models = []
     for b in buckets.values():
         models.append({
-            "role": b["role"],
+            # The SHORT role name ("coder", not "agent-coder"). The dashboard
+            # keys its curated labels and its core-role ordering on this, and
+            # returning the raw alias made every role render twice: once as an
+            # empty "Coder" row from the core list, and again as a raw
+            # "agent-coder" row carrying the actual numbers.
+            "role": b["role"].removeprefix("agent-"),
             "model": b["model"],
             "calls": b["calls"],
             "tokens_in": b["tokens_in"],

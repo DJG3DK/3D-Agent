@@ -102,9 +102,16 @@
 
 .model-stats-row {
   display: grid;
-  grid-template-columns: 110px 1fr 70px 70px 70px;
+  /* label | bar | calls | tokens | latency | billed | cache */
+  grid-template-columns: 110px 1fr 70px 70px 70px 64px 82px;
   align-items: center;
   gap: 12px;
+}
+
+/* The repo rows keep the original three-column shape -- they carry no
+   billed/cache columns. */
+.repo-stats-row {
+  grid-template-columns: 110px 1fr 70px 70px 70px;
 }
 
 .model-stats-label {
@@ -146,10 +153,20 @@
 
 .repo-stats-count,
 .model-stats-requests,
-.model-stats-latency {
+.model-stats-latency,
+.model-stats-cache {
   font-size: 11.5px;
   font-family: var(--font-mono);
   color: var(--text-faint);
+  text-align: right;
+}
+
+/* Billed cost reads as a number that matters, not as a footnote: it is the
+   one column here that comes from what was actually charged. */
+.model-stats-billed {
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  color: var(--text);
   text-align: right;
 }
 
@@ -273,6 +290,14 @@
     grid-template-columns: 1fr auto auto;
     gap: 5px 10px;
   }
+  /* Seven columns never fit a phone. The two ledger columns wrap onto their
+     own line rather than squeezing the rest to nothing. */
+  .model-stats-billed,
+  .model-stats-cache {
+    grid-row: 3;
+  }
+  .model-stats-billed { grid-column: 1 / 2; text-align: left; }
+  .model-stats-cache { grid-column: 2 / -1; }
   .repo-stats-bar-track,
   .model-stats-bar-track {
     grid-column: 1 / -1;

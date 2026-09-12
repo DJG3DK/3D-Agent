@@ -97,7 +97,7 @@ const ROLE_ORDER = ["planner", "coder", "investigator", "test-writer", "summariz
  *  list documents the pin structure, the rest is elastically appended so a
  *  role the backend starts reporting (cartographer, background) can never be
  *  silently dropped the way agent-demo-chat once was from the models page. */
-function rolesToRender(models: { role: string }[]): string[] {
+export function rolesToRender(models: { role: string }[]): string[] {
   const extra = [...new Set(models.map((m) => m.role))]
     .filter((r) => !ROLE_ORDER.includes(r))
     .sort();
@@ -123,9 +123,11 @@ export function AnalyticsView() {
     getAnalytics().then(setData).catch(() => {});
     getRouterBalance().then(setBalance).catch(() => {});
     getTraceSummary().then(setTraceSummary).catch(() => {});
-    // Retry a few times -- right after a backend restart the first call can
-    // land while the LangSmith cache is still warming; giving up silently
-    // would make the whole section vanish instead of just loading late.
+    // Retry a few times. The warming LangSmith cache this guarded is gone --
+    // these read local logs now and answer on the first call -- but an empty
+    // first answer is still possible while a fresh deployment has no history
+    // yet, and a silent give-up would make the section vanish rather than
+    // fill in.
     const timers: ReturnType<typeof setTimeout>[] = [];
     function retryUntilNonEmpty<T>(load: () => Promise<T>, isEmpty: (v: T) => boolean, onData: (v: T) => void) {
       let attempts = 0;
@@ -276,21 +278,23 @@ export function AnalyticsView() {
       )}
 
       <div className="analytics-section">
-        <h2>Traces</h2>
-        <p className="analytics-section-sub">Real trace data from LangSmith — one trace per work/verify pass or planning turn, last 14 days.</p>
+        <h2>Runs</h2>
+        <p className="analytics-section-sub">
+          From this box's own router ledger — one row per task that spent money, last 14 days. No tracing required.
+        </p>
         <div className="analytics-cards">
           <div className="analytics-card">
-            <span className="analytics-card-label">Trace count</span>
+            <span className="analytics-card-label">Tasks</span>
             <span className="analytics-card-value">{traceSummary ? traceSummary.trace_count : "—"}</span>
           </div>
           <div className="analytics-card">
-            <span className="analytics-card-label">Avg trace latency</span>
+            <span className="analytics-card-label">Avg task wall-clock</span>
             <span className="analytics-card-value">
               {traceSummary?.avg_latency_s != null ? `${traceSummary.avg_latency_s.toFixed(1)}s` : "—"}
             </span>
           </div>
           <div className="analytics-card">
-            <span className="analytics-card-label">Trace error rate</span>
+            <span className="analytics-card-label">Model call error rate</span>
             <span className="analytics-card-value">{traceSummary ? `${(traceSummary.error_rate * 100).toFixed(1)}%` : "—"}</span>
           </div>
           <div className="analytics-card">
@@ -399,7 +403,7 @@ export function AnalyticsView() {
 
       {models.length > 0 && (
         <section className="analytics-panel analytics-panel--full">
-          <h2>Model usage by role <span className="analytics-h2-sub">(since model pinning — usage from LangSmith traces)</span></h2>
+          <h2>Model usage by role <span className="analytics-h2-sub">(from the router's own per-call ledger — last 14 days)</span></h2>
           {rolesToRender(models).map((role) => {
             // Every pinned role renders, used or not — the section documents
             // the pin structure itself, not just whatever happened to run.
@@ -446,6 +450,16 @@ export function AnalyticsView() {
                       <span className="model-stats-cost">{m.calls} calls</span>
                       <span className="model-stats-requests">{((m.tokens_in + m.tokens_out) / 1000).toFixed(0)}k tok</span>
                       <span className="model-stats-latency">{m.avg_latency_s != null ? `${m.avg_latency_s.toFixed(1)}s avg` : "—"}</span>
+                      {/* Two columns the traces never had: what the router was
+                          billed, and how much of the prompt the provider
+                          served from cache. A role sitting at 0% on a long
+                          conversation is money being spent twice. */}
+                      <span className="model-stats-billed">
+                        {m.cost_usd != null ? `$${m.cost_usd.toFixed(2)}` : "—"}
+                      </span>
+                      <span className="model-stats-cache" title="share of prompt tokens served from the provider's cache">
+                        {m.cache_hit_rate != null ? `${Math.round(m.cache_hit_rate * 100)}% cached` : "—"}
+                      </span>
                     </div>
                   ))}
                 </div>

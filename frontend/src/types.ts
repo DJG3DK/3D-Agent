@@ -250,6 +250,13 @@ export interface AgentModelUsage {
   tokens_in: number;
   tokens_out: number;
   avg_latency_s: number | null;
+  /** What the router was billed. From its own ledger, not an estimate. */
+  cost_usd?: number;
+  cached_tokens?: number;
+  /** Share of prompt tokens the provider served from cache; null when the
+   *  provider reports nothing, which is different from a real zero. */
+  cache_hit_rate?: number | null;
+  errors?: number;
 }
 
 export interface ToolReliabilityEntry {

@@ -58,10 +58,11 @@ def test_usage_is_grouped_by_role_and_model(tmp_path, monkeypatch):
         _call(routed_model="agent-coder", requested_model="poolside/laguna-s-2.1"),
     ]))
     models = metrics.model_usage()["models"]
+    # short role names: the dashboard keys its labels on these
     assert {(m["role"], m["model"], m["calls"]) for m in models} == {
-        ("agent-coder", "deepseek/deepseek-v4.1-flash", 2),
-        ("agent-test-writer", "deepseek/deepseek-v4.1-flash", 1),
-        ("agent-coder", "poolside/laguna-s-2.1", 1),
+        ("coder", "deepseek/deepseek-v4.1-flash", 2),
+        ("test-writer", "deepseek/deepseek-v4.1-flash", 1),
+        ("coder", "poolside/laguna-s-2.1", 1),
     }
     assert [m["calls"] for m in models] == sorted([m["calls"] for m in models], reverse=True)
 
@@ -92,7 +93,7 @@ def test_calls_that_are_not_this_agent_are_left_out(tmp_path, monkeypatch):
         _call(), _call(routed_model="smart-router"), _call(routed_model="reasoning-tier"),
     ]))
     models = metrics.model_usage()["models"]
-    assert len(models) == 1 and models[0]["role"] == "agent-coder"
+    assert len(models) == 1 and models[0]["role"] == "coder"
 
 
 def test_the_window_excludes_older_calls(tmp_path, monkeypatch):
@@ -229,7 +230,7 @@ def test_the_recorded_alias_is_what_names_the_role(tmp_path, monkeypatch):
               routed_model="deepseek/deepseek-v4.1-flash"),
     ]))
     m = metrics.model_usage()["models"][0]
-    assert m["role"] == "agent-coder"
+    assert m["role"] == "coder"
     assert m["model"] == "deepseek/deepseek-v4.1-flash", "the role never stands in for the model"
 
 
@@ -239,7 +240,7 @@ def test_older_lines_still_attribute_when_a_field_happens_to_carry_the_alias(tmp
         _call(requested_model="agent-planner", routed_model="qwen/qwen3.8-max"),
     ]))
     roles = {m["role"] for m in metrics.model_usage()["models"]}
-    assert roles == {"agent-test-writer", "agent-planner"}
+    assert roles == {"test-writer", "planner"}
 
 
 def test_a_line_that_names_no_alias_is_not_guessed_at(tmp_path, monkeypatch):
@@ -263,6 +264,19 @@ def test_a_call_with_no_underlying_model_is_labelled_unknown(tmp_path, monkeypat
          "alias": None, "error": True},
     ]))
     m = metrics.model_usage()["models"][0]
-    assert m["role"] == "agent-classifier"
+    assert m["role"] == "classifier"
     assert m["model"] == "unknown"
     assert m["errors"] == 1
+
+
+def test_roles_use_the_short_name_the_dashboard_keys_on(tmp_path, monkeypatch):
+    """AnalyticsView renders a curated row per core role ("planner", "coder",
+    ...) and appends any role it does not know. Returning the raw alias made
+    every role appear TWICE: an empty curated row, and a raw "agent-coder" row
+    with the numbers. Reported live within an hour of shipping it."""
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(alias="agent-coder"), _call(alias="agent-planning-chat-hard"),
+    ]))
+    roles = {m["role"] for m in metrics.model_usage()["models"]}
+    assert roles == {"coder", "planning-chat-hard"}
+    assert not any(r.startswith("agent-") for r in roles)
