@@ -162,13 +162,24 @@ def tool_reliability(window_days: int = 7, now: float | None = None) -> dict:
     nudges: dict[str, int] = defaultdict(int)
     for row in _rows(TOOL_EVENTS_LOG, since):
         name = str(row.get("tool") or "unknown")
-        b = by_tool.setdefault(name, {"tool": name, "calls": 0, "errors": 0, "nudged": 0})
-        b["calls"] += 1
         # A shell command the harness pointed at a cheaper tool. Counted on
         # the call it belongs to rather than as a tool of its own -- see
         # agent/tool_events.py -- so a flagged bash call is one bash call
         # here, and how often the habit shows up is still visible.
         nudge = row.get("nudge")
+        if name.startswith("bash-as-"):
+            # The old encoding: a second event whose whole content was the
+            # marker. Lines written that way are still inside the window, and
+            # they say the same thing -- fold them in rather than leaving a
+            # tool nobody has on the panel for another fortnight. These carry
+            # no call of their own (the real bash row is already counted), so
+            # only the nudge crosses over.
+            nudges[name.removeprefix("bash-as-")] += 1
+            b = by_tool.setdefault("bash", {"tool": "bash", "calls": 0, "errors": 0, "nudged": 0})
+            b["nudged"] += 1
+            continue
+        b = by_tool.setdefault(name, {"tool": name, "calls": 0, "errors": 0, "nudged": 0})
+        b["calls"] += 1
         if isinstance(nudge, str) and nudge:
             b["nudged"] += 1
             nudges[nudge] += 1

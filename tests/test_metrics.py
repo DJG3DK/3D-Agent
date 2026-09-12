@@ -325,3 +325,24 @@ def test_roles_use_the_short_name_the_dashboard_keys_on(tmp_path, monkeypatch):
     roles = {m["role"] for m in metrics.model_usage()["models"]}
     assert roles == {"coder", "planning-chat-hard"}
     assert not any(r.startswith("agent-") for r in roles)
+
+
+def test_the_old_marker_rows_are_folded_into_bash(tmp_path, monkeypatch):
+    """Events written before the nudge became a field.
+
+    They were a second event per flagged command, named "bash-as-read". Those
+    lines stay in the window for a fortnight after the change, and they say
+    exactly what the field says -- so they count as nudges on bash rather than
+    standing on the panel as a tool nobody has. They bring no call of their
+    own: the real bash row was always written too.
+    """
+    log = tmp_path / "tool_events.jsonl"
+    tool_events.record(tool="bash", ok=True, task_id="T1", path=log)
+    tool_events.record(tool="bash-as-read", ok=True, path=log)
+    monkeypatch.setattr(metrics, "TOOL_EVENTS_LOG", log)
+
+    data = metrics.tool_reliability()
+    assert [t["tool"] for t in data["tools"]] == ["bash"]
+    assert data["tools"][0]["calls"] == 1, "the marker was never a call of its own"
+    assert data["tools"][0]["nudged"] == 1
+    assert data["nudges"] == [{"kind": "read", "count": 1}]
