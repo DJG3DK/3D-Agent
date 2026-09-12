@@ -320,6 +320,11 @@ function ModelConfigPins() {
   // Provider pins pending save. undefined = untouched; null = clear to auto.
   const [pendingProviders, setPendingProviders] = useState<Record<string, string | null>>({});
   const [restarting, setRestarting] = useState(false);
+  // The restart's own error, kept separate from the panel's: the panel renders
+  // its error BEHIND the modal backdrop, so a failed restart showed a dialog
+  // with nothing in it but Cancel -- indistinguishable from a dead button.
+  const [restartError, setRestartError] = useState<string | null>(null);
+  const [restartDone, setRestartDone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState(false);
   const [confirmingRestart, setConfirmingRestart] = useState(false);
@@ -420,13 +425,21 @@ function ModelConfigPins() {
 
   async function handleRestart() {
     setRestarting(true);
-    setError(null);
+    setRestartError(null);
+    setRestartDone(null);
     try {
-      await restartLlmRouter();
+      const res = await restartLlmRouter();
       setConfirmingRestart(false);
       setJustSaved(false);
+      // Say it plainly. The only confirmation before this was a Telegram
+      // alert, which is not the same thing as the page telling you.
+      setRestartDone(
+        res.healthy === false
+          ? "Restart command accepted, but the router is not answering yet — check pm2."
+          : `Router restarted and answering${res.waited_s ? ` after ${res.waited_s}s` : ""}. The new pins are live.`,
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "restart failed");
+      setRestartError(err instanceof Error ? err.message : "restart failed");
     } finally {
       setRestarting(false);
     }
@@ -575,6 +588,9 @@ function ModelConfigPins() {
             Saved to config.yaml. Changes take effect after a router restart.
           </span>
         )}
+        {restartDone && (
+          <span className="model-config-saved-hint" role="status">{restartDone}</span>
+        )}
       </div>
 
       {confirmingRestart && (
@@ -587,12 +603,18 @@ function ModelConfigPins() {
               every service that depends on it — the review service and this agent — not just
               the role you changed.
             </p>
+            {restartError && (
+              <div className="model-config-error model-config-modal-error" role="alert">
+                {restartError}
+              </div>
+            )}
             <div className="model-config-modal-actions">
-              <button ref={cancelBtnRef} className="model-config-modal-cancel-btn" onClick={() => setConfirmingRestart(false)}>
-                Cancel
+              <button ref={cancelBtnRef} className="model-config-modal-cancel-btn"
+                      onClick={() => { setConfirmingRestart(false); setRestartError(null); }}>
+                {restartError ? "Close" : "Cancel"}
               </button>
               <button className="model-config-restart-confirm-btn" onClick={handleRestart} disabled={restarting}>
-                {restarting ? "Restarting…" : "Restart now"}
+                {restarting ? "Restarting…" : restartError ? "Try again" : "Restart now"}
               </button>
             </div>
           </div>

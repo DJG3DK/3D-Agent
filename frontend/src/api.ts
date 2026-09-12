@@ -640,7 +640,16 @@ export async function saveModelConfig(pins: Record<string, string>): Promise<{ r
   return res.json();
 }
 
-export async function restartLlmRouter(): Promise<{ ok: boolean; output: string }> {
+export async function restartLlmRouter(): Promise<{
+  ok: boolean;
+  output: string;
+  /** Whether the router answered its liveness route again. null when this
+   *  deployment has no base URL to check. */
+  healthy?: boolean | null;
+  /** Whether pm2 accepted the restart command, which is NOT the same question. */
+  restarted?: boolean;
+  waited_s?: number;
+}> {
   const res = await apiFetch(`${API_BASE}/model-config/restart-router`, { method: "POST" });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

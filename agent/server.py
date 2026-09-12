@@ -4535,9 +4535,15 @@ def restart_model_router(user: User = Depends(require_full_auth)):
     surface that plainly rather than bundling this into save.
     """
     auth.require_admin(user)
-    result = model_config.restart_llm_router()
+    result = model_config.restart_llm_router(config.litellm_base_url)
     if not result["ok"]:
-        raise HTTPException(500, result["output"] or "pm2 restart failed")
+        # The message is what the dialog shows, so it has to say which half
+        # failed: a router that never came back is a different problem from a
+        # restart command pm2 refused.
+        detail = ("the router did not answer its liveness route within "
+                  f"{result['waited_s']:.0f}s after the restart"
+                  if result.get("restarted") else "pm2 could not restart llm-router")
+        raise HTTPException(500, f"{detail}\n\n{result['output']}".strip())
     return result
 
 

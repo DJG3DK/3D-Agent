@@ -177,6 +177,9 @@ def test_restart_llm_router_calls_pm2_with_hardcoded_name_only(monkeypatch):
         return type("R", (), {"returncode": 0, "stdout": "restarted", "stderr": ""})()
 
     monkeypatch.setattr(model_config.subprocess, "run", fake_run)
+    # This test is about the command, not about the router coming back -- and
+    # without the stub it really does poll a dead placeholder URL for 25s.
+    monkeypatch.setattr(model_config, "_wait_for_router", lambda url, limit_s=0: (True, 0.1))
     result = model_config.restart_llm_router()
 
     assert calls == [["pm2", "restart", "llm-router"]]
@@ -588,3 +591,82 @@ def test_a_model_repin_resets_the_provider_pin(provider_config):
     pins = _mc.get_current_pins()
     assert pins["agent-coder"]["model"] == "qwen/qwen3.8-max"
     assert pins["agent-coder"]["provider"] is None
+
+
+# ---------------------------------------------------------------------------
+# Restarting the router: pm2's exit code is not the question
+# ---------------------------------------------------------------------------
+
+def _fake_pm2(returncode: int, out: str = "restarted"):
+    class _R:
+        pass
+
+    r = _R()
+    r.returncode, r.stdout, r.stderr = returncode, out, ""
+    return lambda *a, **k: r
+
+
+def test_a_router_that_answers_counts_as_restarted_even_if_pm2_complained(monkeypatch):
+    """Reported live: the operator's only evidence that a restart had worked
+    was a Telegram alert, because the dialog reported a failure. pm2 can print
+    a warning and exit non-zero while the app restarts perfectly, so the thing
+    answering its liveness route is what decides."""
+    monkeypatch.setattr(_mc.subprocess, "run", _fake_pm2(1, "some pm2 warning"))
+    monkeypatch.setattr(_mc, "_wait_for_router", lambda url, limit_s=0: (True, 3.0))
+
+    res = _mc.restart_llm_router("http://127.0.0.1:4000/v1")
+    assert res["ok"] is True
+    assert res["healthy"] is True
+    assert res["restarted"] is False, "pm2's own verdict is still reported"
+    assert res["waited_s"] == 3.0
+
+
+def test_a_router_that_never_comes_back_is_not_a_success(monkeypatch):
+    """The other direction: pm2 exits zero and litellm dies on a bad config."""
+    monkeypatch.setattr(_mc.subprocess, "run", _fake_pm2(0))
+    monkeypatch.setattr(_mc, "_wait_for_router", lambda url, limit_s=0: (False, 25.0))
+
+    res = _mc.restart_llm_router("http://127.0.0.1:4000/v1")
+    assert res["ok"] is False
+    assert res["restarted"] is True, "which half failed has to be answerable"
+    assert res["healthy"] is False
+
+
+def test_without_a_base_url_it_falls_back_to_pm2s_verdict(monkeypatch):
+    monkeypatch.setattr(_mc.subprocess, "run", _fake_pm2(0))
+    monkeypatch.setattr(_mc, "_router_liveness_url", lambda base: None)
+
+    res = _mc.restart_llm_router(None)
+    assert res["ok"] is True and res["healthy"] is None
+
+
+def test_the_wait_returns_as_soon_as_the_router_answers(monkeypatch):
+    """Polling, not a fixed sleep: a router back in two seconds must not make
+    the operator watch a spinner for twenty."""
+    calls = {"n": 0}
+
+    class _Resp:
+        status_code = 200
+
+    def get(url, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError("connection refused")
+        return _Resp()
+
+    monkeypatch.setattr(_mc.httpx, "get", get)
+    monkeypatch.setattr(_mc.time, "sleep", lambda s: None)
+
+    healthy, waited = _mc._wait_for_router("http://127.0.0.1:4000/health/liveliness")
+    assert healthy is True
+    assert calls["n"] == 3
+    assert waited < _mc._ROUTER_BOOT_WAIT_S
+
+
+def test_the_wait_gives_up_rather_than_hanging(monkeypatch):
+    monkeypatch.setattr(_mc.httpx, "get", lambda url, timeout=None: (_ for _ in ()).throw(OSError("down")))
+    monkeypatch.setattr(_mc.time, "sleep", lambda s: None)
+    monkeypatch.setattr(_mc.time, "monotonic", iter([0, 0, 30, 30]).__next__)
+
+    healthy, _ = _mc._wait_for_router("http://127.0.0.1:4000/health/liveliness", limit_s=25)
+    assert healthy is False

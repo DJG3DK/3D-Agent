@@ -97,3 +97,69 @@ describe("model configuration save bar", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeInTheDocument();
   });
 });
+
+/* The restart dialog.
+ *
+ * Reported from the live box: after saving pins, "I can't restart the router
+ * … the dialog stays and you have to hit Cancel to get out of it" — and the
+ * only evidence the restart HAD happened was a Telegram alert. Two separate
+ * faults: the panel rendered the error behind the modal backdrop, where it
+ * could not be read, and a success said nothing at all. */
+describe("restarting the router", () => {
+  async function openTheDialog() {
+    render(<ModelConfigPanel />);
+    await screen.findByText("agent-coder");
+    await userEvent.click(screen.getByRole("button", { name: /Restart Router/i }));
+    return screen.getByRole("dialog");
+  }
+
+  it("says the router came back, and how long it took", async () => {
+    api.restartLlmRouter.mockResolvedValue({ ok: true, output: "", healthy: true, waited_s: 4.2 });
+    const dialog = await openTheDialog();
+    await userEvent.click(within(dialog).getByRole("button", { name: /Restart now/i }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByRole("status")).toHaveTextContent(/Router restarted and answering after 4.2s/);
+  });
+
+  it("does not claim success when the router has not answered yet", async () => {
+    api.restartLlmRouter.mockResolvedValue({ ok: true, output: "", healthy: false, waited_s: 25 });
+    const dialog = await openTheDialog();
+    await userEvent.click(within(dialog).getByRole("button", { name: /Restart now/i }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/not answering yet/);
+  });
+
+  it("shows a failure INSIDE the dialog instead of behind it", async () => {
+    api.restartLlmRouter.mockRejectedValue(new Error("pm2 could not restart llm-router"));
+    const dialog = await openTheDialog();
+    await userEvent.click(within(dialog).getByRole("button", { name: /Restart now/i }));
+
+    const alert = await within(screen.getByRole("dialog")).findByRole("alert");
+    expect(alert).toHaveTextContent("pm2 could not restart llm-router");
+  });
+
+  it("offers a way out and a way to retry after a failure", async () => {
+    api.restartLlmRouter.mockRejectedValue(new Error("nope"));
+    const dialog = await openTheDialog();
+    await userEvent.click(within(dialog).getByRole("button", { name: /Restart now/i }));
+    await within(screen.getByRole("dialog")).findByRole("alert");
+
+    const open = screen.getByRole("dialog");
+    expect(within(open).getByRole("button", { name: /Try again/ })).toBeTruthy();
+    await userEvent.click(within(open).getByRole("button", { name: /^Close$/ }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a retry that works clears the error and closes the dialog", async () => {
+    api.restartLlmRouter.mockRejectedValueOnce(new Error("nope"));
+    api.restartLlmRouter.mockResolvedValue({ ok: true, output: "", healthy: true, waited_s: 3 });
+    const dialog = await openTheDialog();
+    await userEvent.click(within(dialog).getByRole("button", { name: /Restart now/i }));
+    await within(screen.getByRole("dialog")).findByRole("alert");
+
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Try again/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByRole("status")).toHaveTextContent(/restarted and answering/);
+  });
+});

@@ -468,3 +468,13 @@
 .model-picker-option-metrics { font-size: 10.5px; color: var(--text-faint); }
 .model-picker-option.selected .model-picker-option-metrics { color: var(--text-dim); }
 .provider-picker-metrics { display: block; font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+
+
+/* The restart dialog's own error. It used to render in the panel behind the
+   backdrop, where the operator could not see it: a failed restart looked
+   exactly like a button that did nothing. */
+.model-config-modal-error {
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}

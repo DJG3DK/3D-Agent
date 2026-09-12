@@ -777,7 +777,13 @@ def set_pins(new_pins: dict[str, str], catalog: list[dict]) -> dict[str, dict]:
     return changed
 
 
-def restart_llm_router() -> dict:
+# How long to wait for the router to answer again after a restart. LiteLLM
+# loads a large config and opens a Prisma connection at boot, so a few seconds
+# is normal; past this it is worth telling the operator rather than spinning.
+_ROUTER_BOOT_WAIT_S = 25.0
+
+
+def restart_llm_router(base_url: str | None = None) -> dict:
     """Restarts the shared llm-router pm2 process so a pin change actually
     takes effect -- litellm's proxy CLI loads config.yaml once at startup,
     no hot-reload. Hardcoded process name, no caller-supplied value ever
@@ -786,8 +792,59 @@ def restart_llm_router() -> dict:
     over HTTP. Affects every consumer of llm-router (the review
     service, this agent), not just this agent -- callers should treat this
     as a real, shared-impact action, not a routine save side effect.
+
+    Then it WAITS for the router to answer its own liveness route, and
+    reports that.
+
+    pm2's exit code alone is the wrong answer to "did it restart?". It says
+    whether the restart command was accepted, not whether the thing came
+    back -- and the two disagree in both directions: pm2 can print a warning
+    and exit non-zero while the app restarts perfectly (the operator sees a
+    failure, and their only evidence to the contrary is a Telegram alert), or
+    exit zero while litellm dies on a bad config and nothing answers. The
+    caller's dialog is only as honest as this return value.
     """
     result = subprocess.run(
         ["pm2", "restart", "llm-router"], capture_output=True, text=True, timeout=30
     )
-    return {"ok": result.returncode == 0, "output": (result.stdout + result.stderr)[-2000:]}
+    output = (result.stdout + result.stderr)[-2000:]
+
+    url = _router_liveness_url(base_url)
+    healthy, waited = _wait_for_router(url) if url else (None, 0.0)
+
+    return {
+        # Healthy wins over pm2's exit code in both directions: the router
+        # answering IS the restart having worked.
+        "ok": bool(healthy) if healthy is not None else result.returncode == 0,
+        "restarted": result.returncode == 0,
+        "healthy": healthy,
+        "waited_s": round(waited, 1),
+        "output": output,
+    }
+
+
+def _router_liveness_url(base_url: str | None) -> str | None:
+    from agent.config import load_config  # noqa: PLC0415 -- avoids an import cycle
+    from agent.health import router_liveness_url  # noqa: PLC0415
+
+    try:
+        return router_liveness_url(base_url or load_config().litellm_base_url)
+    except Exception:  # noqa: BLE001 -- a missing base URL must not fail the restart
+        return None
+
+
+def _wait_for_router(url: str, limit_s: float = _ROUTER_BOOT_WAIT_S) -> tuple[bool, float]:
+    """(answering, seconds waited). Polls rather than sleeping a fixed time:
+    a router that comes back in two seconds should not make the operator
+    stare at a spinner for twenty."""
+    started = time.monotonic()
+    while True:
+        waited = time.monotonic() - started
+        try:
+            if httpx.get(url, timeout=3.0).status_code == 200:
+                return True, waited
+        except Exception:  # noqa: BLE001 -- still booting
+            pass
+        if waited >= limit_s:
+            return False, waited
+        time.sleep(1.0)
