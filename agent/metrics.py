@@ -79,8 +79,11 @@ def _role_and_model(row: dict) -> tuple[str | None, str]:
     """
     candidates = [row.get("alias"), row.get("routed_model"), row.get("requested_model")]
     alias = next((str(c) for c in candidates if isinstance(c, str) and c.startswith("agent-")), None)
+    # "unknown", never the alias itself: a failed call has no underlying model
+    # (the response never arrived), and printing "agent-classifier" in the
+    # model column would read as a model by that name rather than as a gap.
     model = next((str(c) for c in (row.get("requested_model"), row.get("routed_model"))
-                  if isinstance(c, str) and c and not c.startswith("agent-")), alias or "unknown")
+                  if isinstance(c, str) and c and not c.startswith("agent-")), "unknown")
     if alias is None:
         # Either a call from something else on this shared router (the review
         # service, the tier system), or one logged before aliases were

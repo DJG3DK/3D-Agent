@@ -251,3 +251,18 @@ def test_a_line_that_names_no_alias_is_not_guessed_at(tmp_path, monkeypatch):
               routed_model="poolside/laguna-s-2.1"),
     ]))
     assert metrics.model_usage()["models"] == []
+
+
+def test_a_call_with_no_underlying_model_is_labelled_unknown(tmp_path, monkeypatch):
+    """A failed call never got a response, so there is no model to name. The
+    live log carries 83 of these from one afternoon of 401s; printing the
+    alias in the model column would read as a model called
+    "agent-classifier"."""
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        {"ts": time.time(), "requested_model": "agent-classifier", "routed_model": None,
+         "alias": None, "error": True},
+    ]))
+    m = metrics.model_usage()["models"][0]
+    assert m["role"] == "agent-classifier"
+    assert m["model"] == "unknown"
+    assert m["errors"] == 1
