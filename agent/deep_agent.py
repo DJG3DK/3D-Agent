@@ -706,7 +706,9 @@ def interrupt_on_for(auto_approve_commands: bool, repo_root: str | None = None) 
     }
 
 
-def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None = None, timeout: int | None = None, callbacks: list | None = None) -> ChatOpenAI:
+def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None = None,
+                 timeout: int | None = None, callbacks: list | None = None,
+                 task_id: str | None = None, session_id: str | None = None) -> ChatOpenAI:
     # model_name is a bare LiteLLM profile alias, resolved entirely by the
     # proxy, not by anything in this process.
     #
@@ -749,6 +751,30 @@ def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None =
         temperature=0,
         timeout=timeout if timeout is not None else _rs.as_int("model_call_timeout_s"),
         stream_usage=True,
+        # Do not stream a response that carries tool-call arguments.
+        #
+        # Measured 2026-09-12: one 734-token tool call cost ~25 seconds at
+        # 100% of a core, and the whole of it was langchain-core merging the
+        # stream back together. Every chunk re-runs AIMessageChunk's
+        # init_tool_calls validator, which re-parses the WHOLE accumulated
+        # argument JSON, so chunk N pays for chunks 1..N:
+        #
+        #     25 chunks  0.02s      100 chunks  0.47s
+        #     50 chunks  0.09s      200 chunks  2.73s
+        #
+        # ...while 800 text-only chunks cost 0.009s. The cost is entirely in
+        # the tool-call half.
+        #
+        # Nothing in this system reads those chunks. work.py and
+        # planning_chat.py both consume `run.values` -- a full state snapshot
+        # per superstep -- so the dashboard shows messages as they complete,
+        # never token by token. We were paying tens of CPU-seconds per turn to
+        # assemble something no reader ever saw.
+        #
+        # "tool_calling", not True: a call with no tools bound (the
+        # summarizer) still streams, because that path is cheap and harmless.
+        # stream_usage above stays for exactly those calls.
+        disable_streaming="tool_calling",
         # include_response_headers: the proxy's x-litellm-call-id lands in
         # response_metadata["headers"], which is how BudgetGuardMiddleware
         # matches a call to the router's own billed cost for it
@@ -763,7 +789,23 @@ def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None =
         # directly, where no agent middleware wraps the call, so the summarizer
         # role attaches a BudgetMeterCallback here (see budget_guard.py).
         callbacks=callbacks,
+        # Who this call is for, carried to the router so its own ledger can be
+        # read back per task.
+        #
+        # The proxy merges a request body's `metadata` into what its logging
+        # callback sees -- the same channel the router's routing_decision
+        # already travels on -- so one line of routing.jsonl can say which
+        # task spent the money. Without it the ledger can price a CALL (by
+        # x-litellm-call-id) but cannot total a TASK, which is why a restart
+        # reset the displayed spend to the last checkpoint and lost everything
+        # the killed pass had spent: real money, invisible.
+        extra_body=_call_metadata(task_id, session_id),
     )
+
+
+def _call_metadata(task_id: str | None, session_id: str | None) -> dict | None:
+    tags = {k: v for k, v in (("agent_task_id", task_id), ("agent_session_id", session_id)) if v}
+    return {"metadata": tags} if tags else None
 
 
 def project_namespace(repo: str):
@@ -1154,6 +1196,7 @@ async def build_deep_agent(
     starting_last_failed_edit: str | None = None,
     auto_approve_commands: bool = False,
     route: str = "general",
+    task_id: str | None = None,
 ):
     """NOTE: async, unlike a typical factory -- it needs to `await` reading
     both memory files before constructing the agent. This is a deliberate
@@ -1220,10 +1263,14 @@ async def build_deep_agent(
     # coder alias; the test-writer stays general by the operator's call
     # (2026-09-09), and the todo planner is shape-neutral either way.
     coder_role = CODER_ROLE.get(route, CODER_ROLE["general"])
-    coordinator_model = llm_for_role(config, coder_role)
-    planner_model = llm_for_role(config, "agent-planner")
-    investigator_model = llm_for_role(config, coder_role if route == "frontend" else "agent-investigator")
-    test_writer_model = llm_for_role(config, "agent-test-writer")
+    # Every seat carries the task id, so the router's ledger can total a task
+    # rather than only price a call -- subagents included, since their spend is
+    # the task's spend.
+    coordinator_model = llm_for_role(config, coder_role, task_id=task_id)
+    planner_model = llm_for_role(config, "agent-planner", task_id=task_id)
+    investigator_model = llm_for_role(config, coder_role if route == "frontend" else "agent-investigator",
+                                     task_id=task_id)
+    test_writer_model = llm_for_role(config, "agent-test-writer", task_id=task_id)
 
     # Stripped keys (route_local_path), not the full agent-visible paths --
     # this read must land on the same key the agent's own file tools write
@@ -1387,7 +1434,8 @@ async def build_deep_agent(
                 # Meter callback, not middleware: this model is ainvoke()d
                 # directly by SummarizationMiddleware, a path no agent
                 # middleware wraps -- see BudgetMeterCallback.
-                model=llm_for_role(config, "agent-summarizer", callbacks=[BudgetMeterCallback(tracker)]),
+                model=llm_for_role(config, "agent-summarizer", callbacks=[BudgetMeterCallback(tracker)],
+                                   task_id=task_id),
                 trigger=SUMMARIZATION_TRIGGER,
                 keep=SUMMARIZATION_KEEP,
                 trim_tokens_to_summarize=SUMMARIZATION_TRIM_TOKENS,

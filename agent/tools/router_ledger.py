@@ -90,3 +90,36 @@ class RouterLedger:
                 costs[call_id] = float(cost)
         self._costs = costs
         self._signature = signature
+
+    def total_for_task(self, task_id: str) -> float:
+        """Everything the router has billed for this task, across every pass.
+
+        Reads the WHOLE log rather than the tail: a task can run for hours and
+        its early calls are long past the last 512KB. Bounded anyway, because
+        the router trims the file past 5MB -- and that trim is exactly why this
+        is a floor rather than a truth. A caller compares it with its own
+        checkpointed figure and keeps the larger (see _reconciled_cost in
+        agent/nodes/work.py).
+
+        Costs a full parse, so it is for a pass boundary, not a hot path.
+        """
+        if not task_id:
+            return 0.0
+        try:
+            with open(self.path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            logger.debug("router ledger unreadable for a task total: %s", e)
+            return 0.0
+        total = 0.0
+        for line in data.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("task_id") != task_id:
+                continue
+            cost = row.get("cost")
+            if isinstance(cost, (int, float)):
+                total += float(cost)
+        return total

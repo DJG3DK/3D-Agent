@@ -54,6 +54,7 @@ the dashboard to render and an operator to act on.
 """
 
 import asyncio
+import logging
 import time
 
 import openai
@@ -69,6 +70,9 @@ from agent.messages import pop_messages
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.model_config import resolve_alias
 from agent.outer_state import AgentState
+from agent.tools.router_ledger import RouterLedger
+
+logger = logging.getLogger("3d-agent")
 
 
 def inner_thread_config(task_id: str, repo: str, generation: int = 0) -> dict:
@@ -200,6 +204,38 @@ async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dic
                 writer({"type": "cost", "cost_so_far": cost})
 
 
+def _reconciled_cost(state: AgentState) -> float:
+    """What this task has really spent, including what a killed pass spent.
+
+    `cost_so_far` lives in the outer checkpoint, which is written when a pass
+    RETURNS. A pass that dies -- pm2's memory watchdog, a restart, a crash --
+    takes its spend with it: on 2026-09-12 a task displayed $0.76 after
+    spending about $9, because four passes had been killed and each resume
+    started again from the last completed boundary. The money was real and the
+    ceiling was being enforced against a number that had rolled back.
+
+    The router's ledger knows. Every call carries this task's id now, so the
+    log beside the proxy can be totalled for the task and compared with what
+    the checkpoint believes. The larger of the two wins: the ledger cannot
+    undercount (a call it has not written yet is simply absent, and the
+    estimate covers it), and the checkpoint cannot overcount.
+    """
+    checkpointed = float(state.get("cost_so_far") or 0.0)
+    task_id = state.get("task_id")
+    if not task_id:
+        return checkpointed
+    try:
+        billed = RouterLedger().total_for_task(task_id)
+    except Exception:  # noqa: BLE001 -- a ledger read must never stop a pass
+        logger.exception("ledger total failed for %s; using the checkpoint", task_id)
+        return checkpointed
+    if billed > checkpointed + 0.005:
+        logger.info("cost reconciled for %s: checkpoint $%.2f -> router ledger $%.2f",
+                    task_id, checkpointed, billed)
+        return billed
+    return checkpointed
+
+
 async def work_node(state: AgentState, app_config: Config, checkpointer, pg_store) -> dict:
     # Parameter names `app_config`/`pg_store` are deliberate, not stylistic:
     # LangGraph auto-injects its own runtime object into any node parameter
@@ -231,7 +267,10 @@ async def work_node(state: AgentState, app_config: Config, checkpointer, pg_stor
         budget_usd=state["budget_usd"],
         checkpointer=checkpointer,
         store=pg_store,
-        starting_cost=state["cost_so_far"],
+        starting_cost=_reconciled_cost(state),
+        # Stamped onto every model call this pass makes, so the router's own
+        # ledger can total the task (see _reconciled_cost).
+        task_id=task_id,
         # The edit-repeat guard (agent_tools.py) is scoped to this
         # build_deep_agent call's own closure, which is fresh every pass --
         # round-tripping its final state through AgentState (the same

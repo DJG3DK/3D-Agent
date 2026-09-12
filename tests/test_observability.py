@@ -127,3 +127,39 @@ def test_ordinary_prose_is_not_mangled(text):
     """The widened prefix must not turn every mention of these words into
     [REDACTED] -- the rule still requires an actual `key = value` shape."""
     assert _redact(text) == text
+
+
+# ---------------------------------------------------------------------------
+# Streaming: the agent pays for what it reads, and it reads snapshots
+# ---------------------------------------------------------------------------
+
+def test_tool_bearing_calls_are_not_streamed():
+    """Measured 2026-09-12: one 734-token tool call cost ~25 CPU-seconds, all
+    of it langchain-core reassembling the stream. Every chunk re-runs
+    AIMessageChunk's init_tool_calls validator, which re-parses the whole
+    accumulated argument JSON -- 25 chunks cost 0.02s, 200 cost 2.73s, while
+    800 text-only chunks cost 0.009s.
+
+    Nothing reads those chunks: work.py and planning_chat.py both consume
+    `run.values`, a state snapshot per superstep, so the dashboard shows
+    messages as they complete and never token by token.
+    """
+    from agent.config import load_config
+    from agent.deep_agent import llm_for_role
+
+    model = llm_for_role(load_config(), "agent-coder")
+    assert model.disable_streaming == "tool_calling"
+    # and a call with no tools bound still streams, which is cheap
+    assert model.stream_usage is True, "a streamed call still has to report usage"
+
+
+def test_nothing_consumes_token_level_events():
+    """The claim the setting above rests on. If a future change starts reading
+    chunk events, the trade changes and this test should fail first."""
+    import pathlib
+
+    for rel in ("agent/nodes/work.py", "agent/planning_chat.py"):
+        src = pathlib.Path(rel).read_text()
+        assert "run.values" in src, f"{rel} no longer consumes state snapshots"
+        for token_level in ("on_chat_model_stream", "astream_log", ".astream_tokens"):
+            assert token_level not in src, f"{rel} now consumes {token_level}: re-examine disable_streaming"

@@ -20,8 +20,8 @@ module.exports = {
       // not merely above idle: one pass holds a 70-80k-token message history,
       // a subagent's history beside it, and the checkpoint it is writing.
       //
-      // 4 GiB on a 31 GiB box. Still a runaway catch, no longer a schedule.
-      max_memory_restart: '4G',
+      // 6 GiB on a 31 GiB box. Still a runaway catch, no longer a schedule.
+      max_memory_restart: '6G',
       env: { PYTHONUNBUFFERED: '1' },
     },
   ],

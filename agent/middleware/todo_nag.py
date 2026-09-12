@@ -40,7 +40,7 @@ plan strip renders.
 
 from __future__ import annotations
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 
 # Model turns the list may go unchanged before the first reminder, and the
@@ -109,10 +109,19 @@ class StaleTodoMiddleware(AgentMiddleware):
         block = render_nag(todos, self._turns)
         if not block:
             return request
-        base = request.system_message.text if request.system_message is not None else ""
-        return request.override(
-            system_message=SystemMessage(content=f"{base}\n\n{block}" if base else block)
-        )
+        # Appended to the END of the conversation, never to the system prompt.
+        #
+        # It used to be concatenated onto the system message, which is the one
+        # thing that must not change between calls: prompt caching keys on a
+        # byte-identical prefix, so editing the first bytes of the request
+        # invalidated the whole cached context for that turn. At 70-80k tokens
+        # of prefix that is the most expensive call of the run, and it fired
+        # precisely when the model was already struggling.
+        #
+        # As a trailing message it is the last thing the model reads -- which
+        # is where a reminder belongs anyway -- and every byte before it is
+        # still the prefix the provider cached.
+        return request.override(messages=[*request.messages, HumanMessage(content=block)])
 
     def wrap_model_call(self, request: ModelRequest, handler) -> ModelResponse:
         return handler(self._augment(request))

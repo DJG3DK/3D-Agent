@@ -33,6 +33,23 @@ def _trim_if_needed():
         pass
 
 
+def _cached_tokens(usage) -> int | None:
+    """Prompt tokens the provider served from its cache, in whichever shape it
+    reports them. None when the provider says nothing -- which is itself worth
+    knowing, and different from a genuine zero."""
+    if usage is None:
+        return None
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        cached = getattr(details, "cached_tokens", None)
+        if cached is None and isinstance(details, dict):
+            cached = details.get("cached_tokens")
+        if isinstance(cached, int):
+            return cached
+    anthropic_shape = getattr(usage, "cache_read_input_tokens", None)
+    return anthropic_shape if isinstance(anthropic_shape, int) else None
+
+
 class RoutingLogger(CustomLogger):
     # complexity_router classifies by text content alone and has no concept
     # of message modality (checked its source — zero mention of image/vision
@@ -96,6 +113,20 @@ class RoutingLogger(CustomLogger):
                 "classifier_model": routing_decision.get("classifier_model"),
                 "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
                 "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
+                # Cached prompt tokens. Until now this line recorded how many
+                # tokens a call sent and what it cost, and nothing about how
+                # many of them were already cached -- so "are we paying full
+                # price for an 80k-token prefix?" was unanswerable from our own
+                # telemetry. Read from both shapes: OpenAI-compatible
+                # providers report prompt_tokens_details.cached_tokens,
+                # Anthropic reports cache_read_input_tokens.
+                "cached_tokens": _cached_tokens(usage),
+                # Which task's money this was. The agent sends it in the
+                # request body's metadata (see llm_for_role), and without it a
+                # ledger can price a call but never total a task -- which is
+                # why a killed pass used to take its spend with it.
+                "task_id": metadata.get("agent_task_id"),
+                "session_id": metadata.get("agent_session_id"),
                 "cost": (metadata.get("hidden_params") or {}).get("response_cost") or kwargs.get("response_cost"),
                 "duration_s": (end_time - start_time).total_seconds() if start_time and end_time else None,
             }
