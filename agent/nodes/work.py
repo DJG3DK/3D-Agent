@@ -42,6 +42,18 @@ helper, just tagged with the subagent's name instead of "work". All consumers
 run concurrently via asyncio.gather -- required because subagent handles can
 arrive (and need consuming) while the root run is still mid-stream.
 
+Every consumer shares ONE already-seen set, and that is load-bearing. Each
+projection reports its whole accumulated message list on every superstep, so
+a consumer that starts with an empty set republishes the entire history it can
+see. A per-consumer set therefore replays everything each time a handle
+arrives: measured on task 279c29fd (2026-09-12), 1328 of 1864 logged tool
+results were replays, the same burst reappearing verbatim up to three times
+(`{bash: 74, write: 3, write_todos: 2}` at 17:59, 18:38 and 18:46). That is
+what "the same commands are being spammed" in the live view was -- a harness
+artefact, not a model loop -- and it inflated every count on the Analytics
+tool panel with it. Message ids are unique, so one shared set is both
+sufficient and necessary.
+
 Human-in-the-loop: after the values/subagents consumption above completes
 (which happens naturally when the graph pauses at an interrupt() -- no
 exception, the stream just ends there), `run.interrupted()`/`run.
@@ -174,11 +186,16 @@ def _translate_message(task_id: str, node_label: str, msg) -> dict | None:
     return None
 
 
-async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dict, tracker=None) -> None:
+async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dict, tracker=None,
+                          seen_ids: set | None = None) -> None:
     """Drains one `run.values`-shaped projection (root or a subagent handle),
     translating newly-seen messages/todos into custom events as they land.
-    `seen` is a per-projection dict (`{"msg_ids": set, "todos": Any}`) so
+    `seen` is a per-projection dict (`{"todos": Any, "cost": float}`) so
     the same accumulated state isn't re-emitted every superstep.
+
+    `seen_ids` is the message-id set, and it is shared across ALL consumers of
+    one run -- see this module's docstring on the replay it prevents. Defaults
+    to a set inside `seen` so a single-projection caller (a test) still works.
 
     `tracker` (the shared BudgetTracker) makes live cost visible mid-pass:
     cost_so_far otherwise only crosses to the dashboard on outer node
@@ -199,12 +216,12 @@ async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dic
         # and a count-based check goes silent until the thread regrows past
         # it -- the "no movement for 20 minutes" reports of 2026-09-09 on a
         # coder that was calling every 40 seconds (same fix in planning_chat).
-        seen_ids = seen.setdefault("msg_ids", set())
+        ids = seen_ids if seen_ids is not None else seen.setdefault("msg_ids", set())
         for msg in messages:
             key = str(getattr(msg, "id", None) or f"obj:{id(msg)}")
-            if key in seen_ids:
+            if key in ids:
                 continue
-            seen_ids.add(key)
+            ids.add(key)
             translated = _translate_message(task_id, node_label, msg)
             if translated:
                 writer({"type": "log_entry", "entry": translated})
@@ -361,16 +378,22 @@ async def work_node(state: AgentState, app_config: Config, checkpointer, pg_stor
     try:
         async with await agent.astream_events(graph_input, config=inner_config, version="v3") as run:
             root_seen: dict = {}
+            # One set for the whole run, every consumer. A per-consumer set
+            # replayed each projection's entire history every time a subagent
+            # handle arrived -- see this module's docstring.
+            seen_ids: set = set()
 
             async def _consume_subagents() -> None:
                 async for handle in run.subagents:
                     label = f"work:{handle.name or 'subagent'}"
                     subagent_tasks.append(
-                        asyncio.ensure_future(_consume_values(task_id, label, handle.values, writer, {}, tracker))
+                        asyncio.ensure_future(_consume_values(
+                            task_id, label, handle.values, writer, {}, tracker, seen_ids=seen_ids))
                     )
 
             await asyncio.gather(
-                _consume_values(task_id, "work", run.values, writer, root_seen, tracker),
+                _consume_values(task_id, "work", run.values, writer, root_seen, tracker,
+                                seen_ids=seen_ids),
                 _consume_subagents(),
             )
             if subagent_tasks:
