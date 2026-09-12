@@ -1038,6 +1038,13 @@ exists, the fix is never to search harder for the file -- it's to switch tools: 
 the path made relative, "src/core/app.js") instead of `read_file`. The two tools take different \
 parameter names too -- `read_file` wants `file_path`, `read`/`write`/`edit` want `path` -- passing \
 the wrong one is also a fast way to hit an avoidable error.
+- REACH FOR `read`/`write`/`edit` FIRST; bash is the last resort. Those three run in-process; \
+every bash call starts a container, so reading a file with `cat` or patching one with `sed -i` or \
+a `python3 - <<PY ... open(p,'w').write(...)` heredoc costs roughly ten times the wall-clock of \
+the same work through the tools -- and `edit` is path-guarded and catches a repeated failed edit, \
+which a shell one-liner cannot. Bash is for RUNNING things: tests, builds, rg searches, git \
+status, a script you wrote. If you find yourself writing a heredoc to patch a file, that is the \
+signal to use `edit` instead.
 - NEVER run `git commit` (or amend/rebase) yourself via bash. The verify/ship gate commits your \
 work for you after its own checks pass -- a self-made commit bypasses that bookkeeping and gets \
 absorbed anyway, so it only adds confusion. Just edit files and let the gate handle git."""

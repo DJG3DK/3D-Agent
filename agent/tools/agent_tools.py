@@ -34,6 +34,8 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._message_eviction import _create_content_preview
 
 from agent.tools.files import BinaryFileError, PathEscapeError, _resolve, read_file, str_replace, write_file
+from agent import tool_events
+from agent.tools import bash_advice
 from agent.tools.sandbox import run_shell_sandboxed
 from agent.tools.tool_errors import tool_errors_to_text
 from agent.tools.shell import ShellTimeout
@@ -175,8 +177,16 @@ def make_agent_tools(
     @tool_errors_to_text
     # The timeout argument is clamped below; see audit H-18.
     async def bash(command: str, timeout: int = 120) -> str:
-        """Run a shell command. Working directory is /workspace, which IS the
-        repo root -- `pwd` shows /workspace, paths there map 1:1 to what
+        """Run a shell command -- for RUNNING things: tests, builds, rg, git
+        status, a script you wrote.
+
+        NOT for reading or editing files. Use `read` to read one and `edit` /
+        `write` to change one: those run in-process, while every call to this
+        tool starts a container, so the same edit through a shell heredoc
+        costs roughly ten times the wall-clock. `edit` is also path-guarded
+        and notices a repeated failed edit, which a `sed -i` cannot.
+
+        Working directory is /workspace, which IS the repo root -- `pwd` shows /workspace, paths there map 1:1 to what
         `read`/`write`/`edit` expect (e.g. /workspace/src/App.tsx here ==
         "src/App.tsx" for those tools). Runs inside an isolated sandbox
         container -- only this repo's own files are visible, nothing else on
@@ -212,6 +222,15 @@ def make_agent_tools(
             timeout = min(timeout, _BASH_TIMEOUT_CEILING)
             r = await run_shell_sandboxed(command, repo_root, timeout=timeout)
             content = f"exit_code={r['exit_code']}\n{r['output']}"
+            # Editing or reading a file through the shell costs a container
+            # for work the in-process tools do for free -- see
+            # agent/tools/bash_advice.py for the run that made this worth
+            # saying. A note, never a refusal: writing a scratch script to RUN
+            # is a fair use of a shell.
+            nudge = bash_advice.advice_for(command)
+            if nudge:
+                content = f"{nudge}\n{content}"
+                tool_events.record(tool=f"bash-as-{bash_advice.kind(command)}", ok=True)
             if r["exit_code"] == 1 and not r["output"].strip() and _is_search_command(command):
                 # rg/grep exit 1 is "pattern not found", not a failure. Say so
                 # in the result, for the model and for the dashboard: on
