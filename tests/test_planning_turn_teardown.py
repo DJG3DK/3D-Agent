@@ -27,18 +27,37 @@ class _Item:
 
 
 class _FakeStore:
-    """Just the two methods _bank_planning_turn and the turn handler use."""
+    """Just the methods _bank_planning_turn and the turn handler use.
+
+    Namespace-aware, and it has to be: a turn now also writes its durable
+    transcript (agent/planning_log.py) to this same store under a different
+    namespace. A single-slot fake let that write land on top of the session
+    metadata every assertion here reads, which failed this whole file for a
+    reason that existed only in the fake.
+    """
 
     def __init__(self, value: dict | None = None):
-        self.value = value
+        # Keyed by the namespace root ("planning", "planning_log"), which is
+        # all these tests need to keep apart.
+        self._slots: dict[str, dict] = {"planning": dict(value)} if value is not None else {}
         self.puts: list[dict] = []
 
-    async def aget(self, _ns, _key):
-        return _Item(dict(self.value)) if self.value is not None else None
+    @property
+    def value(self) -> dict | None:
+        """The session metadata slot -- what this file asserts about."""
+        return self._slots.get("planning")
 
-    async def aput(self, _ns, _key, value):
-        self.value = dict(value)
-        self.puts.append(dict(value))
+    async def aget(self, ns, _key):
+        slot = self._slots.get(ns[0])
+        return _Item(dict(slot)) if slot is not None else None
+
+    async def aput(self, ns, _key, value):
+        self._slots[ns[0]] = dict(value)
+        if ns[0] == "planning":
+            self.puts.append(dict(value))
+
+    async def adelete(self, ns, _key):
+        self._slots.pop(ns[0], None)
 
 
 class _Tracker:

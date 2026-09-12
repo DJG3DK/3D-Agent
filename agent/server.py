@@ -49,6 +49,7 @@ from agent import health as health_checks
 from agent import log_stream
 from agent import metrics
 from agent import plan_progress
+from agent import planning_log
 from agent.tools import review_gate
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.frontend_route import RouteDecision, classify_frontend, normalize_override
@@ -2156,9 +2157,20 @@ async def _mirror_planning_cost(store, repo: str, session_id: str, cost: float) 
         logger.exception("could not mirror planning cost for %s", session_id)
 
 
+# One per session being streamed. The live buffer above dies with the process;
+# this survives it, which is the whole point (agent/planning_log.py).
+_planning_recorders: dict[str, planning_log.Recorder] = {}
+
+
 def _publish_planning(session_id: str, event: dict) -> None:
     if event.get("type") == "log_entry" and event.get("entry"):
         _live_log_append(_live_planning_log, session_id, [event["entry"]])
+        recorder = _planning_recorders.get(session_id)
+        if recorder is not None and recorder.add(event["entry"]):
+            # Batched: a busy turn publishes several entries a second, and a
+            # store write per entry would be write amplification for
+            # telemetry. Backgrounded so the stream never waits on it.
+            _spawn_background(recorder.flush(), f"planning_log_flush:{session_id}")
     for q, _ws in _planning_subscribers.get(session_id, []):
         try:
             q.put_nowait(event)
@@ -2221,10 +2233,13 @@ async def get_planning_session(session_id: str, user: User = Depends(require_ful
     checkpoint = await agent.aget_state(thread_config)
     messages = (checkpoint.values.get("messages") or []) if checkpoint and checkpoint.values else []
     log = [e for e in (_translate_planning_message(m) for m in messages) if e]
-    # The checkpoint is a LOSSY source for planning: summarization rewrites
-    # the message list, discarding the old entries wholesale. The live buffer
-    # holds the full scrollback while the server lives.
+    # Three sources, each lossy in its own way. The checkpoint loses whatever
+    # summarization compacted away; the live buffer loses everything when the
+    # process exits; the durable transcript loses only what fell off its cap.
+    # Merged by entry id, so a reader gets the union rather than whichever one
+    # happens to be longest.
     log = _fuller_log(_live_planning_log.get(session_id), log)
+    log = _fuller_log(await planning_log.load(app.state.store, repo, session_id), log)
     return {"meta": meta, "log": log, "running": session_id in _running_planning_turns}
 
 
@@ -2267,9 +2282,13 @@ async def delete_planning_session(session_id: str, user: User = Depends(require_
         # session id -- deleting only the Store record would leave every
         # message orphaned in the checkpoints table.
         await app.state.checkpointer.adelete_thread(f"planning:{session_id}")
+        # The durable transcript too: a delete means gone, not gone from the
+        # two lossy copies while the readable one survives.
+        await planning_log.forget(app.state.store, repo, session_id)
         # In-process mirrors, or a later session reusing the id would inherit
         # this one's log.
         _live_planning_log.pop(session_id, None)
+        _planning_recorders.pop(session_id, None)
         for _q, ws in _planning_subscribers.pop(session_id, []):
             try:
                 await ws.close(code=4000, reason="planning session deleted")
@@ -2341,6 +2360,13 @@ async def _bank_planning_turn(
         await app.state.store.aput(("planning", repo), session_id, meta)
     except Exception:  # noqa: BLE001 -- teardown must never raise over the failure it is cleaning up after
         logger.exception("failed to persist planning progress for session %s", session_id)
+    # However the turn ended -- completed, stopped, stalled, out of budget or
+    # crashed -- its last entries belong on disk. This is the one path every
+    # ending goes through, which is why the flush lives here rather than in
+    # each of them.
+    recorder = _planning_recorders.pop(session_id, None)
+    if recorder is not None:
+        await recorder.flush()
 
 
 async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachments: list[dict] | None = None, allowed_repos: list[str] | None = None) -> None:
@@ -2424,10 +2450,17 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         # clear several such calls comfortably; it exists purely so the
         # except Exception below always fires eventually instead of never.
         message_text = text + _attachments_note(attachments) if attachments else text
-        _live_log_append(_live_planning_log, session_id, [{
+        opening = {
             "kind": "user", "summary": text[:200], "detail": text[:4000],
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }])
+        }
+        _live_log_append(_live_planning_log, session_id, [opening])
+        # The durable transcript starts here, with the operator's own message:
+        # a turn read back later is unintelligible without the thing that
+        # started it.
+        recorder = _planning_recorders.setdefault(
+            session_id, planning_log.Recorder(repo, session_id, app.state.store))
+        recorder.add(opening)
         # Every published event doubles as the watchdog's heartbeat.
         _heartbeat = {"at": time.monotonic(), "events": 0}
         # Live cost is mirrored into the Store as it accrues, the same way a
