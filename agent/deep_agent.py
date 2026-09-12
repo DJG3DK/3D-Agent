@@ -1040,8 +1040,9 @@ found" -- NOT because the file is missing, but because `read_file` can never see
 all, so every real-repo path looks "not found" to it. If you see that error on a path you know \
 exists, the fix is never to search harder for the file -- it's to switch tools: use `read` (with \
 the path made relative, "src/core/app.js") instead of `read_file`. The two tools take different \
-parameter names too -- `read_file` wants `file_path`, `read`/`write`/`edit` want `path` -- passing \
-the wrong one is also a fast way to hit an avoidable error.
+parameter names -- `read_file` wants `file_path`, `read`/`write`/`edit` want `path` -- but the repo \
+tools accept `file_path` too, so that particular slip costs you nothing. Reaching for the wrong \
+TOOL still does.
 - REACH FOR `read`/`write`/`edit` FIRST; bash is the last resort. Those three run in-process; \
 every bash call starts a container, so reading a file with `cat` or patching one with `sed -i` or \
 a `python3 - <<PY ... open(p,'w').write(...)` heredoc costs roughly ten times the wall-clock of \

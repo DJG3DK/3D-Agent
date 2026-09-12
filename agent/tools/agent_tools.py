@@ -81,6 +81,11 @@ async def _offload_if_large(backend: BackendProtocol | None, tool_name: str, con
 _SEARCH_COMMAND = re.compile(r"(?:^|&&|\|\||;|\|)\s*(?:rg|grep|egrep|fgrep)\b")
 # Exit code kept truthful for the model; the marker is what the UI keys on
 # (frontend/src/components/ChatMessage.tsx) to render it as a plain result.
+# Both spellings are optional in the schema so that either one alone
+# validates (see _one_path); this is what a call with neither gets.
+_NO_PATH = ("ERROR: no path given -- pass the repo-relative path as `path` "
+            "(e.g. path=\"src/App.tsx\").")
+
 NO_MATCHES_RESULT = "exit_code=1 (no matches -- rg/grep exit 1 means the pattern was not found, not a failure)\n"
 
 
@@ -114,6 +119,21 @@ def make_agent_tools(
     `no_diff_streak` across passes.
     """
 
+    def _one_path(path: str, file_path: str) -> str:
+        """The path the caller meant, from either spelling.
+
+        The built-in memory tools take `file_path` and these repo tools take
+        `path`. Told about the difference twice in the system prompt, a coder
+        still called `read` with `file_path` on 2026-09-12 -- and a wrong
+        argument NAME fails schema validation before the tool runs at all, so
+        there is no error message from inside the tool to learn from. What it
+        did instead was fall back to `cat` in bash, which is the habit the
+        harness spends the rest of its effort discouraging. Accepting both
+        spellings costs nothing and removes the cliff; `path` still wins if
+        somehow both arrive.
+        """
+        return (path or "").strip() or (file_path or "").strip()
+
     def _repo_path(path: str) -> str:
         """Accept the /workspace-prefixed spelling of a repo path. `bash`
         genuinely shows the repo at /workspace, and the system prompt says
@@ -132,14 +152,18 @@ def make_agent_tools(
 
     @tool
     @tool_errors_to_text
-    async def describe_image(path: str, question: str = "") -> str:
+    async def describe_image(path: str = "", question: str = "", file_path: str = "") -> str:
         """Look at an image file (screenshot, photo, diagram) attached to this
         task and get a detailed description of it. `path` is repo-relative
         (e.g. ".uploads/ab12cd34/screenshot.png"). Pass `question` to ask
         something specific ("what error message is shown?", "what color is
         the banner?") -- otherwise you get a thorough general description
         including any visible text. Your own model cannot see images; this
-        tool is how attached images become usable."""
+        tool is how attached images become usable. (`file_path` works in
+        place of `path`.)"""
+        path = _one_path(path, file_path)
+        if not path:
+            return _NO_PATH
         # _resolve (same guard read/write/edit use), NOT os.path.join: join
         # DISCARDS repo_root entirely when handed an absolute path, so
         # describe_image("/home/3d-agent/.env") read that file straight off
@@ -259,11 +283,12 @@ def make_agent_tools(
 
     @tool
     @tool_errors_to_text
-    async def read(path: str, offset: int = 0, limit: int = 0) -> str:
+    async def read(path: str = "", offset: int = 0, limit: int = 0, file_path: str = "") -> str:
         """Read a repo file (the real codebase -- NOT this agent's own
         memory/skills, use your built-in read_file for those). Path is
         RELATIVE to the repo root, e.g. "src/App.tsx" -- same root `bash`'s
-        /workspace maps to, just without the /workspace/ prefix.
+        /workspace maps to, just without the /workspace/ prefix. (`file_path`
+        works too, so the built-in tools' spelling is not an error here.)
 
         For LARGE files, page through THIS tool directly: `offset` is the
         1-based line to start from, `limit` the number of lines (e.g.
@@ -275,6 +300,9 @@ def make_agent_tools(
         # tool again -- supporting that instinct beats correcting it. Without
         # paging support, a retry would just re-offload the entire file to a
         # brand-new pointer and loop.
+        path = _one_path(path, file_path)
+        if not path:
+            return _NO_PATH
         try:
             content = read_file(repo_root, _repo_path(path), max_chars=READ_HARD_CAP_CHARS)
         except (FileNotFoundError, PathEscapeError, BinaryFileError) as e:
@@ -337,10 +365,14 @@ def make_agent_tools(
 
     @tool
     @tool_errors_to_text
-    def write(path: str, content: str) -> str:
+    def write(path: str = "", content: str = "", file_path: str = "") -> str:
         """Write (create or overwrite) a repo file (the real codebase -- NOT
         this agent's own memory/skills, use your built-in write_file for
-        those). Path is RELATIVE to the repo root, same convention as `read`."""
+        those). Path is RELATIVE to the repo root, same convention as `read`
+        (`file_path` is accepted for it too)."""
+        path = _one_path(path, file_path)
+        if not path:
+            return _NO_PATH
         try:
             write_file(repo_root, _repo_path(path), content)
             _last_failed_edit["signature"] = None  # this path's content may have just changed
@@ -356,7 +388,7 @@ def make_agent_tools(
 
     @tool
     @tool_errors_to_text
-    def edit(path: str, old_string: str, new_string: str) -> str:
+    def edit(path: str = "", old_string: str = "", new_string: str = "", file_path: str = "") -> str:
         """Replace an exact, unique substring in a repo file (the real
         codebase -- NOT this agent's own memory/skills, use your built-in
         edit_file for those). Path is RELATIVE to the repo root, same
@@ -364,7 +396,21 @@ def make_agent_tools(
         Resubmitting the IDENTICAL (path, old_string, new_string) after it
         already failed will be REFUSED without retrying -- the file hasn't
         changed, so it cannot succeed; re-read the target lines first. This
-        is enforced across the whole task, not just this one turn."""
+        is enforced across the whole task, not just this one turn.
+        (`file_path` is accepted in place of `path`.)"""
+        path = _one_path(path, file_path)
+        if not path:
+            return _NO_PATH
+        if not old_string:
+            # Both spellings of the path had to become optional for either
+            # alone to validate (see _one_path), which made every argument
+            # optional. Without this, a call that forgot old_string reached
+            # str_replace as the empty string and came back "old_string is not
+            # unique (13 occurrences)" -- true, and useless. It would also
+            # have put that call in the repeat guard, so the model's corrected
+            # retry could be refused for resembling it.
+            return ("ERROR: no old_string given -- `edit` needs the exact existing text to replace. "
+                    "To create or overwrite a whole file, use `write` instead.")
         signature = json.dumps([path, old_string, new_string])
         if _last_failed_edit.get("signature") == signature:
             return (
