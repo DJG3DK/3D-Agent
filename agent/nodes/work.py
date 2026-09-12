@@ -64,6 +64,7 @@ from langgraph.types import Command
 from agent.config import Config
 from agent.deep_agent import build_deep_agent
 from agent.message_text import content_text
+from agent import plan_progress
 from agent.messages import pop_messages
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.model_config import resolve_alias
@@ -388,6 +389,12 @@ async def work_node(state: AgentState, app_config: Config, checkpointer, pg_stor
         final_state = await agent.aget_state(inner_config)
         if latest_todos is None:
             latest_todos = final_state.values.get("todos")
+        # write_todos replaces the list, and a model asked to update its plan
+        # often writes only what is LEFT -- so the completed half has to be
+        # carried forward here, not just in the dashboard. The commit gate
+        # reads this value: an all-pending rewrite of a finished plan would
+        # otherwise hold the task open (see agent/plan_progress.py).
+        latest_todos = plan_progress.merge_todos(state.get("latest_todos"), latest_todos)
         if not escalated:
             messages = final_state.values.get("messages", [])
             if messages:

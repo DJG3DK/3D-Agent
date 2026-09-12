@@ -48,6 +48,7 @@ from agent import github_inbox, github_settings
 from agent import audit
 from agent import health as health_checks
 from agent import log_stream
+from agent import plan_progress
 from agent.tools import review_gate
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.frontend_route import RouteDecision, classify_frontend, normalize_override
@@ -1611,6 +1612,17 @@ def _claim_run_slot(registry: dict, key: str, already_running: str):
         registry.pop(key, None)
 
 
+async def _read_task_meta(store, repo: str, task_id: str):
+    """The stored meta, or None. Swallows a read failure on purpose: every
+    caller here is mirroring display state, and a store hiccup must not break
+    the stream it is decorating."""
+    try:
+        return await store.aget(("tasks", repo), task_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("task meta read failed for %s", task_id)
+        return None
+
+
 async def write_task_meta(store, repo: str, task_id: str, **updates) -> dict:
     """The single writer for a task's Store record.
 
@@ -1739,10 +1751,22 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
             ):
                 if mode == "custom":
                     if payload.get("type") == "todos":
+                        # Merged against what this task has already finished,
+                        # not taken as the whole truth: write_todos replaces
+                        # the list, and a model updating its plan often writes
+                        # only what is LEFT. Unmerged, the step strip fell
+                        # from 6/12 to 0/6 mid-task while 23 files of real
+                        # work sat in the worktree, and the operator read that
+                        # as a loop (2026-09-12). See agent/plan_progress.py.
+                        merged = plan_progress.merge_todos(
+                            (_todos_meta.value or {}).get("latest_todos")
+                            if (_todos_meta := await _read_task_meta(store, repo, task_id)) else None,
+                            payload.get("todos"),
+                        )
                         _publish(task_id, {
                             "type": "node_update",
                             "node": "work",
-                            "plan": _todos_to_plan(payload.get("todos")),
+                            "plan": _todos_to_plan(merged),
                         })
                         # Mirror into the Store meta, same pattern (and same
                         # reason) as the live cost mirror below: the outer
@@ -1754,10 +1778,9 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
                         # empty (reported live 2026-08-28). Display state
                         # only; nothing enforcement-related reads it.
                         try:
-                            _meta = await store.aget(("tasks", repo), task_id)
-                            if _meta:
+                            if _todos_meta:
                                 await store.aput(("tasks", repo), task_id,
-                                                 {**_meta.value, "latest_todos": payload.get("todos")})
+                                                 {**_todos_meta.value, "latest_todos": merged})
                         except Exception:  # noqa: BLE001 -- a display mirror must never break the stream
                             logger.exception("todos mirror write failed for %s", task_id)
                     elif payload.get("type") == "log_entry":
