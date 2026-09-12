@@ -6,7 +6,7 @@ The dashboard shows a task as **running**. The stream has not produced a line
 in a long time. Possibly the step counter is stuck partway, or the page shows
 thinking bubbles that never stop.
 
-There are four different causes behind that one appearance, and they need
+There are six different causes behind that one appearance, and they need
 different actions. Work down this page in order; each check is cheap.
 
 ---
@@ -137,7 +137,39 @@ reply; a gated command wants approve or reject.
 
 ---
 
-## 5. Is another process holding the project?
+## 5. Is pm2 killing it on a schedule?
+
+A task that never finishes a pass, with the step counter frozen and the
+dashboard showing nothing for hours, may be losing the pass to pm2's memory
+watchdog. The agent holds one pass's whole message history in memory -- 70-80k
+tokens, plus a subagent's beside it -- so a long task's footprint grows for as
+long as the pass runs. Past `max_memory_restart` pm2 SIGKILLs it, auto-resume
+reconnects, and the pass starts over. Nothing in the agent's own log says why:
+it sees a KeyboardInterrupt, the same as any restart.
+
+```bash
+grep "max-memory-restart" /root/.pm2/pm2.log | tail -5
+```
+
+Live on 2026-09-12: four kills in eleven hours at a 1536 MiB cap (05:00,
+07:57, 10:36, 11:42), on a task that was doing real work the whole time --
+1167 deletions sat in the worktree, uncommitted, because no pass ever returned
+to the gate.
+
+**The cap is in `ecosystem.config.js`.** Raising it needs a restart, which
+costs the pass in flight -- but a pass that is going to be killed anyway is not
+worth protecting:
+
+```bash
+pm2 restart 3d-agent --update-env    # after editing ecosystem.config.js
+```
+
+Check what the box actually has (`free -g`) before choosing a number. The cap
+is there to catch a runaway, not to recycle a working process.
+
+---
+
+## 6. Is another process holding the project?
 
 One task per project is enforced with a Postgres advisory lock. A second
 process holding it makes a task wait silently at the very start.
