@@ -68,18 +68,25 @@ def _rows(path: Path, since: float) -> list[dict]:
 def _role_and_model(row: dict) -> tuple[str | None, str]:
     """(role alias, underlying model) for one routing line.
 
-    The field names are historically crossed: the callback records
-    `requested_model` from litellm's kwargs (the UNDERLYING model) and
-    `routed_model` from the response (the alias the proxy served). Read them
-    for what they hold, not what they are called.
+    `alias` is the field to trust: the alias the client actually asked for,
+    recorded from litellm's model_group. The two older fields are crossed and
+    unreliable -- the callback records `requested_model` from litellm's kwargs
+    (the RESOLVED deployment) and `routed_model` from the response (whatever
+    the provider returned), so on most lines neither is an alias at all and
+    the role is unrecoverable. Lines written before the router started
+    recording `alias` are therefore attributable only when one of the old
+    fields happens to carry it.
     """
-    alias = str(row.get("routed_model") or "")
-    model = str(row.get("requested_model") or "")
-    if not alias.startswith("agent-"):
-        # The router is shared: the review service and the tier system use it
-        # too. Those calls are not this agent's roles.
+    candidates = [row.get("alias"), row.get("routed_model"), row.get("requested_model")]
+    alias = next((str(c) for c in candidates if isinstance(c, str) and c.startswith("agent-")), None)
+    model = next((str(c) for c in (row.get("requested_model"), row.get("routed_model"))
+                  if isinstance(c, str) and c and not c.startswith("agent-")), alias or "unknown")
+    if alias is None:
+        # Either a call from something else on this shared router (the review
+        # service, the tier system), or one logged before aliases were
+        # recorded. Neither belongs in this agent's per-role breakdown.
         return None, model
-    return alias, model or alias
+    return alias, model
 
 
 def model_usage(window_days: int = 7, now: float | None = None) -> dict:

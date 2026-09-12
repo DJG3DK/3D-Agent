@@ -208,3 +208,46 @@ def test_the_summary_keeps_the_field_names_the_dashboard_reads(tmp_path, monkeyp
     for field in ("trace_count", "avg_latency_s", "error_rate",
                   "total_input_tokens", "total_output_tokens"):
         assert field in s
+
+
+# ---------------------------------------------------------------------------
+# Attributing a call to a role
+#
+# The router's log has three fields that could name a model, and only one of
+# them reliably names the ROLE. litellm sets kwargs["model"] to the resolved
+# deployment and the response carries whatever the provider returned, so on
+# most historical lines neither is an alias and the call cannot be attributed
+# at all -- which silently dropped the majority of this agent's traffic out of
+# the panel until the router started recording model_group as `alias`.
+# ---------------------------------------------------------------------------
+
+def test_the_recorded_alias_is_what_names_the_role(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        # the shape the router writes now: both old fields hold the raw model
+        _call(alias="agent-coder",
+              requested_model="deepseek/deepseek-v4.1-flash",
+              routed_model="deepseek/deepseek-v4.1-flash"),
+    ]))
+    m = metrics.model_usage()["models"][0]
+    assert m["role"] == "agent-coder"
+    assert m["model"] == "deepseek/deepseek-v4.1-flash", "the role never stands in for the model"
+
+
+def test_older_lines_still_attribute_when_a_field_happens_to_carry_the_alias(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(routed_model="agent-test-writer", requested_model="deepseek/deepseek-v4.1-flash"),
+        _call(requested_model="agent-planner", routed_model="qwen/qwen3.8-max"),
+    ]))
+    roles = {m["role"] for m in metrics.model_usage()["models"]}
+    assert roles == {"agent-test-writer", "agent-planner"}
+
+
+def test_a_line_that_names_no_alias_is_not_guessed_at(tmp_path, monkeypatch):
+    """Either another consumer of this shared router, or a line written before
+    aliases were recorded. Inventing a role for it would be worse than leaving
+    it out, and counting it under someone else's role worse still."""
+    monkeypatch.setattr(metrics, "ROUTING_LOG", _routing(tmp_path, [
+        _call(alias=None, requested_model="poolside/laguna-s-2.1",
+              routed_model="poolside/laguna-s-2.1"),
+    ]))
+    assert metrics.model_usage()["models"] == []

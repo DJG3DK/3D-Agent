@@ -107,6 +107,17 @@ class RoutingLogger(CustomLogger):
                 "call_id": kwargs.get("litellm_call_id"),
                 "requested_model": requested,
                 "routed_model": model,
+                # The alias the CLIENT asked for (agent-coder, agent-planner,
+                # ...), which neither field above reliably holds: litellm sets
+                # kwargs["model"] to the RESOLVED deployment and the response
+                # carries whatever the provider returned, so on most lines both
+                # are the raw model id and the role is unrecoverable. LiteLLM
+                # keeps the requested group in metadata; recording it is what
+                # lets the Analytics page attribute a call to a role without
+                # LangSmith (see agent/metrics.py).
+                "alias": metadata.get("model_group") or (
+                    (metadata.get("model_info") or {}).get("model_group")
+                    if isinstance(metadata.get("model_info"), dict) else None),
                 "tier": routing_decision.get("tier"),
                 "cause": routing_decision.get("cause"),
                 "matched_keyword": routing_decision.get("matched_keyword"),
