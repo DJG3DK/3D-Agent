@@ -67,6 +67,7 @@ from agent.deep_agent import build_deep_agent
 from agent.message_text import content_text
 from agent import plan_progress
 from agent import tool_events
+from agent.tools import bash_advice
 from agent.messages import pop_messages
 from agent.middleware.budget_guard import BudgetExceededError
 from agent.model_config import resolve_alias
@@ -155,6 +156,10 @@ def _translate_message(task_id: str, node_label: str, msg) -> dict | None:
             tool=getattr(msg, "name", None) or "unknown",
             ok=getattr(msg, "status", "success") != "error",
             task_id=task_id,
+            # Set when the harness prepended a nudge to this result (a shell
+            # command that was really a file edit, a read, or a reach into the
+            # agent's own memory). A field on the call, not a tool of its own.
+            nudge=bash_advice.kind_of_result(text),
             detail=text[:200] if getattr(msg, "status", "success") == "error" else None,
         )
         return {

@@ -390,3 +390,11 @@
   .outcome-pills { flex-wrap: wrap; gap: var(--s1); }
   .outcome-pill { font-size: var(--fs-sm); }
 }
+
+/* The nudge line under the tool panel: an aside, not a warning -- these calls
+   succeeded, they were just the expensive route. */
+.tool-nudges {
+  margin: 10px 2px 0;
+  font-size: 11.5px;
+  color: #8b93a1;
+}

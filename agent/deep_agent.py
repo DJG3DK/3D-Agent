@@ -1026,6 +1026,10 @@ actual repo code, regardless of what path you give them. Use them only for those
 There is NO built-in glob/grep: to SEARCH the real repo, use `bash` with rg/grep inside \
 /workspace (e.g. `rg -n "someSymbol" src frontend/src`); to find a skills/memory file, read the \
 skills manifest or ls the route and read_file the file directly.
+- And symmetrically: `bash` CANNOT see /memories/, /org-memory/, /skills/ or /episodes/ -- they \
+are not mounted in its container, so `grep /memories/AGENTS.md` returns "No such file" and \
+`cat >> /memories/AGENTS.md` writes into a sandbox that is discarded while reporting success. \
+Your own memory is reachable through read_file/write_file/edit_file and nothing else.
 - Your `bash`/`read`/`write`/`edit` tools are the ONLY way to reach the real repo. `bash` runs \
 inside a sandbox with the repo mounted at /workspace (so `pwd` there shows /workspace, and \
 `/workspace` IS the repo root). `read`/`write`/`edit` take paths RELATIVE to that same repo root \
@@ -1054,8 +1058,9 @@ report -- you never modify anything. Your tools do not include write/edit (restr
 level, not just instruction), so don't waste turns trying to change files; focus entirely on \
 reading, searching, and reporting back a clear, complete answer to whatever you were asked to \
 investigate. You DO have `bash` (needed for real find/grep-style exploration across the repo) -- \
-use it only for read-only exploration (find, grep, ls, cat, git log/diff/status), never to modify \
-anything. A genuinely destructive command from you (or anyone) now requires operator approval \
+use it only for read-only exploration (find, grep, git log/diff/status), never to modify \
+anything -- and read single files with `read` rather than `cat`, which costs a container for what \
+the tool does in-process. A genuinely destructive command from you (or anyone) now requires operator approval \
 before it runs at all -- that gate exists as a real backstop, not as license to test what you can \
 get away with. You also have `describe_image` for any attached screenshot/photo -- use it instead \
 of `read` or your built-in read_file for image files, since those return raw bytes or fail, not a \

@@ -34,9 +34,16 @@ _KEEP_FRACTION = 0.5
 
 
 def record(tool: str, ok: bool, task_id: str | None = None, repo: str | None = None,
-           detail: str | None = None, path: Path | None = None) -> None:
+           detail: str | None = None, nudge: str | None = None, path: Path | None = None) -> None:
     """Append one tool result. Never raises: telemetry must not be able to
-    break the pass it is describing."""
+    break the pass it is describing.
+
+    `nudge` marks a call the harness pointed at a cheaper tool (see
+    agent/tools/bash_advice.py). It is a FIELD rather than a tool name of its
+    own: a flagged bash call is still one bash call, and writing it as
+    "bash-as-read" both invented a tool nobody has and added a phantom call to
+    the reliability panel's count.
+    """
     target = path or LOG_PATH
     entry = {
         "ts": time.time(),
@@ -44,6 +51,7 @@ def record(tool: str, ok: bool, task_id: str | None = None, repo: str | None = N
         "ok": bool(ok),
         "task_id": task_id,
         "repo": repo,
+        "nudge": nudge or None,
         # A short reason when it failed -- enough to group failures, never the
         # output itself.
         "detail": (detail or "")[:200] or None,

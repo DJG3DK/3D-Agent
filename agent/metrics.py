@@ -159,10 +159,19 @@ def tool_reliability(window_days: int = 7, now: float | None = None) -> dict:
     since = now - window_days * 86400
     by_tool: dict[str, dict] = {}
     daily: dict[str, int] = defaultdict(int)
+    nudges: dict[str, int] = defaultdict(int)
     for row in _rows(TOOL_EVENTS_LOG, since):
         name = str(row.get("tool") or "unknown")
-        b = by_tool.setdefault(name, {"tool": name, "calls": 0, "errors": 0})
+        b = by_tool.setdefault(name, {"tool": name, "calls": 0, "errors": 0, "nudged": 0})
         b["calls"] += 1
+        # A shell command the harness pointed at a cheaper tool. Counted on
+        # the call it belongs to rather than as a tool of its own -- see
+        # agent/tool_events.py -- so a flagged bash call is one bash call
+        # here, and how often the habit shows up is still visible.
+        nudge = row.get("nudge")
+        if isinstance(nudge, str) and nudge:
+            b["nudged"] += 1
+            nudges[nudge] += 1
         if row.get("ok") is False:
             b["errors"] += 1
             day = time.strftime("%Y-%m-%d", time.gmtime(row["ts"]))
@@ -174,6 +183,7 @@ def tool_reliability(window_days: int = 7, now: float | None = None) -> dict:
     return {
         "tools": tools,
         "daily": [{"date": d, "errors": n} for d, n in sorted(daily.items())],
+        "nudges": [{"kind": k, "count": n} for k, n in sorted(nudges.items(), key=lambda kv: -kv[1])],
         "window_days": window_days,
         "source": "tool-events",
     }

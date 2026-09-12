@@ -264,6 +264,15 @@ export interface ToolReliabilityEntry {
   calls: number;
   errors: number;
   error_rate: number;
+  /** Calls the harness pointed at a cheaper tool. Not errors -- the command
+   * ran, it was just the expensive way to get the answer. */
+  nudged?: number;
+}
+
+export interface ToolNudge {
+  /** "read" | "write" | "memory-read" | "memory-write" */
+  kind: string;
+  count: number;
 }
 
 export interface ToolReliabilityDaily {
@@ -274,6 +283,7 @@ export interface ToolReliabilityDaily {
 export interface ToolReliability {
   tools: ToolReliabilityEntry[];
   daily: ToolReliabilityDaily[];
+  nudges?: ToolNudge[];
 }
 
 // Top-level trace health from LangSmith -- one entry per root run (a

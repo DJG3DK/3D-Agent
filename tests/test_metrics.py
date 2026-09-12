@@ -175,8 +175,53 @@ def test_the_tool_log_is_trimmed_rather_than_growing(tmp_path, monkeypatch):
 
 def test_tool_reliability_with_no_log_is_empty_not_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(metrics, "TOOL_EVENTS_LOG", tmp_path / "nope.jsonl")
-    assert metrics.tool_reliability() == {"tools": [], "daily": [], "window_days": 7,
-                                          "source": "tool-events"}
+    assert metrics.tool_reliability() == {"tools": [], "daily": [], "nudges": [],
+                                          "window_days": 7, "source": "tool-events"}
+
+
+# ---------------------------------------------------------------------------
+# nudged calls
+#
+# A shell command the harness pointed at a cheaper tool used to be written as
+# its own event named "bash-as-read", which put a tool nobody has on the
+# reliability panel and added one phantom call per flagged command. It is a
+# field on the call it belongs to now.
+# ---------------------------------------------------------------------------
+
+def test_a_nudged_bash_call_is_one_bash_call(tmp_path, monkeypatch):
+    log = tmp_path / "tool_events.jsonl"
+    tool_events.record(tool="bash", ok=True, task_id="T1", path=log)
+    tool_events.record(tool="bash", ok=True, task_id="T1", nudge="read", path=log)
+    monkeypatch.setattr(metrics, "TOOL_EVENTS_LOG", log)
+
+    data = metrics.tool_reliability()
+    assert [t["tool"] for t in data["tools"]] == ["bash"], "no invented tool names"
+    assert data["tools"][0]["calls"] == 2
+    assert data["tools"][0]["nudged"] == 1
+
+
+def test_nudges_are_counted_by_kind(tmp_path, monkeypatch):
+    log = tmp_path / "tool_events.jsonl"
+    for nudge in ("read", "memory-read", "memory-read", None):
+        tool_events.record(tool="bash", ok=True, task_id="T1", nudge=nudge, path=log)
+    monkeypatch.setattr(metrics, "TOOL_EVENTS_LOG", log)
+
+    data = metrics.tool_reliability()
+    assert data["nudges"] == [{"kind": "memory-read", "count": 2}, {"kind": "read", "count": 1}]
+    assert data["tools"][0]["nudged"] == 3
+
+
+def test_a_nudge_is_not_an_error(tmp_path, monkeypatch):
+    """The command ran and produced output -- it was just the expensive way to
+    get it. Counting it as a failure would make the habit look like breakage."""
+    log = tmp_path / "tool_events.jsonl"
+    tool_events.record(tool="bash", ok=True, task_id="T1", nudge="write", path=log)
+    monkeypatch.setattr(metrics, "TOOL_EVENTS_LOG", log)
+
+    data = metrics.tool_reliability()
+    assert data["tools"][0]["errors"] == 0
+    assert data["tools"][0]["error_rate"] == 0.0
+    assert data["daily"] == []
 
 
 # ---------------------------------------------------------------------------

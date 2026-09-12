@@ -13,6 +13,7 @@ A note on the result, never a refusal -- writing a scratch script to RUN is a
 fair use of a shell, and no pattern can tell every case apart.
 """
 
+from agent.tools import bash_advice
 from agent.tools.bash_advice import EDIT_NOTE, READ_NOTE, advice_for, kind
 
 
@@ -88,3 +89,130 @@ def test_the_notes_say_why_not_just_what():
     for note in (EDIT_NOTE, READ_NOTE):
         assert "container" in note
         assert "RUNNING things" in note
+
+
+# ---------------------------------------------------------------------------
+# The agent's own filesystem, reached through a shell that cannot see it
+#
+# Live on 2026-09-12, task 279c29fd: the coder reached for /memories/AGENTS.md
+# through bash twice while writing its memory at the end of a task. The path
+# is not mounted in the sandbox -- verified against the image -- so both calls
+# could only spend a container and come back with "No such file".
+# ---------------------------------------------------------------------------
+
+
+def test_reading_own_memory_through_the_shell_is_flagged():
+    """The exact command from the run, pipes and all."""
+    note = bash_advice.advice_for('grep -n "lgtm\\|http-to-file-access" /memories/AGENTS.md | head')
+    assert note == bash_advice.MEMORY_READ_NOTE
+    assert "read_file" in note
+
+
+def test_the_second_form_from_the_same_run_is_flagged_too():
+    note = bash_advice.advice_for('grep -n "only ways to clear it" /memories/AGENTS.md | cat -A | head -3')
+    assert note == bash_advice.MEMORY_READ_NOTE
+
+
+def test_skills_and_org_memory_are_the_same_filesystem():
+    for path in ("/skills/webapp-testing/SKILL.md", "/org-memory/NOTES.md"):
+        assert bash_advice.advice_for(f"cat {path}") == bash_advice.MEMORY_READ_NOTE
+
+
+def test_writing_own_memory_is_never_sent_to_the_repo_edit_tool():
+    """The whole reason the virtual-path check runs first.
+
+    `edit` is path-guarded to the repo root and rejects /memories outright, so
+    the generic write note would have sent the model from one wrong tool to
+    another. It has to name write_file/edit_file instead.
+    """
+    note = bash_advice.advice_for("cat >> /memories/AGENTS.md <<'EOF'\nnotes\nEOF")
+    assert note == bash_advice.MEMORY_WRITE_NOTE
+    assert note is not bash_advice.EDIT_NOTE
+    assert "write_file" in note
+    # and it must say the quiet part: exit 0 did not mean it was saved
+    assert "thrown away" in note
+
+
+def test_a_repo_path_that_merely_contains_the_word_is_left_alone():
+    """Path boundaries, not substrings: a repo file named for one of these
+    concepts is an ordinary repo file."""
+    assert bash_advice.advice_for("rg -n 'todo' src/memories.ts") is None
+    assert bash_advice.advice_for("npm run build --prefix apps/skills") is None
+    assert bash_advice.advice_for("cat docs/org-memory.md") is bash_advice.READ_NOTE
+
+
+def test_running_things_is_still_never_flagged():
+    """The commands from the same run that were a fair use of a shell."""
+    for command in (
+        'cd /workspace && timeout 20 curl -sI https://github.com 2>&1 | head -3',
+        'cd /tmp && curl -sL -o b.tar.gz https://example.invalid/b.tar.gz && tar -xzf b.tar.gz',
+        'npx vitest run src/components/panels.test.tsx',
+        'rg -n "someSymbol" src',
+    ):
+        assert bash_advice.advice_for(command) is None, command
+
+
+# ---------------------------------------------------------------------------
+# Kinds, and reading one back off a result
+# ---------------------------------------------------------------------------
+
+
+def test_kind_names_each_mistake():
+    assert bash_advice.kind("sed -i 's/a/b/' src/app.ts") == "write"
+    assert bash_advice.kind("cat src/app.ts") == "read"
+    assert bash_advice.kind("grep -n x /memories/AGENTS.md") == "memory-read"
+    assert bash_advice.kind("tee /skills/x.md") == "memory-write"
+    assert bash_advice.kind("pytest -q") is None
+
+
+def test_the_kind_is_recoverable_from_the_result_text():
+    """How the work node tags its tool event without the wrapper writing a
+    second one -- the note is already on the front of the result."""
+    for command in ("cat src/app.ts", "sed -i 's/a/b/' x.py", "grep x /memories/AGENTS.md"):
+        note = bash_advice.advice_for(command)
+        result = f"{note}\nexit_code=0\nsome output"
+        assert bash_advice.kind_of_result(result) == bash_advice.kind(command)
+
+
+def test_an_unflagged_result_has_no_kind():
+    assert bash_advice.kind_of_result("exit_code=0\nall tests passed") is None
+    assert bash_advice.kind_of_result("") is None
+
+
+# ---------------------------------------------------------------------------
+# Scratch space outside the checkout
+#
+# Found by replaying the 2026-09-12 run's real commands through this module:
+# `cd /tmp && sed -n '40,110p' AlertSuppression.qll` was being nudged toward
+# `read`, which is path-guarded to the repo root and cannot open /tmp at all.
+# The same mistake as pointing a /memories write at `edit`, in reverse: a note
+# is only worth sending when the tool it names can actually do the job.
+# ---------------------------------------------------------------------------
+
+
+def test_paging_a_downloaded_file_in_tmp_is_not_nudged():
+    assert advice_for("cd /tmp && sed -n '40,110p' AlertSuppression.qll") is None
+    assert advice_for("cat /etc/hostname") is None
+    assert advice_for("cd /var/tmp && head -20 bundle.log") is None
+
+
+def test_a_scratch_write_outside_the_repo_is_not_nudged():
+    """Writing a scratch file to run is the fair use a shell is for."""
+    assert advice_for("cat > /tmp/probe.sh <<'SH'\necho hi\nSH") is None
+    assert advice_for("cd /tmp && tee out.txt") is None
+
+
+def test_the_repo_is_still_nudged_from_either_spelling():
+    """/workspace IS the repo root, so both spellings of the same file are
+    the in-process tools' business."""
+    assert advice_for("cd /workspace && cat src/app.ts") is READ_NOTE
+    assert advice_for("cat /workspace/src/app.ts") is READ_NOTE
+    assert advice_for("sed -i 's/a/b/' /workspace/src/app.ts") is EDIT_NOTE
+
+
+def test_a_memory_write_is_flagged_even_though_it_is_not_in_the_repo():
+    """The scratch-path exemption must not swallow the case it was added
+    alongside: /memories is outside the repo AND unreachable from bash."""
+    from agent.tools.bash_advice import MEMORY_WRITE_NOTE
+    assert advice_for("tee /skills/x.md") is MEMORY_WRITE_NOTE
+    assert advice_for("cat > /memories/AGENTS.md") is MEMORY_WRITE_NOTE

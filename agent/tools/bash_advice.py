@@ -14,6 +14,21 @@ magnitude faster in wall-clock, and it is also safer -- `edit` is path-guarded
 to the repo root and its repeat-guard catches a model retrying an edit that
 already failed, neither of which a shell heredoc gets.
 
+Observed again on 2026-09-12, task 279c29fd, at the other boundary: the coder
+reached for `/memories/AGENTS.md` through bash twice -- `grep -n "..."
+/memories/AGENTS.md | head` -- while writing its memory at the end of a task.
+That path does not exist inside the container at all. It is the agent's own
+store-backed filesystem, reachable only through the built-in read_file /
+write_file / edit_file tools, so the command can do nothing but cost a
+container and return "No such file or directory".
+
+The write case is worse than a wasted container, and it is why this check runs
+BEFORE the write patterns below. `cat >> /memories/AGENTS.md` goes three ways
+wrong at once: the bytes land in a container that is thrown away, the shell
+reports exit 0 so the model believes it succeeded, and the generic write note
+would send it to `edit` -- which is path-guarded to the repo root and rejects
+/memories outright. One wrong tool pointing at another.
+
 So: a note on the result, never a refusal. Blocking would be wrong -- writing
 a scratch script to RUN is a legitimate use of a shell, and the harness cannot
 reliably tell the difference in every case. A short line pointing at the
@@ -24,6 +39,11 @@ model takes the hint.
 from __future__ import annotations
 
 import re
+
+# The agent's own filesystem: store-backed, and mounted nowhere in the sandbox.
+# Matched on a path boundary so a repo file that merely mentions one of these
+# words ("src/skills.ts", "docs/memories.md") is left alone.
+_VIRTUAL_PATH = re.compile(r"(?<![\w.-])/(?:memories|skills|org-memory)(?:/|\b)")
 
 # Writing a file through the shell.
 _WRITE_PATTERNS = (
@@ -42,10 +62,13 @@ _WRITE_PATTERNS = (
 
 # Reading a file through the shell, when nothing else is happening to it.
 _READ_ONLY = re.compile(
-    r"^\s*(?:cd\s+\S+\s*&&\s*)?"
+    r"^\s*(?:cd\s+(\S+)\s*&&\s*)?"
     r"(?:cat|head|tail|sed\s+-n\s+['\"]?[\d,p$]+['\"]?)\s+"
     r"[\"']?([\w./-]+\.[\w]+)[\"']?\s*$"
 )
+
+# A command that plainly works somewhere other than the repo checkout.
+_LEADING_CD = re.compile(r"^\s*cd\s+[\"']?(/[\w./-]+)")
 
 EDIT_NOTE = (
     "[harness] That wrote a file through the shell. Use the `edit` tool (or `write` for a new "
@@ -53,10 +76,65 @@ EDIT_NOTE = (
     "route is ~10x the wall-clock for the same change, and `edit` is path-guarded and catches a "
     "repeated failed edit. Keep bash for RUNNING things: tests, builds, rg, git status."
 )
+MEMORY_READ_NOTE = (
+    "[harness] That path is not in this container. /memories, /skills and /org-memory are your "
+    "OWN filesystem, not the repo's -- bash cannot see them at all, so the command above could "
+    "only fail. Read them with your built-in `read_file` (and `ls`/`glob`) instead. The repo is "
+    "the other filesystem: /workspace in bash, relative paths for `read`/`write`/`edit`."
+)
+MEMORY_WRITE_NOTE = (
+    "[harness] That tried to WRITE your own memory through the shell, and it did not work even "
+    "if the exit code said 0: /memories, /skills and /org-memory are not mounted in this "
+    "container, so the bytes went into a sandbox that is thrown away when the command ends. Use "
+    "your built-in `write_file` / `edit_file` -- those are the only tools that reach it. (Not "
+    "`edit`: that one is path-guarded to the repo and will reject the path.)"
+)
 READ_NOTE = (
     "[harness] That read a file through the shell. Use the `read` tool instead -- same content, "
     "no container, and it pages large files. Keep bash for RUNNING things."
 )
+
+
+def _in_repo(path: str) -> bool:
+    """True for a path the in-process tools can actually open.
+
+    They are path-guarded to the repo root, which bash sees as /workspace. A
+    relative path is the repo's by default; an absolute one is only the repo's
+    under /workspace.
+    """
+    return not path.startswith("/") or path == "/workspace" or path.startswith("/workspace/")
+
+
+def _outside_repo(text: str) -> bool:
+    """True when the command starts by changing to somewhere outside the repo.
+
+    Caught on the 2026-09-12 replay: `cd /tmp && sed -n '40,110p'
+    AlertSuppression.qll` was being nudged toward `read`, which is path-guarded
+    to the repo and cannot open a scratch file in /tmp at all -- the same
+    mistake as pointing a /memories write at `edit`, in the other direction.
+    Downloading something to /tmp and paging through it is a fair use of a
+    shell, and the in-process tools are not an alternative there.
+    """
+    m = _LEADING_CD.match(text)
+    return bool(m) and not _in_repo(m.group(1))
+
+
+def _writes(text: str) -> bool:
+    for pattern in _WRITE_PATTERNS:
+        m = pattern.search(text)
+        if not m:
+            continue
+        # Patterns that name their target (`cat > x`, `tee x`) let a scratch
+        # file outside the repo through; the rest (sed -i, an open() heredoc)
+        # capture nothing, and the leading-cd check above is what covers them.
+        target = m.group(1) if m.groups() else None
+        # A virtual path is still a write -- the caller needs "write" to pick
+        # the note that says so, and /memories is exactly where a shell write
+        # does the most damage by appearing to succeed.
+        if target and not _in_repo(target) and not _VIRTUAL_PATH.search(target):
+            continue
+        return True
+    return False
 
 
 def advice_for(command: str) -> str | None:
@@ -65,23 +143,57 @@ def advice_for(command: str) -> str | None:
         return None
     text = command.strip()
 
+    # First, because this one is not a preference: the path is absent from the
+    # container, so the command cannot work however it is spelled -- including
+    # the compound and piped forms the checks below deliberately leave alone.
+    if _VIRTUAL_PATH.search(text):
+        return MEMORY_WRITE_NOTE if _writes(text) else MEMORY_READ_NOTE
+
+    # Scratch space outside the checkout: a shell is the only tool that
+    # reaches it, so there is nothing cheaper to point at.
+    if _outside_repo(text):
+        return None
+
     # A write is the expensive mistake, so it wins when a command does both.
-    for pattern in _WRITE_PATTERNS:
-        if pattern.search(text):
-            return EDIT_NOTE
+    if _writes(text):
+        return EDIT_NOTE
 
     # Only for a command that does nothing BUT read one file. `cat x | grep y`
     # is a search, which is exactly what bash is for.
-    if _READ_ONLY.match(text):
+    match = _READ_ONLY.match(text)
+    if match and _in_repo(match.group(2)):
         return READ_NOTE
     return None
 
 
+# Which note means what, for telemetry. Keyed by the note text so the same
+# table answers both "what kind of mistake was this command" and "what kind of
+# nudge is on the front of this result" -- the latter is how the work node
+# tags the tool event without the tool wrapper having to tell it.
+NOTE_KINDS = {
+    EDIT_NOTE: "write",
+    READ_NOTE: "read",
+    MEMORY_READ_NOTE: "memory-read",
+    MEMORY_WRITE_NOTE: "memory-write",
+}
+
+
 def kind(command: str) -> str | None:
-    """"write" / "read" / None -- for counting these in tool telemetry."""
-    note = advice_for(command)
-    if note is EDIT_NOTE:
-        return "write"
-    if note is READ_NOTE:
-        return "read"
+    """What a command would be nudged for, or None. For tool telemetry."""
+    return NOTE_KINDS.get(advice_for(command) or "")
+
+
+def kind_of_result(text: str) -> str | None:
+    """The same answer, read back off a tool RESULT that carries a note.
+
+    The nudge is prepended to the bash result, so the work node can tag its
+    tool event from the text it already has rather than the wrapper writing a
+    second event of its own -- which put "bash-as-read" on the reliability
+    panel looking like a tool, and counted one extra call per flagged command.
+    """
+    if not text:
+        return None
+    for note, name in NOTE_KINDS.items():
+        if text.startswith(note):
+            return name
     return None

@@ -511,6 +511,18 @@ export function AnalyticsView() {
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          {(toolReliability.nudges?.length ?? 0) > 0 && (
+            /* Shell calls the harness pointed at a cheaper tool -- reading or
+             * editing a file through bash (a container each time) instead of
+             * read/edit, or reaching for the agent's own memory from inside a
+             * sandbox that cannot see it. Not errors: the call ran. */
+            <p className="tool-nudges">
+              {toolReliability.nudges!.reduce((n, x) => n + x.count, 0)} shell call
+              {toolReliability.nudges!.reduce((n, x) => n + x.count, 0) === 1 ? "" : "s"} nudged
+              toward a cheaper tool —{" "}
+              {toolReliability.nudges!.map((n) => `${n.kind} ${n.count}`).join(", ")}
+            </p>
+          )}
         </section>
       )}
     </div>

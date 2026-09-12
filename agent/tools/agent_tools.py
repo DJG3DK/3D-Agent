@@ -34,7 +34,6 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._message_eviction import _create_content_preview
 
 from agent.tools.files import BinaryFileError, PathEscapeError, _resolve, read_file, str_replace, write_file
-from agent import tool_events
 from agent.tools import bash_advice
 from agent.tools.sandbox import run_shell_sandboxed
 from agent.tools.tool_errors import tool_errors_to_text
@@ -193,7 +192,20 @@ def make_agent_tools(
         the host. This is a DIFFERENT filesystem from your built-in
         ls/read_file/write_file/edit_file/glob/grep tools, which only see
         this agent's own memory/skills paths, never the real repo -- use
-        THIS tool (or read/write/edit) for anything repo-related.
+        THIS tool (or read/write/edit) for anything repo-related. The reverse
+        is just as true: /memories, /skills and /org-memory do NOT exist in
+        here, so `grep /memories/AGENTS.md` can only fail and `cat >>
+        /memories/AGENTS.md` writes into a sandbox nobody will ever read --
+        reach your own memory with read_file/write_file/edit_file only.
+
+        EVERY CALL GETS A FRESH CONTAINER. Nothing outside /workspace
+        survives from one call to the next: not /tmp, not an installed
+        package, not a background process, not an environment variable, not
+        your working directory. So a download and the thing that uses it
+        belong in ONE command (`curl ... && tar -xzf ...`), `nohup ... &` is
+        pointless because the container exits with the command, and there is
+        no need to probe what persists -- nothing does. Only /workspace,
+        which is a real checkout on the host, carries over.
         Non-interactive: CI=true is set, there is no stdin, and prompts that
         would otherwise hang get EOF immediately."""
         try:
@@ -229,8 +241,12 @@ def make_agent_tools(
             # is a fair use of a shell.
             nudge = bash_advice.advice_for(command)
             if nudge:
+                # The note goes on the result and nowhere else. The work node
+                # reads the kind back off this text when it records the tool
+                # event (bash_advice.kind_of_result), so one bash call stays
+                # one row on the reliability panel -- a second event here put
+                # "bash-as-read" in the tool list as though it were a tool.
                 content = f"{nudge}\n{content}"
-                tool_events.record(tool=f"bash-as-{bash_advice.kind(command)}", ok=True)
             if r["exit_code"] == 1 and not r["output"].strip() and _is_search_command(command):
                 # rg/grep exit 1 is "pattern not found", not a failure. Say so
                 # in the result, for the model and for the dashboard: on
