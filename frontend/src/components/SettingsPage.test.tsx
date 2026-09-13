@@ -26,6 +26,25 @@ function user(over: Partial<CurrentUser> = {}): CurrentUser {
   };
 }
 
+/** Render the page and open the section the auto-mode controls live in.
+ *
+ *  The page shows one section at a time now (2026-09-13), so these controls
+ *  are behind a nav click rather than somewhere in a 4300px scroll. Also
+ *  clears the remembered section, which would otherwise leak between tests
+ *  through localStorage. */
+async function openAgentBehavior(u: CurrentUser, onUserChanged = () => {}) {
+  // Guarded the same way the component guards it: this environment has no
+  // localStorage at all, which is precisely the case rememberedSection() has
+  // to survive.
+  try {
+    localStorage.clear();
+  } catch {
+    /* no storage here; the page falls back to the first section */
+  }
+  render(<SettingsPage user={u} onUserChanged={onUserChanged} />);
+  await userEvent.click(screen.getByRole("button", { name: "Agent behavior" }));
+}
+
 describe("auto mode is chosen per project", () => {
   beforeEach(() => {
     setAutoApprove.mockReset();
@@ -37,7 +56,7 @@ describe("auto mode is chosen per project", () => {
   });
 
   it("will not turn on until a project is ticked", async () => {
-    render(<SettingsPage user={user()} onUserChanged={() => {}} />);
+    await openAgentBehavior(user(), () => {});
     await userEvent.click(screen.getByRole("button", { name: /Turn auto mode on/ }));
     await waitFor(() => expect(screen.getByLabelText("sandbox")).toBeTruthy());
 
@@ -48,7 +67,7 @@ describe("auto mode is chosen per project", () => {
 
   it("sends exactly the projects that were ticked", async () => {
     const onUserChanged = vi.fn();
-    render(<SettingsPage user={user()} onUserChanged={onUserChanged} />);
+    await openAgentBehavior(user(), onUserChanged);
     await userEvent.click(screen.getByRole("button", { name: /Turn auto mode on/ }));
     await waitFor(() => expect(screen.getByLabelText("sandbox")).toBeTruthy());
 
@@ -62,21 +81,18 @@ describe("auto mode is chosen per project", () => {
   });
 
   it("names the projects it covers once it is on", async () => {
-    render(<SettingsPage user={user({ auto_approve_commands: true, auto_approve_repos: ["sandbox"] })}
-                         onUserChanged={() => {}} />);
+    await openAgentBehavior(user({ auto_approve_commands: true, auto_approve_repos: ["sandbox"] }));
     const covers = await screen.findByText(/Covers:/);
     expect(covers.parentElement?.textContent).toMatch(/Covers:\s*sandbox/);
   });
 
   it("says plainly when it is on but covers nothing", async () => {
-    render(<SettingsPage user={user({ auto_approve_commands: true, auto_approve_repos: [] })}
-                         onUserChanged={() => {}} />);
+    await openAgentBehavior(user({ auto_approve_commands: true, auto_approve_repos: [] }));
     expect(await screen.findByText(/auto mode is on but applies nowhere/i)).toBeTruthy();
   });
 
   it("turning it off does not resend the project list", async () => {
-    render(<SettingsPage user={user({ auto_approve_commands: true, auto_approve_repos: ["sandbox"] })}
-                         onUserChanged={() => {}} />);
+    await openAgentBehavior(user({ auto_approve_commands: true, auto_approve_repos: ["sandbox"] }));
     await userEvent.click(await screen.findByRole("button", { name: /Turn auto mode off/ }));
     expect(setAutoApprove).toHaveBeenCalledWith(false, undefined);
   });

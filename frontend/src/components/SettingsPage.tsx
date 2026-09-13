@@ -13,12 +13,41 @@ function sameRepos(a: string[], b: string[]): boolean {
   return a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
 }
 
+type SectionId =
+  | "account" | "agent" | "notifications" | "projects"
+  | "github" | "limits" | "environment" | "audit";
+
+/** Where the operator was last time. Settings is a place people come back to
+ *  mid-task -- landing on "Account" every time is a small tax on every visit.
+ *  Per browser, and a stale/unknown value simply falls back to the first
+ *  section the account can see. */
+const LAST_SECTION_KEY = "settings.section";
+
+function rememberedSection(): SectionId {
+  try {
+    return (localStorage.getItem(LAST_SECTION_KEY) as SectionId) || "account";
+  } catch {
+    return "account";
+  }
+}
+
 interface Props {
   user: CurrentUser;
   onUserChanged: (user: CurrentUser) => void;
 }
 
 export function SettingsPage({ user, onUserChanged }: Props) {
+  const [section, setSectionState] = useState<SectionId>(rememberedSection);
+
+  function setSection(id: SectionId) {
+    setSectionState(id);
+    try {
+      localStorage.setItem(LAST_SECTION_KEY, id);
+    } catch {
+      /* a browser with site data blocked still navigates, it just forgets */
+    }
+  }
+
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -104,264 +133,294 @@ export function SettingsPage({ user, onUserChanged }: Props) {
     }
   }
 
+  // One section at a time, chosen from the rail on the left.
+  //
+  // This page used to be every card stacked in one 4300px scroll: eleven cards
+  // at three different widths, two-up rows whose heights never matched (a
+  // 735px "Auto mode" beside a 332px "Final merge review" left 400px of dead
+  // space), and two unrelated cards both titled "GitHub". Nothing told you
+  // where you were or what else there was.
+  //
+  // The rail is the table of contents the page never had, and showing one
+  // section at a time means each one gets a single readable column instead of
+  // a grid that has to look right at every combination of card heights.
+  // `wide` opts a section out of the reading-width cap. Prose and form rows
+  // want ~760px; a table does not -- capping the GitHub per-project grid at a
+  // reading width clipped its Budget column behind a horizontal scrollbar
+  // while 300px of screen sat empty to the right of it.
+  const sections: { id: SectionId; label: string; blurb: string; admin?: boolean; wide?: boolean }[] = [
+    { id: "account", label: "Account", blurb: "Who you are signed in as, and your password." },
+    { id: "agent", label: "Agent behavior", blurb: "How much the agent does without stopping to ask." },
+    { id: "notifications", label: "Notifications", blurb: "Where the agent reaches you." },
+    { id: "projects", label: "Projects", blurb: "The repositories this deployment can work on.", admin: true },
+    { id: "github", label: "GitHub", blurb: "Tokens, the inbox, and what it is allowed to start.", admin: true, wide: true },
+    { id: "limits", label: "Runtime limits", blurb: "How hard the agent tries before giving up.", admin: true, wide: true },
+    { id: "environment", label: "Environment", blurb: "API keys and integration settings.", admin: true, wide: true },
+    { id: "audit", label: "Audit log", blurb: "Who moved a control, and when.", admin: true, wide: true },
+  ];
+  const visible = sections.filter((s) => !s.admin || user.role === "admin");
+  const active = visible.find((s) => s.id === section) ?? visible[0];
+
   return (
     <SettingsSaveProvider>
     <div className="settings-page">
-      <h1 className="settings-title">Settings</h1>
-      <p className="settings-account">
-        Signed in as <strong>{user.email}</strong>
-        <span className="settings-role">{user.role}</span>
-      </p>
-
-      
-
-      {/* Grouped grid (2026-08-28): one center column stopped scaling past two
-          cards. Cards now sit in themed sections, two-up on wide screens,
-          stacking on narrow ones. */}
-      <h3 className="settings-section-label">Account &amp; access</h3>
-      <div className="settings-grid">
-        <section className="settings-card">
-          <h2>Change password</h2>
-          <form onSubmit={handlePasswordSave} className="settings-form">
-            <label className="field">
-              <span>Current password</span>
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={current}
-                onChange={(e) => setCurrent(e.target.value)}
-                required
-              />
-            </label>
-            <label className="field">
-              <span>New password</span>
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={next}
-                onChange={(e) => setNext(e.target.value)}
-                required
-              />
-            </label>
-            <label className="field">
-              <span>Confirm new password</span>
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                required
-              />
-            </label>
-            <p className="settings-hint">
-              At least 12 characters, with an uppercase letter, a lowercase letter, and a digit.
-            </p>
-            {pwError && <div className="settings-error">{pwError}</div>}
-            {pwDone && <div className="settings-ok">Password updated.</div>}
-            <button className="submit-btn" type="submit" disabled={pwSaving || !current || !next || !confirm}>
-              {pwSaving ? "Saving…" : "Update password"}
-            </button>
-          </form>
-        </section>
-      </div>
-
-      <h3 className="settings-section-label">Agent behavior</h3>
-      <div className="settings-grid">
-        <section className={`settings-card ${user.auto_approve_commands ? "settings-card--armed" : ""}`}>
-          <h2>
-            Auto mode
-            <span className={`settings-pill ${user.auto_approve_commands ? "settings-pill--on" : ""}`}>
-              {user.auto_approve_commands ? "ON" : "OFF"}
-            </span>
-          </h2>
-          <p className="settings-body">
-            Normally the agent pauses and asks before it touches something sensitive — a config file,
-            a <code>.env</code>, anything under <code>.git/</code> or <code>.github/workflows</code>.
-            That prompt is what makes a long task need babysitting. Auto mode runs those without
-            asking, so a task can finish unattended.
-          </p>
-          <div className="settings-note settings-note--keep">
-            <strong>Still always asks, even with auto mode on:</strong>
-            <ul>
-              <li>
-                Deletions that lose work — anything git tracks in the checkout, the checkout itself,
-                anything under <code>.git</code>, a path outside the sandbox, <code>git clean -f</code>,
-                or a target it cannot read (a shell variable). Deleting its own scratch — a probe
-                script it just wrote, <code>/tmp</code>, a build folder like <code>dist</code> or{" "}
-                <code>node_modules</code> — runs without asking: git never heard of it, so nothing
-                reaches your diff.
-              </li>
-              <li>Questions the agent asks you directly, so it gets your real answer</li>
-            </ul>
-          </div>
-          <div className="settings-note settings-note--warn">
-            <strong>What you give up:</strong> the agent edits config, secrets-adjacent files, CI
-            workflows and deploy config with no prompt, and runs shell commands that strict mode
-            stops for (<code>sudo</code>, a force push, <code>chmod -R</code>). Every command runs in
-            a throwaway container with no credentials, no privileges and only the task's own checkout
-            mounted, so those cannot reach the host, another project or a remote — but you won't see
-            them until you read the log. The review gate and the task budget are unchanged.
-          </div>
-          <p className="settings-body settings-body--dim">
-            Applies to tasks you start from now on. A task already running keeps the setting it began
-            with, so flipping this can't loosen the gate on something already in flight.
-          </p>
-          {autoError && <div className="settings-error">{autoError}</div>}
-          {user.auto_approve_commands ? (
-            <>
-              <div className="settings-scope">
-                <strong>Covers:</strong>{" "}
-                {user.auto_approve_repos?.length
-                  ? user.auto_approve_repos.join(", ")
-                  : "no projects — auto mode is on but applies nowhere"}
-                <p className="settings-body settings-body--dim">
-                  Every other project still asks. Tick a project to change what auto mode covers.
-                </p>
-                <div className="settings-projects">
-                  {projects.map((name) => (
-                    <label key={name} className="settings-project">
-                      <input
-                        type="checkbox"
-                        checked={autoRepos.includes(name)}
-                        disabled={autoSaving}
-                        onChange={() => toggleRepo(name)}
-                      />
-                      {name}
-                    </label>
-                  ))}
-                </div>
-                <button
-                  className="settings-btn"
-                  disabled={autoSaving || sameRepos(autoRepos, user.auto_approve_repos ?? [])}
-                  onClick={() => applyAuto(true, autoRepos)}
-                >
-                  {autoSaving ? "Saving…" : "Save projects"}
-                </button>
-              </div>
-              <button className="settings-btn settings-btn--off" disabled={autoSaving} onClick={() => applyAuto(false)}>
-                {autoSaving ? "Saving…" : "Turn auto mode off"}
+      <nav className="settings-nav" aria-label="Settings sections">
+        <h1 className="settings-title">Settings</h1>
+        <p className="settings-account">
+          <strong>{user.email}</strong>
+          <span className="settings-role">{user.role}</span>
+        </p>
+        <ul className="settings-nav-list">
+          {visible.map((s) => (
+            <li key={s.id}>
+              <button
+                type="button"
+                className={`settings-nav-item ${s.id === active.id ? "is-current" : ""}`}
+                aria-current={s.id === active.id ? "page" : undefined}
+                onClick={() => setSection(s.id)}
+              >
+                {s.label}
               </button>
-            </>
-          ) : confirmingAuto ? (
-            <div className="settings-confirm">
-              <span>Which projects may run sensitive file and shell operations without asking?</span>
-              <div className="settings-projects">
-                {projects.map((name) => (
-                  <label key={name} className="settings-project">
-                    <input
-                      type="checkbox"
-                      checked={autoRepos.includes(name)}
-                      disabled={autoSaving}
-                      onChange={() => toggleRepo(name)}
-                    />
-                    {name}
-                  </label>
-                ))}
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className={`settings-content ${active.wide ? "settings-content--wide" : ""}`}>
+        <header className="settings-content-head">
+          <h2 className="settings-content-title">{active.label}</h2>
+          <p className="settings-content-blurb">{active.blurb}</p>
+        </header>
+
+        {active.id === "account" && (
+          <div className="settings-stack">
+            <section className="settings-card">
+              <h2>Change password</h2>
+              <form onSubmit={handlePasswordSave} className="settings-form">
+                <label className="field">
+                  <span>Current password</span>
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={current}
+                    onChange={(e) => setCurrent(e.target.value)}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span>New password</span>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={next}
+                    onChange={(e) => setNext(e.target.value)}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span>Confirm new password</span>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                    required
+                  />
+                </label>
+                <p className="settings-hint">
+                  At least 12 characters, with an uppercase letter, a lowercase letter, and a digit.
+                </p>
+                {pwError && <div className="settings-error">{pwError}</div>}
+                {pwDone && <div className="settings-ok">Password updated.</div>}
+                <button className="submit-btn" type="submit" disabled={pwSaving || !current || !next || !confirm}>
+                  {pwSaving ? "Saving…" : "Update password"}
+                </button>
+              </form>
+            </section>
+          </div>
+        )}
+
+        {active.id === "agent" && (
+          <div className="settings-stack">
+            <section className={`settings-card ${user.auto_approve_commands ? "settings-card--armed" : ""}`}>
+              <h2>
+                Auto mode
+                <span className={`settings-pill ${user.auto_approve_commands ? "settings-pill--on" : ""}`}>
+                  {user.auto_approve_commands ? "ON" : "OFF"}
+                </span>
+              </h2>
+              <p className="settings-body">
+                Normally the agent pauses and asks before it touches something sensitive — a config file,
+                a <code>.env</code>, anything under <code>.git/</code> or <code>.github/workflows</code>.
+                That prompt is what makes a long task need babysitting. Auto mode runs those without
+                asking, so a task can finish unattended.
+              </p>
+              <div className="settings-note settings-note--keep">
+                <strong>Still always asks, even with auto mode on:</strong>
+                <ul>
+                  <li>
+                    Deletions that lose work — anything git tracks in the checkout, the checkout itself,
+                    anything under <code>.git</code>, a path outside the sandbox, <code>git clean -f</code>,
+                    or a target it cannot read (a shell variable). Deleting its own scratch — a probe
+                    script it just wrote, <code>/tmp</code>, a build folder like <code>dist</code> or{" "}
+                    <code>node_modules</code> — runs without asking: git never heard of it, so nothing
+                    reaches your diff.
+                  </li>
+                  <li>Questions the agent asks you directly, so it gets your real answer</li>
+                </ul>
+              </div>
+              <div className="settings-note settings-note--warn">
+                <strong>What you give up:</strong> the agent edits config, secrets-adjacent files, CI
+                workflows and deploy config with no prompt, and runs shell commands that strict mode
+                stops for (<code>sudo</code>, a force push, <code>chmod -R</code>). Every command runs in
+                a throwaway container with no credentials, no privileges and only the task's own checkout
+                mounted, so those cannot reach the host, another project or a remote — but you won't see
+                them until you read the log. The review gate and the task budget are unchanged.
               </div>
               <p className="settings-body settings-body--dim">
-                Anything not ticked keeps asking. There is no "all projects" option on purpose:
-                a switch that covers everything is one nobody chose the reach of.
+                Applies to tasks you start from now on. A task already running keeps the setting it began
+                with, so flipping this can't loosen the gate on something already in flight.
               </p>
-              <button
-                className="settings-btn settings-btn--danger"
-                disabled={autoSaving || autoRepos.length === 0}
-                onClick={() => applyAuto(true, autoRepos)}
-              >
-                {autoSaving ? "Saving…" : `Turn it on for ${autoRepos.length || "no"} project${autoRepos.length === 1 ? "" : "s"}`}
-              </button>
-              <button className="settings-btn" disabled={autoSaving} onClick={() => setConfirmingAuto(false)}>
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button className="settings-btn" onClick={() => setConfirmingAuto(true)}>
-              Turn auto mode on…
-            </button>
-          )}
-        </section>
-        <section className={`settings-card ${user.require_merge_review ? "" : "settings-card--armed"}`}>
-          <h2>
-            Final merge review
-            <span className={`settings-pill ${user.require_merge_review ? "settings-pill--on" : ""}`}>
-              {user.require_merge_review ? "ON" : "OFF"}
-            </span>
-          </h2>
-          <p className="settings-body">
-            With this on, a task that passes the independent review service <em>parks</em> instead of
-            merging: the full diff slides out from the right, you read it, and nothing ships until you
-            hit <strong>Approve &amp; merge</strong> — or send it back with notes for another round.
-          </p>
-          <div className="settings-note settings-note--warn">
-            <strong>Turning it off</strong> restores fully hands-free shipping: review-approved
-            commits merge and deploy on their own. The review service still gates every merge either
-            way — this toggle is only about <em>your</em> final look.
+              {autoError && <div className="settings-error">{autoError}</div>}
+              {user.auto_approve_commands ? (
+                <>
+                  <div className="settings-scope">
+                    <strong>Covers:</strong>{" "}
+                    {user.auto_approve_repos?.length
+                      ? user.auto_approve_repos.join(", ")
+                      : "no projects — auto mode is on but applies nowhere"}
+                    <p className="settings-body settings-body--dim">
+                      Every other project still asks. Tick a project to change what auto mode covers.
+                    </p>
+                    <div className="settings-projects">
+                      {projects.map((name) => (
+                        <label key={name} className="settings-project">
+                          <input
+                            type="checkbox"
+                            checked={autoRepos.includes(name)}
+                            disabled={autoSaving}
+                            onChange={() => toggleRepo(name)}
+                          />
+                          {name}
+                        </label>
+                      ))}
+                    </div>
+                    <button
+                      className="settings-btn"
+                      disabled={autoSaving || sameRepos(autoRepos, user.auto_approve_repos ?? [])}
+                      onClick={() => applyAuto(true, autoRepos)}
+                    >
+                      {autoSaving ? "Saving…" : "Save projects"}
+                    </button>
+                  </div>
+                  <button className="settings-btn settings-btn--off" disabled={autoSaving} onClick={() => applyAuto(false)}>
+                    {autoSaving ? "Saving…" : "Turn auto mode off"}
+                  </button>
+                </>
+              ) : confirmingAuto ? (
+                <div className="settings-confirm">
+                  <span>Which projects may run sensitive file and shell operations without asking?</span>
+                  <div className="settings-projects">
+                    {projects.map((name) => (
+                      <label key={name} className="settings-project">
+                        <input
+                          type="checkbox"
+                          checked={autoRepos.includes(name)}
+                          disabled={autoSaving}
+                          onChange={() => toggleRepo(name)}
+                        />
+                        {name}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="settings-body settings-body--dim">
+                    Anything not ticked keeps asking. There is no "all projects" option on purpose:
+                    a switch that covers everything is one nobody chose the reach of.
+                  </p>
+                  <button
+                    className="settings-btn settings-btn--danger"
+                    disabled={autoSaving || autoRepos.length === 0}
+                    onClick={() => applyAuto(true, autoRepos)}
+                  >
+                    {autoSaving ? "Saving…" : `Turn it on for ${autoRepos.length || "no"} project${autoRepos.length === 1 ? "" : "s"}`}
+                  </button>
+                  <button className="settings-btn" disabled={autoSaving} onClick={() => setConfirmingAuto(false)}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button className="settings-btn" onClick={() => setConfirmingAuto(true)}>
+                  Turn auto mode on…
+                </button>
+              )}
+            </section>
+            <section className={`settings-card ${user.require_merge_review ? "" : "settings-card--armed"}`}>
+              <h2>
+                Final merge review
+                <span className={`settings-pill ${user.require_merge_review ? "settings-pill--on" : ""}`}>
+                  {user.require_merge_review ? "ON" : "OFF"}
+                </span>
+              </h2>
+              <p className="settings-body">
+                With this on, a task that passes the independent review service <em>parks</em> instead of
+                merging: the full diff slides out from the right, you read it, and nothing ships until you
+                hit <strong>Approve &amp; merge</strong> — or send it back with notes for another round.
+              </p>
+              <div className="settings-note settings-note--warn">
+                <strong>Turning it off</strong> restores fully hands-free shipping: review-approved
+                commits merge and deploy on their own. The review service still gates every merge either
+                way — this toggle is only about <em>your</em> final look.
+              </div>
+              <p className="settings-body settings-body--dim">
+                Applies to tasks you start from now on. A task already running keeps the setting it began
+                with.
+              </p>
+              {mergeError && <div className="settings-error">{mergeError}</div>}
+              {user.require_merge_review ? (
+                <button className="settings-btn settings-btn--danger" disabled={mergeSaving} onClick={() => applyMergeReview(false)}>
+                  {mergeSaving ? "Saving…" : "Turn final review off — merge without me"}
+                </button>
+              ) : (
+                <button className="settings-btn" disabled={mergeSaving} onClick={() => applyMergeReview(true)}>
+                  {mergeSaving ? "Saving…" : "Turn final review on"}
+                </button>
+              )}
+            </section>
           </div>
-          <p className="settings-body settings-body--dim">
-            Applies to tasks you start from now on. A task already running keeps the setting it began
-            with.
-          </p>
-          {mergeError && <div className="settings-error">{mergeError}</div>}
-          {user.require_merge_review ? (
-            <button className="settings-btn settings-btn--danger" disabled={mergeSaving} onClick={() => applyMergeReview(false)}>
-              {mergeSaving ? "Saving…" : "Turn final review off — merge without me"}
-            </button>
-          ) : (
-            <button className="settings-btn" disabled={mergeSaving} onClick={() => applyMergeReview(true)}>
-              {mergeSaving ? "Saving…" : "Turn final review on"}
-            </button>
-          )}
-        </section>
-      </div>
+        )}
 
-      {user.role === "admin" && (
-        <>
-          <h3 className="settings-section-label">Runtime limits</h3>
-          <p className="settings-section-hint">
-            How hard the agent tries before giving up. Changes apply to the next turn or task &mdash;
-            anything already running keeps the limits it started with. Hover a label for what it does.
-          </p>
-          <div className="settings-grid settings-grid--wide">
-            <RuntimeLimitsPanel />
+        {active.id === "notifications" && (
+          <div className="settings-stack">
+            <TelegramCard />
           </div>
-        </>
-      )}
+        )}
 
-      {/* Two compact cards that each half-filled a row of their own: paired
-          into one row instead. Both carry their own heading, so the section
-          label does not have to name them individually. */}
-      <h3 className="settings-section-label">Notifications &amp; projects</h3>
-      <div className="settings-grid">
-        <TelegramCard />
-        {/* Admin only, and gated server-side too — require_admin on both the
-            read and the write. The client gate is convenience, not the
-            boundary. */}
-        {user.role === "admin" && <ProjectsPanel />}
-      </div>
+        {active.id === "projects" && user.role === "admin" && (
+          <div className="settings-stack">
+            <ProjectsPanel />
+          </div>
+        )}
 
-      {/* GitHub: tokens, approve-link delivery and per-project policies for
-          the inbox. Admin only, gated server-side as well. */}
-      {user.role === "admin" && (
-        <>
-          <h3 className="settings-section-label">GitHub</h3>
-          <div className="settings-grid">
+        {active.id === "github" && user.role === "admin" && (
+          <div className="settings-stack">
             <GitHubSettingsCard />
           </div>
-        </>
-      )}
+        )}
 
-      {user.role === "admin" && <ApiKeysPanel />}
+        {active.id === "limits" && user.role === "admin" && (
+          <div className="settings-stack">
+            <RuntimeLimitsPanel />
+          </div>
+        )}
 
-      {/* Who moved a control. Admin only: it names accounts, and the point is
-          that a second operator's actions are visible to the person
-          responsible for the deployment — not to everyone with a login. */}
-      {user.role === "admin" && (
-        <>
-          <h3 className="settings-section-label">Who changed what</h3>
-          <div className="settings-grid">
+        {active.id === "environment" && user.role === "admin" && <ApiKeysPanel />}
+
+        {active.id === "audit" && user.role === "admin" && (
+          <div className="settings-stack">
             <AuditLogCard />
           </div>
-        </>
-      )}
+        )}
+      </div>
 
       {/* One save control for the whole page, pinned bottom-right. It shows
           itself only when a panel above reports a pending edit. */}

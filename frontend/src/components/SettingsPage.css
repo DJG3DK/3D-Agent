@@ -1,25 +1,245 @@
 .settings-page {
-  flex: 1;
-  /* The SCROLLER must be full width; the CONTENT is what gets constrained.
-     Previously this element was both — overflow-y:auto together with
-     max-width + margin:auto — so its scrollbar rendered at the right edge of a
-     centred 720px column (mid-screen on a wide display) and the wheel did
-     nothing over the empty margins either side, because those margins are
-     outside the scrolling box.
+  /* Two panes: a rail that lists the sections, and one section's content.
+     Before this the page was a single 4300px column of every card at once --
+     eleven cards at three different widths, rows whose two cards never
+     matched in height, and no way to tell what else was down there. The rail
+     is the table of contents it never had.
 
-     Symmetric auto padding centres the content to the same width without the
-     element itself being narrow, so the scrollbar sits at the true right edge
-     and the whole page scrolls from anywhere. */
-  overflow-y: auto;
+     The SCROLLER is the content pane, not this element: a full-width element
+     with overflow-y:auto puts its scrollbar at the right edge of the centred
+     column rather than the window, and the wheel does nothing over the
+     margins either side. */
+  flex: 1;
+  display: grid;
+  grid-template-columns: var(--settings-rail) minmax(0, 1fr);
+  align-items: start;
+  min-height: 0;
   width: 100%;
-  max-width: none;
+  overflow: hidden;
+}
+
+:root {
+  --settings-rail: 232px;
+  /* Prose and form rows, so a reading-width cap is exactly right here --
+     unlike the old card grid, which was tiling and needed the width. */
+  --settings-measure: 760px;
+}
+
+/* The rail has to fit the longest account line without clipping the role
+   pill, hence the wrap rather than a wider rail. */
+.settings-nav .settings-account {
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 0;
+  font-size: 12.5px;
+}
+
+.settings-nav .settings-title {
+  font-size: 19px;
+  margin-bottom: 4px;
+}
+
+.settings-nav {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--s6) var(--s4) var(--s6) var(--s5);
+  border-right: 1px solid var(--border);
+  background: var(--surface-sunken);
+}
+
+.settings-nav-list {
+  list-style: none;
+  margin: 22px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-item {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  /* The current item is marked by a bar in the gutter, not by a filled pill:
+     the rail sits next to real content and a heavy block competes with it. */
+  border-left: 2px solid transparent;
+  transition: color 90ms ease, background 90ms ease, border-color 90ms ease;
+}
+
+.settings-nav-item:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.settings-nav-item.is-current {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--surface);
+  border-left-color: var(--accent);
+}
+
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-content {
+  overflow-y: auto;
+  height: 100%;
+  /* Left-aligned against the rail, NOT centred in the remaining space.
+     Centring a 760px column inside a 1070px pane opens a ~150px gutter
+     between the rail and the first word, which reads as two unrelated
+     panels rather than a nav and its content. */
+  padding: var(--s6) var(--s7) var(--s8);
+}
+
+.settings-content > * {
+  max-width: var(--settings-measure);
+}
+
+/* Tables and dense grids get the room instead of a horizontal scrollbar. */
+.settings-content--wide > * {
+  max-width: 1120px;
+}
+
+.settings-content-head {
+  margin: 0 0 22px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-content-title {
+  font-size: 19px;
+  font-weight: 650;
+  margin: 0 0 5px;
+  color: var(--text);
+}
+
+.settings-content-blurb {
   margin: 0;
-  /* 1400, not 1080: at 1080 a three-card row was arithmetically impossible
-     (3 x 420 + 2 x 18 = 1296 > 1080), so the runtime-limits grid always fell
-     to two columns and left a fourth cell empty -- the dead space down the
-     right of a wide screen. Cards are content, not prose; they do not need a
-     reading-width cap. */
-  padding: var(--s7) max(var(--s5), calc((100% - 1400px) / 2)) var(--s8);
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+
+/* Narrow screens: the rail stops being a column and becomes a strip above the
+   content. A 232px rail beside a 368px content pane (600px phone) leaves
+   neither one usable, and hiding the nav behind a menu would put the table of
+   contents back out of sight -- which is the thing this rework was for. */
+@media (max-width: 860px) {
+  .settings-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .settings-nav {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: var(--s5) var(--s4) 0;
+  }
+
+  .settings-nav-list {
+    flex-direction: row;
+    margin-top: 14px;
+    gap: 4px;
+    overflow-x: auto;
+    /* the row scrolls; the items do not squash */
+    scrollbar-width: thin;
+    padding-bottom: 2px;
+  }
+
+  .settings-nav-item {
+    width: auto;
+    white-space: nowrap;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 7px 7px 0 0;
+  }
+
+  .settings-nav-item.is-current {
+    border-left-color: transparent;
+    border-bottom-color: var(--accent);
+  }
+
+  .settings-content {
+    height: auto;
+    overflow: visible;
+    padding: var(--s5) var(--s4) var(--s8);
+  }
+
+  /* The armed stripe's negative margin would hang off the left edge here. */
+  .settings-content .settings-card--armed {
+    margin-left: 0;
+  }
+}
+
+/* One column, always. Sections differ wildly in height -- a two-up grid is
+   what produced 400px of dead space beside a tall card. */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+/* Cards lose their box inside the content pane. A section is now a single
+   subject, so boxing each block inside it just draws a frame around the only
+   thing on screen. What separates blocks is space and a hairline. */
+.settings-content .settings-card {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.settings-content .settings-stack > .settings-card + .settings-card,
+.settings-content .settings-stack > * + .settings-card {
+  border-top: 1px solid var(--border);
+  padding-top: var(--s5);
+}
+
+/* An armed toggle (auto mode on, merge review off) still has to read as armed
+   without the box that used to carry it: an accent bar in the gutter.
+   Not on the GitHub card: "ON" there means the inbox is watching, which is
+   the ordinary state, and a warning stripe down 700px of section says
+   something is wrong when nothing is. */
+.settings-content .gh-card.settings-card--armed {
+  border-left: 0;
+  padding-left: 0;
+  margin-left: 0;
+}
+
+.settings-content .settings-card--armed {
+  border-left: 2px solid var(--amber);
+  padding-left: 14px;
+  margin-left: -16px;
+}
+
+/* Flattening the card removed its padding, which was the only thing putting
+   air between a card's description and the first field label under it -- the
+   Telegram section had "BOT TOKEN" sitting directly on the last line of its
+   own explanation. */
+.settings-content .settings-card > .settings-body,
+.settings-content .settings-card > .settings-hint,
+.settings-content .settings-card > .settings-card-sub {
+  margin-bottom: 14px;
+}
+
+.settings-content .settings-card > h2 {
+  font-size: 15px;
+  font-weight: 620;
 }
 
 .settings-title {

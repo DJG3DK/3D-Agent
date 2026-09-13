@@ -83,13 +83,16 @@ export function ApiKeysPanel() {
 
   return (
     <>
-      <h3 className="settings-section-label">API keys &amp; integrations</h3>
+      {/* No section heading of its own: the settings page names the section
+          now (SettingsPage's own nav), and printing "API keys & integrations"
+          directly under a header that already says Environment / "API keys and
+          integration settings" was the same sentence twice. */}
       <p className="settings-hint">
         Stored in this deployment's <code>.env</code> files, never in the database and never sent to
         the browser. Existing values are shown masked — leave a field blank to keep it unchanged.
       </p>
 
-      <div className="settings-grid">
+      <div className="settings-stack akey-groups">
       {groups.map((g) => (
         <section key={g} className="settings-card akey-group">
           <h2>{GROUP_TITLES[g] ?? g}</h2>

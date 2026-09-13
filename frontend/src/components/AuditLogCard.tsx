@@ -29,7 +29,9 @@ export function AuditLogCard() {
 
   return (
     <section className="settings-card">
-      <h2>Audit log</h2>
+      {/* No <h2>: the settings page's own section header already says "Audit
+          log" directly above this, and printing it twice in a row reads as a
+          layout mistake (it was one). */}
       <p className="settings-body">
         Every change to a control that decides what the agent may do without asking. Kept in the
         same database as your tasks, so it survives restarts and rides along in the backup.
