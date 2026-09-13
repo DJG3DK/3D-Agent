@@ -1,18 +1,21 @@
 # LiteLLM router configuration -- EXAMPLE.
 #
-# STALE WARNING (added 2026-09-13): the OpenHands history further down
-# describes a consumer that no longer exists -- it was archived 2026-08-24. The
-# SIMPLE/MEDIUM/COMPLEX/REASONING tier system, smart-router and reasoning-tier
-# are kept because the tuning notes are useful and something may reuse them,
-# but nothing calls them: one smart-router request in the whole ledger, none
-# for reasoning-tier.
+# Consumers of this router (2026-09-13):
+#   * the LangGraph agent, through its 15 pinned agent-* roles -- including
+#     agent-reviewer, which the commit-reviewer service resolves by alias
+#   * the mail agent    -- mail-chat, mail-triage
+#   * the trading bot   -- trade-gate
 #
-# The real consumers of this router are a LangGraph agent through its agent-*
-# roles (including agent-reviewer, which the commit-reviewer service resolves),
-# the mail agent (mail-chat, mail-triage), and the trading bot (trade-gate).
+# deepseek-v4-pro, claude-haiku-4.5 and gpt-4o-mini are deployments with no
+# caller of their own: they exist as router_settings.fallbacks targets for the
+# roles above. Do not delete one without checking that block.
 #
-# Reading the history below as a description of current traffic is what put a
-# wrong statement on the dashboard's Model Configuration page.
+# The adaptive SIMPLE/MEDIUM/COMPLEX/REASONING tier system, smart-router,
+# reasoning-tier and their nine pool models were REMOVED on 2026-09-13. They
+# were built for OpenHands, which was archived 2026-08-24, and the ledger held
+# one smart-router request in its entire history and none for reasoning-tier.
+# Recoverable from git history if anything ever wants them back.
+
 #
 # install.sh copies this to config.yaml on a fresh install, and config.yaml is
 # gitignored from then on. The live file is yours: the Models page writes to
@@ -34,9 +37,8 @@
 
 # LiteLLM intelligent inference router — task-based routing over OpenRouter.
 #
-# The router's ONLY real consumer is OpenHands (a coding agent). Two failed
-# attempts before this one, both wrong in opposite directions — recorded here
-# so the next change doesn't repeat either:
+# Historical note, kept because it explains how models were chosen: the tier
+# system this describes was built for OpenHands and has been removed.
 #   1. (original) All 4 tiers mapped + session_affinity pinning the FIRST
 #      turn's tier for the whole session. A coding conversation that started
 #      looking simple/medium could get stuck there even once it turned hard —
@@ -132,13 +134,6 @@ model_list:
   # served directly by Amazon Bedrock (first-party, single canonical
   # backend), so this whole bug class doesn't apply. Live-verified: clean
   # tool-call round-trips, well-formed IDs, before wiring in.
-  - model_name: nova-micro
-    litellm_params:
-      model: openrouter/amazon/nova-micro-v1
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info:
-      input_cost_per_token: 0.000000035
-      output_cost_per_token: 0.00000014
 
   # SIMPLE-tier pool partners (2026-08-16). Well-established, reliable
   # providers for the "docs/commits/acknowledgments" workload — this tier
@@ -161,36 +156,7 @@ model_list:
   # additionally has real published benchmark backing, not just a clean
   # smoke test: Amazon's own reporting has it setting standards on the
   # Berkeley Function Calling Leaderboard for its price/intelligence tier.
-  - model_name: nova-lite
-    litellm_params:
-      model: openrouter/amazon/nova-lite-v1
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info:
-      input_cost_per_token: 0.00000006
-      output_cost_per_token: 0.00000024
 
-  - model_name: glm-5.2
-    litellm_params:
-      model: openrouter/z-ai/glm-5.2
-      api_key: os.environ/OPENROUTER_API_KEY
-      # 2026-08-16: Venice (one of OpenRouter's upstream inference providers
-      # for open-weight models) was seen emitting malformed tool_call_ids
-      # (contains a hyphen, e.g. "298abc-77") that Venice's OWN validation
-      # then rejects with a BadGatewayError — a self-inflicted upstream bug,
-      # not anything on our end, but it repeatedly broke live tool-calling
-      # turns (confirmed live, blocked an OpenHands conversation mid-fix).
-      # Excluding Venice alone wasn't the full fix — the same failure just
-      # relocated to the next third-party reseller (DeepInfra) for
-      # deepseek-v4-flash/mistral-small-3.2, which is why those two were
-      # replaced outright with first-party Amazon Bedrock models instead of
-      # patched with this flag (see nova-micro above). Applied here anyway
-      # as defense-in-depth on the open-weight models that stayed in the
-      # pool — proprietary-lab models (Claude/GPT/Gemini/Grok) don't need
-      # it, they aren't resold through third-party inference providers.
-      extra_body: {"provider": {"ignore": ["Venice"]}}
-    model_info:
-      input_cost_per_token: 0.00000119
-      output_cost_per_token: 0.00000374
 
   # MEDIUM-tier adaptive pool partner for glm-5.2 (2026-08-15). Independent
   # benchmarks (Artificial Analysis, CodingFleet) put the two functionally
@@ -198,14 +164,6 @@ model_list:
   # Pro — within noise), with Qwen clearly ahead on math/reasoning (GPQA 92.4%,
   # HMMT 97.1%). ~25% pricier than GLM-5.2 but same band — genuine diversity
   # for the bandit to learn from, not a redundant near-duplicate.
-  - model_name: qwen3.7-max
-    litellm_params:
-      model: openrouter/qwen/qwen3.7-max
-      api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
-    model_info:
-      input_cost_per_token: 0.000001475
-      output_cost_per_token: 0.000004425
 
   # Third MEDIUM-tier member (2026-08-16). 73.3% SWE-bench Verified —
   # Anthropic's own framing is "Sonnet 4-equivalent coding at a third the
@@ -234,13 +192,6 @@ model_list:
   # COMPLEX-tier pool partner (2026-08-16) — this tier had exactly 1 model
   # since kimi-k2.7-code was pulled. xAI's reasoning-first flagship, cheap
   # for its class, and a provider not represented anywhere else in the pool.
-  - model_name: grok-4.3
-    litellm_params:
-      model: openrouter/x-ai/grok-4.3
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info:
-      input_cost_per_token: 0.00000125
-      output_cost_per_token: 0.0000025
 
   # Third COMPLEX-tier member (2026-08-16) — replaces kimi-k2.7-code at the
   # same price point ($0.65/$3.25 vs $0.71/$3.50) rather than reinstating it.
@@ -250,48 +201,18 @@ model_list:
   # just a price-matched swap. Different provider (Alibaba) than either
   # existing COMPLEX member. Live-verified: clean completion + a real
   # tool-call round-trip with well-formed arguments.
-  - model_name: qwen3-coder-plus
-    litellm_params:
-      model: openrouter/qwen/qwen3-coder-plus
-      api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
-    model_info:
-      input_cost_per_token: 0.00000065
-      output_cost_per_token: 0.00000325
 
-  - model_name: kimi-k3
-    litellm_params:
-      model: openrouter/moonshotai/kimi-k3
-      api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
-    model_info:
-      input_cost_per_token: 0.000003
-      output_cost_per_token: 0.000015
 
   # REASONING-tier pool partners (2026-08-16). Genuinely different providers
   # than Kimi and each other, matched to K3's price band — the exact price
   # match ($3/$15) turned out to only exist as stale Claude Sonnet 4.x
   # snapshots, worse than just using current Sonnet 5, so these sit close
   # rather than identical.
-  - model_name: gemini-3.1-pro-preview
-    litellm_params:
-      model: openrouter/google/gemini-3.1-pro-preview
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info:
-      input_cost_per_token: 0.000002
-      output_cost_per_token: 0.000012
 
   # OpenAI's terminal/coding-agent specialized line — 77.3% Terminal-Bench
   # 2.0, which is closer to OpenHands' actual shell/tool-use workload than a
   # generalist reasoning benchmark would be. Cheaper than Kimi K3 on both
   # input and output, not pricier.
-  - model_name: gpt-5.3-codex
-    litellm_params:
-      model: openrouter/openai/gpt-5.3-codex
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info:
-      input_cost_per_token: 0.00000175
-      output_cost_per_token: 0.000014
 
   # ── Standing REASONING-tier-only alias (2026-08-17) ────────────────────────
   # For OpenHands' planning phase: the agent's own switch_llm tool moves the
@@ -301,28 +222,6 @@ model_list:
   # complexity_router/classifier involved, since during planning we always
   # want top-tier quality rather than a judgment call about whether this turn
   # "deserves" it.
-  - model_name: reasoning-tier
-    litellm_params:
-      model: openrouter/moonshotai/kimi-k3
-      api_key: os.environ/OPENROUTER_API_KEY
-      extra_body: {"provider": {"ignore": ["Venice"]}}  # see glm-5.2 above
-    model_info:
-      input_cost_per_token: 0.000003
-      output_cost_per_token: 0.000015
-  - model_name: reasoning-tier
-    litellm_params:
-      model: openrouter/google/gemini-3.1-pro-preview
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info:
-      input_cost_per_token: 0.000002
-      output_cost_per_token: 0.000012
-  - model_name: reasoning-tier
-    litellm_params:
-      model: openrouter/openai/gpt-5.3-codex
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info:
-      input_cost_per_token: 0.00000175
-      output_cost_per_token: 0.000014
 
   # ── The intelligent router itself — call THIS model_name from clients ─────
   # ── Pinned per-role aliases for langgraph-agent (2026-08-20) ──────────────
@@ -748,132 +647,6 @@ model_list:
     model_info:
       input_cost_per_token: 0.00000005
       output_cost_per_token: 0.00000016
-  - model_name: smart-router
-    litellm_params:
-      model: auto_router/complexity_router
-      complexity_router_default_model: glm-5.2   # last-resort safety-net if tier resolution fails entirely
-      complexity_router_config:
-        # All 4 tiers are real destinations again — see the top-of-file note
-        # for why. Every message gets classified fresh (session_affinity is
-        # off below), so a request that's actually simple reliably lands
-        # cheap and a request that's actually hard reliably lands on a real
-        # coding/reasoning model, on whichever turn it first looks that way.
-        #
-        # Every tier is a real adaptive pool as of 2026-08-16 — see the
-        # top-of-file note for how each addition was picked.
-        tiers:
-          SIMPLE:
-            - nova-micro
-            - gpt-4o-mini
-            - nova-lite
-          MEDIUM:
-            - glm-5.2
-            - qwen3.7-max
-            - claude-haiku-4.5
-          COMPLEX:
-            - deepseek-v4-pro
-            - grok-4.3
-            - qwen3-coder-plus
-          REASONING:
-            - kimi-k3
-            - gemini-3.1-pro-preview
-            - gpt-5.3-codex
-
-        # LLM classifier (smarter than token-count/keyword heuristics), routed
-        # through this same router's own cheap deployment — cheap, low
-        # latency. This call only ever produces a JSON tier tag, never
-        # user-facing content. Was deepseek-v4-flash; switched to nova-micro
-        # 2026-08-16 in the same change that removed deepseek-v4-flash from
-        # model_list entirely (see nova-micro's own entry above for why).
-        # 2026-08-17: nova-micro measured a ~20% failure rate here — it
-        # frequently answers with free text ("MEDIUM\n\nThis task involves...")
-        # instead of the strict JSON this classifier parses, so complexity_router
-        # falls back to the cruder heuristic scorer that often. gpt-4o-mini is
-        # well-established for reliable JSON-mode compliance and is already a
-        # SIMPLE-tier destination, so this doesn't add a new model to trust.
-        classifier_type: llm
-        classifier_llm_config:
-          model: gpt-4o-mini
-          timeout_ms: 2000
-        # If the classifier call itself fails/times out, fall back to the local
-        # heuristic scorer rather than failing the request outright.
-        classifier_fallback: heuristic
-
-        # Deterministic overrides, checked BEFORE either classifier — guarantee
-        # certain obvious cases regardless of what the classifier would decide.
-        keyword_tier_rules:
-          - keywords: ["hi", "hey", "hello", "thanks", "thank you", "sounds good", "got it", "ok cool"]
-            tier: SIMPLE
-          # Explicit deterministic floor for the exact "easy stuff" the cheap
-          # tier exists for — same reasoning as the COMPLEX rule below, just
-          # pointed the other way: don't leave these to the classifier's
-          # subjective judgment call every time.
-          - keywords: ["write documentation", "write docs", "update the docs", "update documentation",
-                       "write a commit message", "commit message", "write a readme",
-                       "add a docstring", "write a docstring"]
-            tier: SIMPLE
-          # Added after live verification: the LLM classifier alone judged a
-          # standard LRU-cache implementation request as only MEDIUM (routing
-          # it to GLM-5.2), which defeats the point of having dedicated
-          # COMPLEX coding models at all — coding-flavored asks need a
-          # deterministic floor of COMPLEX so they actually reach the
-          # deepseek-v4-pro/grok-4.3 pool instead of depending on the
-          # classifier's subjective difficulty judgment call.
-          - keywords: ["write a function", "write code", "write a script", "write a class",
-                       "implement a", "refactor this", "debug this", "fix this bug",
-                       "unit test", "regex", "sql query", "stack trace", "algorithm",
-                       "api endpoint", "python function", "javascript function",
-                       "typescript", "pull request", "code review"]
-            tier: COMPLEX
-          - keywords: ["super hard", "extremely difficult", "think as hard as you can", "hardest part", "spare no effort"]
-            tier: REASONING
-
-        # adaptive=True + adaptive_eligible="classified_tier": scoped to
-        # WITHIN a tier, not across tiers — every tier now has 2-3 models to
-        # sample between (2026-08-16). Without this, "all" (the default)
-        # would let the bandit bleed a low-classified request into a pricier
-        # tier with just a distance penalty, which isn't what we want here.
-        adaptive: true
-        adaptive_eligible: classified_tier
-
-        # OFF, deliberately (2026-08-15) — this is the actual fix for "I don't
-        # trust it to assign the hard stuff properly". With affinity on, only
-        # the FIRST turn of a session was ever classified; every later turn
-        # silently inherited that tier regardless of what it actually asked
-        # for. Off means every message — keyword rules, then the LLM
-        # classifier — is judged fresh, every time. A model can now change
-        # mid-conversation as the actual work changes, which is the point:
-        # cheap stays cheap, and the instant something looks hard it routes
-        # up, on whichever turn that happens to be. The classifier itself is
-        # cheap (nova-micro) and fast (~2s timeout), so the added
-        # per-turn cost of not amortizing one classification over a whole
-        # session is small change against the alternative of a wrongly-cheap
-        # model quietly handling real work for an entire conversation.
-        session_affinity: false
-
-        # Show which model actually answered in the response `model` field,
-        # instead of always echoing back "smart-router" — useful for verifying
-        # routing decisions and for cost/usage attribution per underlying model.
-        return_raw_model_name: true
-
-    # 2026-08-16: complexity_router has no concept of message modality — it
-    # classifies by text content alone, so an image could land on a
-    # text-only model (originally true of most of the pool; still true of
-    # nova-micro, deepseek-v4-pro, glm-5.2, and qwen3.7-max/qwen3-coder-plus —
-    # checked OpenRouter's own model catalog). Without this flag OpenHands
-    # refuses client-side ("does not support image understanding") before
-    # even trying. supports_vision: true here is only honest paired with
-    # custom_callbacks.py's async_pre_call_hook, which detects an image_url
-    # content block and forces model=kimi-k3 before the classifier ever
-    # sees the request — don't remove one without the other. Now that most
-    # of the pool (gpt-4o-mini, nova-lite, claude-haiku-4.5,
-    # grok-4.3, gemini-3.1-pro-preview, gpt-5.3-codex) actually takes images
-    # too, that hard-coded kimi-k3 target is more conservative than it needs
-    # to be — a cheap SIMPLE-tier image could route as cheaply as a text one
-    # instead of always paying REASONING-tier price. Not changing that now;
-    # flagging it as a real future optimization, not acting on it unprompted.
-    model_info:
-      supports_vision: true
 
 router_settings:
   # A single 4xx used to end that project's consolidation for the night --

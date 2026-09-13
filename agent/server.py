@@ -3791,10 +3791,12 @@ async def delete_task(task_id: str, repo: str, user: User = Depends(require_full
 
 @app.get("/api/model-config")
 async def get_model_config(user: User = Depends(require_full_auth)):
-    """Current pins for this agent's own seven roles only -- see
-    model_config.MANAGED_ROLES. Everything else in llm-router/config.yaml
-    (the shared tier system, reasoning-tier, smart-router) belongs to
-    the review service and is never exposed here.
+    """Current pins for this agent's own roles -- see model_config.MANAGED_ROLES
+    (fifteen of them, including agent-reviewer, which the commit-reviewer
+    service resolves by alias). The remaining entries in llm-router/config.yaml
+    are not this agent's to set and are never exposed here: the mail agent's
+    and the trading bot's aliases, plus the three fallback targets that have no
+    caller of their own.
     """
     auth.require_admin(user)
     # Live catalog prices, not the hand-written model_info blocks (which drift).

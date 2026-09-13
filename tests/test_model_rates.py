@@ -12,8 +12,11 @@ import pytest
 
 import agent.tools.model_rates as model_rates
 
-GLM_CONFIG_INPUT = 0.00000119   # config.yaml model_info for "openrouter/z-ai/glm-5.2"
-GLM_CONFIG_OUTPUT = 0.00000374
+CONFIG_INPUT = 0.00000132   # config.yaml model_info for "openrouter/deepseek/deepseek-v4-pro-0813"
+CONFIG_OUTPUT = 0.00000396
+# A plausible cached-input rate for the same model; the catalog fixtures below
+# supply it, so it does not have to match anything real.
+CONFIG_CACHE_READ = 0.00000026
 
 
 @pytest.fixture(autouse=True)
@@ -39,22 +42,22 @@ def test_estimate_cost_returns_zero_for_none_model_name():
 
 
 def test_estimate_cost_computes_from_real_config_rates():
-    # glm-5.2's real config rates: input_cost_per_token=0.00000119,
-    # output_cost_per_token=0.00000374 (the router config's model_info for
-    # "openrouter/z-ai/glm-5.2").
-    cost = model_rates.estimate_cost("z-ai/glm-5.2", 1000, 500)
-    expected = 1000 * 0.00000119 + 500 * 0.00000374
+    # deepseek-v4-pro's real config rates: input_cost_per_token=0.00000132,
+    # output_cost_per_token=0.00000396 (the router config's model_info for
+    # "openrouter/deepseek/deepseek-v4-pro-0813").
+    cost = model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 1000, 500)
+    expected = 1000 * CONFIG_INPUT + 500 * CONFIG_OUTPUT
     assert cost == expected
 
 
 def test_estimate_cost_scales_linearly_with_tokens():
-    cost_1x = model_rates.estimate_cost("z-ai/glm-5.2", 1000, 1000)
-    cost_2x = model_rates.estimate_cost("z-ai/glm-5.2", 2000, 2000)
+    cost_1x = model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 1000, 1000)
+    cost_2x = model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 2000, 2000)
     assert cost_2x == cost_1x * 2
 
 
 def test_estimate_cost_zero_tokens_is_zero_cost():
-    assert model_rates.estimate_cost("z-ai/glm-5.2", 0, 0) == 0.0
+    assert model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 0, 0) == 0.0
 
 
 def test_rates_cache_populates_once_and_is_reused(monkeypatch):
@@ -67,9 +70,9 @@ def test_rates_cache_populates_once_and_is_reused(monkeypatch):
 
     monkeypatch.setattr(model_rates, "_load_rates", counting_load)
 
-    model_rates.estimate_cost("z-ai/glm-5.2", 100, 100)
-    model_rates.estimate_cost("z-ai/glm-5.2", 200, 200)
-    model_rates.estimate_cost("amazon/nova-lite-v1", 100, 100)
+    model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 100, 100)
+    model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 200, 200)
+    model_rates.estimate_cost("anthropic/claude-haiku-4.5", 100, 100)
 
     assert len(load_calls) == 1, "config.yaml should only be parsed once, then cached for the process lifetime"
 
@@ -87,37 +90,37 @@ def test_rates_cache_populates_once_and_is_reused(monkeypatch):
 
 def test_cache_read_tokens_billed_at_the_discounted_rate(monkeypatch):
     monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
-        "z-ai/glm-5.2": {"input": GLM_CONFIG_INPUT, "output": GLM_CONFIG_OUTPUT, "cache_read": 0.00000026},
+        "deepseek/deepseek-v4-pro-0813": {"input": CONFIG_INPUT, "output": CONFIG_OUTPUT, "cache_read": CONFIG_CACHE_READ},
     })
 
-    cost = model_rates.estimate_cost("z-ai/glm-5.2", 118294, 376, cache_read_tokens=117888)
+    cost = model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 118294, 376, cache_read_tokens=117888)
     fresh_input = 118294 - 117888
-    expected = fresh_input * 0.00000119 + 117888 * 0.00000026 + 376 * 0.00000374
+    expected = fresh_input * CONFIG_INPUT + 117888 * CONFIG_CACHE_READ + 376 * CONFIG_OUTPUT
     assert cost == expected
     # Sanity check against the old (pre-fix) all-input-at-full-price
     # behavior -- the cache-aware cost must be substantially lower for this
     # shape of call, not a rounding-level difference.
-    naive = 118294 * 0.00000119 + 376 * 0.00000374
+    naive = 118294 * CONFIG_INPUT + 376 * CONFIG_OUTPUT
     assert cost < naive * 0.3
 
 
 def test_cache_read_tokens_clamped_to_input_tokens(monkeypatch):
     monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
-        "z-ai/glm-5.2": {"input": GLM_CONFIG_INPUT, "output": GLM_CONFIG_OUTPUT, "cache_read": 0.00000026},
+        "deepseek/deepseek-v4-pro-0813": {"input": CONFIG_INPUT, "output": CONFIG_OUTPUT, "cache_read": CONFIG_CACHE_READ},
     })
 
     # A malformed/inconsistent usage report (cache_read > input_tokens)
     # must never go negative on the "fresh" portion.
-    cost = model_rates.estimate_cost("z-ai/glm-5.2", 100, 50, cache_read_tokens=9999)
-    expected = 100 * 0.00000026 + 50 * 0.00000374
+    cost = model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 100, 50, cache_read_tokens=9999)
+    expected = 100 * CONFIG_CACHE_READ + 50 * CONFIG_OUTPUT
     assert cost == expected
 
 
 def test_model_without_published_cache_rate_falls_back_to_full_input_price(monkeypatch):
     # no OpenRouter data for this model (the autouse fixture's empty catalog)
 
-    cost = model_rates.estimate_cost("z-ai/glm-5.2", 1000, 500, cache_read_tokens=800)
-    expected = 1000 * 0.00000119 + 500 * 0.00000374  # cache tokens charged at full input rate, no discount
+    cost = model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 1000, 500, cache_read_tokens=800)
+    expected = 1000 * CONFIG_INPUT + 500 * CONFIG_OUTPUT  # cache tokens charged at full input rate, no discount
     assert cost == expected
 
 
@@ -150,18 +153,18 @@ def test_real_openrouter_fetch_returns_a_well_formed_rate_table():
 
 def test_live_catalog_rate_takes_precedence_over_config(monkeypatch):
     monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
-        "z-ai/glm-5.2": {"input": 0.0000005, "output": 0.000001, "cache_read": 0.0000001},
+        "deepseek/deepseek-v4-pro-0813": {"input": 0.0000005, "output": 0.000001, "cache_read": 0.0000001},
     })
-    cost = model_rates.estimate_cost("z-ai/glm-5.2", 1000, 500, cache_read_tokens=400)
+    cost = model_rates.estimate_cost("deepseek/deepseek-v4-pro-0813", 1000, 500, cache_read_tokens=400)
     assert cost == pytest.approx(600 * 0.0000005 + 400 * 0.0000001 + 500 * 0.000001)
 
 
 def test_alias_gets_the_same_live_rates_as_its_raw_id(monkeypatch):
     monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {
-        "z-ai/glm-5.2": {"input": 0.0000005, "output": 0.000001, "cache_read": 0.0000001},
+        "deepseek/deepseek-v4-pro-0813": {"input": 0.0000005, "output": 0.000001, "cache_read": 0.0000001},
     })
     rates = model_rates._load_rates()
-    aliases = [k for k, v in rates.items() if v is rates["z-ai/glm-5.2"] and k != "z-ai/glm-5.2"]
+    aliases = [k for k, v in rates.items() if v is rates["deepseek/deepseek-v4-pro-0813"] and k != "deepseek/deepseek-v4-pro-0813"]
     assert aliases, "the config alias pinned to glm-5.2 should share its rate entry"
 
 
@@ -178,8 +181,8 @@ def test_undated_pin_missing_from_catalog_is_resolved_through_endpoints(monkeypa
     monkeypatch.setattr(model_rates, "_fetch_catalog_rates", lambda: {"some/other-model": {"input": 1e-6, "output": 2e-6, "cache_read": 1e-7}})
     monkeypatch.setattr(model_rates, "_fetch_endpoint_rates", endpoints)
     rates = model_rates._load_rates()
-    assert "z-ai/glm-5.2" in asked
-    assert rates["z-ai/glm-5.2"]["cache_read"] == 0.00000025
+    assert "deepseek/deepseek-v4-pro-0813" in asked
+    assert rates["deepseek/deepseek-v4-pro-0813"]["cache_read"] == 0.00000025
 
 
 def test_unreachable_catalog_skips_endpoint_lookups_and_uses_config(monkeypatch):
@@ -188,7 +191,7 @@ def test_unreachable_catalog_skips_endpoint_lookups_and_uses_config(monkeypatch)
     monkeypatch.setattr(model_rates, "_fetch_endpoint_rates", lambda model_id: asked.append(model_id))
     rates = model_rates._load_rates()
     assert asked == [], "no catalog at all means OpenRouter is down; do not fan out one request per model"
-    assert rates["z-ai/glm-5.2"] == {"input": GLM_CONFIG_INPUT, "output": GLM_CONFIG_OUTPUT, "cache_read": GLM_CONFIG_INPUT}
+    assert rates["deepseek/deepseek-v4-pro-0813"] == {"input": CONFIG_INPUT, "output": CONFIG_OUTPUT, "cache_read": CONFIG_INPUT}
 
 
 @pytest.mark.real_fetchers  # stubs httpx itself, so the real fetcher must stay in place

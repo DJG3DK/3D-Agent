@@ -1,8 +1,14 @@
 """Reads and edits this agent's own model pins in llm-router/config.yaml --
-strictly scoped to the agent-* entries (see MANAGED_ROLES). Every
-other entry in that file (the SIMPLE/MEDIUM/COMPLEX/REASONING tier system,
-reasoning-tier, smart-router, and every individual pool model) belongs to
-the review service and is never read or written by anything here.
+strictly scoped to the agent-* entries (see MANAGED_ROLES). The other
+entries in that file are not this agent's to set and are never read or
+written here: mail-chat/mail-triage (the mail agent), trade-gate (the
+trading bot), and deepseek-v4-pro/claude-haiku-4.5/gpt-4o-mini, which have
+no caller of their own and exist as router_settings.fallbacks targets.
+
+(The SIMPLE/MEDIUM/COMPLEX/REASONING tier system that used to live there was
+removed on 2026-09-13 along with smart-router and reasoning-tier -- built for
+OpenHands, which was archived three weeks earlier, and called once in the
+router ledger's entire history.)
 
 config.yaml is shared, heavily-commented living documentation for another
 service, not something safe to round-trip through a generic YAML dump --
