@@ -51,6 +51,7 @@ from agent.config import Config, PROJECTS
 from agent.deep_agent import EPISODES_ROUTE, episodes_namespace
 from agent.tools.checks import run_all_checks
 from agent.tools.git import current_sha, ensure_task_branch, git_commit, git_diff
+from agent import check_timing
 from agent import runtime_settings as _rs
 from agent.tools.review_gate import merge_and_deploy, trigger_check, wait_for_review
 from agent.tools.git import sha_in_repo
@@ -204,13 +205,13 @@ async def verify_and_ship_node(state: AgentState, app_config: Config, pg_store: 
     # app_config/pg_store (not config/store) -- see outer_graph.py's own
     # comment on why those literal names collide with LangGraph's node-kwarg
     # auto-injection.
-    result = await _verify_and_ship(state, app_config)
+    result = await _verify_and_ship(state, app_config, pg_store)
     if _is_terminal(result):
         await _write_episode(pg_store, state, result)
     return result
 
 
-async def _verify_and_ship(state: AgentState, config: Config) -> dict:
+async def _verify_and_ship(state: AgentState, config: Config, store: BaseStore | None = None) -> dict:
     if state.get("escalated"):
         # work_node already escalated this pass -- the graph's own
         # work->verify_and_ship edge is unconditional, so without this guard
@@ -239,7 +240,7 @@ async def _verify_and_ship(state: AgentState, config: Config) -> dict:
     repo_root = PROJECTS[repo]["sandbox"]
 
     try:
-        return await _verify_and_ship_inner(state, repo, repo_root)
+        return await _verify_and_ship_inner(state, repo, repo_root, store)
     except Exception as e:  # noqa: BLE001 -- converts any transient failure
         # (a review-service network blip, a subprocess spawn hiccup in
         # run_all_checks) into a normal, resumable escalation instead of an
@@ -260,7 +261,8 @@ async def _verify_and_ship(state: AgentState, config: Config) -> dict:
         return esc
 
 
-async def _verify_and_ship_inner(state: AgentState, repo: str, repo_root: str) -> dict:
+async def _verify_and_ship_inner(state: AgentState, repo: str, repo_root: str,
+                                 store: BaseStore | None = None) -> dict:
     # ── Fast path: the operator just approved the outstanding commit ────────
     # On the post-approval re-entry, nothing about the code has changed since
     # this gate last ran: checks already passed for this exact sha, the review
@@ -279,6 +281,14 @@ async def _verify_and_ship_inner(state: AgentState, repo: str, repo_root: str) -
     # a trading-bot project and emits nothing while it grinds, which reads in the dashboard as
     # a task frozen mid-step -- reported as a stall twice in one night. One
     # stream event turns dead air into an explained wait.
+    # `phase` and `expected_seconds` are for the dashboard's idle banner, which
+    # otherwise answers this silence with "the agent is either on a long model
+    # call or stuck" -- directly beneath this very line saying the quiet is
+    # normal. Two contradicting sentences on one screen, and the operator
+    # reasonably believed the alarming one (2026-09-13). The estimate is this
+    # PROJECT's own median: 3d-bot's suite is 111 tests and runs ~310s, a small
+    # repo's takes twenty, and no single threshold is right for both.
+    expected = await check_timing.expected_seconds(store, repo)
     try:
         from langgraph.config import get_stream_writer
         get_stream_writer()({"type": "log_entry", "entry": {
@@ -286,11 +296,18 @@ async def _verify_and_ship_inner(state: AgentState, repo: str, repo_root: str) -
             "summary": "running the full check suite (typecheck/lint/tests) — several minutes of quiet is normal here",
             "detail": "", "cost_usd": 0.0,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "phase": "checks",
+            "expected_seconds": expected,
         }})
     except Exception:  # noqa: BLE001 -- a missing stream context must never block the checks themselves
         pass
 
+    _checks_started = time.monotonic()
     checks = await run_all_checks(repo_root, repo)
+    # Measured whether they passed or failed: a failing suite still took that
+    # long, and the banner's question is "is this silence normal", not "did it
+    # work".
+    await check_timing.record(store, repo, time.monotonic() - _checks_started)
     if not checks["all_ok"]:
         feedback = (
             "The deterministic check suite FAILED -- read this carefully, it's the specific reason, "
@@ -569,6 +586,22 @@ async def _review_and_deploy(state: AgentState, repo: str, sha: str) -> dict:
             await trigger_check(repo)
         except Exception as e2:  # noqa: BLE001
             return {"committed_sha": sha, **_escalate(f"could not trigger review for {sha[:12]}: {e2}")}
+    # Same reasoning as the check announcement, and this one was missing
+    # entirely: the review service can be quiet for the whole of
+    # review_wait_timeout_s (15 minutes by default) with nothing on screen.
+    try:
+        from langgraph.config import get_stream_writer
+        get_stream_writer()({"type": "log_entry", "entry": {
+            "node": "verify_and_ship", "step_id": None,
+            "summary": f"waiting for the review service on {sha[:12]} — it runs its own checks, so this is quiet for minutes",
+            "detail": "", "cost_usd": 0.0,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "phase": "review",
+            "expected_seconds": None,
+        }})
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         review = await wait_for_review(repo, sha, timeout=_rs.as_int("review_wait_timeout_s"))
     except TimeoutError as e:

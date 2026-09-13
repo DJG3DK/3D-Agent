@@ -14,6 +14,7 @@ import { StatusBadge } from "./StatusBadge";
 import { StopButton } from "./StopButton";
 import { DiffPanel } from "./DiffPanel";
 import "./TaskView.css";
+import { idleMessage } from "./activityPhase";
 
 interface Props {
   task: TaskMeta;
@@ -63,6 +64,10 @@ export function TaskView({ task, stream, setGeneration }: Props) {
     if (awaitingMerge) setDiffOpen(true);
   }, [awaitingMerge]);
   const budgetPct = Math.min(100, (stream.costSoFar / Math.max(task.budget_usd, 0.01)) * 100);
+
+  // Phase-aware: silence during a check run or a review wait is expected and
+  // says so; silence during ordinary model work is still the old warning.
+  const idleBanner = idleMessage(stream.log, stream.idleSeconds);
 
   return (
     <div className="task-view">
@@ -140,16 +145,17 @@ export function TaskView({ task, stream, setGeneration }: Props) {
               minutes. A task wedged on a model call that never returns still
               receives the server's pings, so the socket is healthy and the
               page keeps animating — the one thing this dashboard exists to
-              make visible is exactly what it hid. Past two minutes of silence,
-              say how long it has been. */}
-          {status === "running" && !stream.orphaned && stream.idleSeconds >= 120 && (
-            <div className="chat-stalled" role="status">
-              No activity for {stream.idleSeconds < 3600
-                ? `${Math.floor(stream.idleSeconds / 60)} min`
-                : `${(stream.idleSeconds / 3600).toFixed(1)} h`}
-              . The connection is live, so the agent is either on a long model
-              call or stuck — the Stop button ends it, and a resume keeps the work so far.
-            </div>
+              make visible is exactly what it hid.
+
+              What it says now depends on what the task is actually doing. A
+              check run announces itself and then emits nothing for minutes,
+              and this banner used to answer that silence with "either on a
+              long model call or stuck" — directly under the line saying
+              several minutes of quiet was normal. Two contradicting sentences,
+              and the operator reasonably believed the alarming one
+              (2026-09-13). See activityPhase.ts. */}
+          {status === "running" && !stream.orphaned && idleBanner && (
+            <div className="chat-stalled" role="status">{idleBanner}</div>
           )}
           {stream.reviewGateResult && <ReviewGatePanel result={stream.reviewGateResult} minimized={status === "running"} />}
           {stream.pendingApproval && (

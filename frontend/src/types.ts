@@ -88,6 +88,14 @@ export interface LogEntry {
   model?: string | null;
   /** Which agent ROLE made the call (coder, test-writer, ...) — two roles can pin the same model, so the model badge alone is ambiguous. */
   role?: string | null;
+  /** A phase that is silent by nature: "checks" while the suite runs,
+   *  "review" while the review service does. The idle banner needs it to tell
+   *  expected quiet from a wedged task — see components/activityPhase.ts. */
+  phase?: "checks" | "review" | "deploy" | null;
+  /** This PROJECT's own median for that phase, when there is history to go on
+   *  (agent/check_timing.py). Null on the first run of a new project, which
+   *  the banner has to handle rather than invent a number for. */
+  expected_seconds?: number | null;
 }
 
 export interface ReviewGateResult {
