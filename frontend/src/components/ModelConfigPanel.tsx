@@ -459,10 +459,11 @@ function ModelConfigPins() {
       <h1 className="model-config-title">Model Configuration</h1>
       <p className="model-config-sub">
         Every role this agent pins, including <code>agent-reviewer</code> — the independent
-        review service resolves its model through this page like everything else. The router is
-        shared with other things on this box: the mail agent, the trading bot's gate, and an
-        adaptive tier system used by a separate coding agent. Those aliases are not this agent's
-        to set and are not shown here.
+        review service resolves its model through this page like everything else. The router
+        also serves two non-agent callers that are not this agent's to set: the mail agent
+        (<code>mail-chat</code>, <code>mail-triage</code>) and the trading bot's gate
+        (<code>trade-gate</code>). Anything else still in the router's config is leftover and
+        unused.
       </p>
 
       {error && <div className="model-config-error">{error}</div>}

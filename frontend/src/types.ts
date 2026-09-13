@@ -310,12 +310,16 @@ export interface TraceSummary {
 // its model through this API (services/commit-reviewer/reviewer.js reads the
 // alias, not a model name).
 //
-// The llm-router is shared with the other services on the box, and those
-// aliases are deliberately not exposed here because this agent does not own
-// them: mail-chat/mail-triage (the mail agent), trade-gate (the trading bot),
-// and the adaptive SIMPLE/MEDIUM/COMPLEX/REASONING tier system with
-// smart-router and reasoning-tier, whose consumer is a separate coding agent
-// (see the header of services/llm-router/config.yaml).
+// The llm-router is shared with two other services on the box, whose aliases
+// are deliberately not exposed here because this agent does not own them:
+// mail-chat/mail-triage (the mail agent) and trade-gate (the trading bot).
+//
+// The router's config also still carries an adaptive SIMPLE/MEDIUM/COMPLEX/
+// REASONING tier system with smart-router and reasoning-tier. That is dead
+// weight: it was built for OpenHands, which was archived on 2026-08-24, and
+// the ledger shows one smart-router call ever and zero for reasoning-tier
+// against 2261 agent-* calls in the last fortnight. Do not describe it as
+// belonging to anything; nothing calls it.
 export interface ModelPin {
   label: string;
   model: string;

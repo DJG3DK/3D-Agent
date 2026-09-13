@@ -1,5 +1,19 @@
 # LiteLLM router configuration -- EXAMPLE.
 #
+# STALE WARNING (added 2026-09-13): the OpenHands history further down
+# describes a consumer that no longer exists -- it was archived 2026-08-24. The
+# SIMPLE/MEDIUM/COMPLEX/REASONING tier system, smart-router and reasoning-tier
+# are kept because the tuning notes are useful and something may reuse them,
+# but nothing calls them: one smart-router request in the whole ledger, none
+# for reasoning-tier.
+#
+# The real consumers of this router are a LangGraph agent through its agent-*
+# roles (including agent-reviewer, which the commit-reviewer service resolves),
+# the mail agent (mail-chat, mail-triage), and the trading bot (trade-gate).
+#
+# Reading the history below as a description of current traffic is what put a
+# wrong statement on the dashboard's Model Configuration page.
+#
 # install.sh copies this to config.yaml on a fresh install, and config.yaml is
 # gitignored from then on. The live file is yours: the Models page writes to
 # it every time you repin a role, and an upgrade must never overwrite what you
