@@ -881,23 +881,38 @@ async def _github_open_auto_count(repo: str) -> int:
 
 
 async def _github_create_task(repo: str, goal: str, budget: float, route: str) -> str:
-    """A task GitHub asked for, not a person. Two invariants, deliberately not
-    reading any per-user toggle:
+    """A task GitHub asked for, not a person.
 
-      * gated actions still prompt (auto_approve_commands=False), even when
-        the admin has auto mode on for their own typed tasks;
-      * merge review is always required, whatever the user preference says.
+    ONE invariant, and it is the one that matters: merge review is always
+    required, whatever any user preference says. Nothing an inbox task does
+    reaches the default branch without the operator approving the merge. Auto
+    inbox + merge-review-off is what would turn this into an unattended merge
+    bot; the README promises Auto "keeps the operator's final merge approval",
+    and this line is where that promise is kept.
 
-    Nobody typed this goal and nobody is necessarily watching when it starts.
-    Auto inbox + auto-approve + merge-review-off is the combination that turns
-    this into an unattended merge bot, and a preference toggle set months ago
-    for hand-driven work must not be what decides it. The README promises Auto
-    "keeps the operator's final merge approval"; this function is where that
-    promise is kept, and tests/test_inbox_task_invariants.py pins it.
+    Auto-approve of gated file/shell actions, by contrast, now follows the
+    operator's own per-project switch (auth.repo_auto_approves). It used to be
+    hard-coded False here on the reasoning that nobody typed these goals --
+    which sounded right and worked badly. Observed 2026-09-13 on Dependabot
+    alert #2, a CRITICAL Next.js RCE the inbox started by itself: the task
+    parked at awaiting_approval on
+    `"eslint-config-next": "16.2.12" -> "16.3.5"`, because editing
+    package.json trips the sensitive-path gate. A dependency bump touches the
+    manifest, the lockfile and sometimes a workflow, so it asks once per file
+    -- and the operator had Auto on for this very project. A security fix
+    that cannot change a version string unattended is not safer, it is just
+    slower to land, and the gate that actually guards the repo (merge review)
+    is untouched by this.
+
+    Scoped to admin accounts and to projects that account listed, so the
+    switch still cannot be widened by a non-admin preference, and it fails
+    closed if the accounts cannot be read.
     """
+    auto = await auth.repo_auto_approves(app.state.auth_pool, repo)
     out = await _start_task(
         goal, repo, budget, route,
-        auto_approve_commands=False,
+        auto_approve_commands=auto,
+        # Never from a preference. See this function's docstring.
         require_merge_review=True,
         origin="github",
     )

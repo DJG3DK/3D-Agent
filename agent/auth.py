@@ -31,6 +31,7 @@ signature can't cover all of them without real risk of silently missing one.
 
 import base64
 import hashlib
+import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -44,6 +45,8 @@ from fastapi import Cookie, HTTPException, Request
 from psycopg_pool import AsyncConnectionPool
 
 from agent.config import Config
+
+logger = logging.getLogger("3d-agent")
 
 SESSION_COOKIE_NAME = "agent_session"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
@@ -340,6 +343,36 @@ async def seed_admin_if_none(pool: AsyncConnectionPool, email: str) -> str | Non
     password = secrets.token_urlsafe(18)
     await create_user(pool, email, password, "admin", None, must_change_password=True)
     return password
+
+
+async def repo_auto_approves(pool: AsyncConnectionPool, repo: str) -> bool:
+    """Does an operator have Auto on for this project?
+
+    For work nobody typed -- a GitHub inbox task -- there is no request and no
+    session, so there is no `user` to ask. This resolves the question from the
+    accounts instead: True when an ADMIN has auto mode on AND has scoped it to
+    this project, by the same two-part rule as User.auto_approves.
+
+    Admins only, deliberately. Auto on an inbox task decides what an unattended
+    run may do without a human present, and a per-user toggle on a non-admin
+    account must not be able to widen that. The merge gate is unaffected
+    either way -- server._github_create_task keeps it on unconditionally.
+
+    Fails CLOSED: any error reading the accounts means prompting, because the
+    failure mode of guessing True is an unattended task editing files nobody
+    agreed to.
+    """
+    try:
+        rows = await list_users(pool)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read accounts for %s auto-approve; prompting", repo)
+        return False
+    for row in rows or []:
+        if (row.get("role") == "admin"
+                and row.get("auto_approve_commands")
+                and repo in (row.get("auto_approve_repos") or [])):
+            return True
+    return False
 
 
 async def update_user_access(pool: AsyncConnectionPool, user_id: int, allowed_repos: list[str] | None) -> None:

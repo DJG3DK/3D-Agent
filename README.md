@@ -378,9 +378,13 @@ only; the inbox is a tab of its own). Five sources, each with its own policy per
 
 Policy is **Off** (listed, nothing else), **Propose** (put it in the inbox and send an approve link)
 or **Auto** (start the task at once, up to the project's cap on open auto tasks). Auto removes only
-the click that starts a task: it still runs the review gate, it still prompts for gated actions
-whatever your own auto mode says, and it always keeps the operator's final merge approval — nobody
-typed these goals, so those switches do not apply to them. Each project also sets the budget per
+the click that starts a task: it still runs the review gate, and it always keeps the operator's
+final merge approval — nothing an inbox task does reaches the default branch without you, whatever
+any account's preferences say. Gated file and shell actions follow your own per-project Auto
+switch, the same as a task you typed. That used to be forced on: a Dependabot task could not change
+a version string in `package.json` without a click per file it touched, which made a critical
+security fix slower to land without making it safer — the gate that actually guards the repo is the
+merge one. Each project also sets the budget per
 inbox task and which coder seat it goes to.
 
 **Auto needs a gate with something in it.** A project whose review runs no mechanical checks — no
@@ -518,7 +522,9 @@ Two things change once a second account exists.
 two halves — the operator's intent, and the projects they intended it for. Both must agree before
 a task skips a prompt, so auto mode on a scratch project never means auto mode on production, and
 a new account cannot inherit it everywhere by copying the first admin's defaults. Turning it on
-requires naming projects; there is deliberately no "all projects" option. A deployment upgrading
+requires naming projects; there is deliberately no "all projects" option. A GitHub inbox task has
+no session to read, so it resolves the same two-part rule from the admin accounts instead, and
+fails closed if it cannot read them. A deployment upgrading
 from the single global switch has its existing accounts scoped to their current projects once, at
 startup, so nothing changes behaviour silently.
 
