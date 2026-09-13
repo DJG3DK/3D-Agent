@@ -85,7 +85,7 @@ M3: `files.py` (direct local filesystem I/O) and the Node reviewer.
 Each is independently shippable and independently useful. Ordering is by
 dependency, not by appetite.
 
-### M0 — Portability groundwork *(no user-visible change)*
+### M0 — Portability groundwork *(no user-visible change)* — **done, d2c2747**
 
 * An executor interface with exactly one implementation: today's local
   behaviour. Nothing changes; the seam simply exists.
@@ -97,7 +97,7 @@ dependency, not by appetite.
 **Done when:** the full suite passes with no behaviour change, and the mount
 paths are computed in one function.
 
-### M1 — The container bundle *(this is "the Windows package")*
+### M1 — The container bundle *(this is "the Windows package")* — **core done**
 
 A `docker compose` stack — agent, Postgres, router, both reviewers — that runs
 identically wherever Docker Desktop runs: Windows, macOS, Linux.
@@ -118,6 +118,20 @@ on the host daemon, so their bind mounts are resolved by the *host*, not by the
 agent container. The fixed `/projects` root is what keeps those two views
 identical. If this is wrong, we find out here — which is why it is M1 and not
 M4.
+
+**Settled, 2026-09-13.** Built and run on Linux: all four health checks green,
+and a sibling container spawned by the agent container read a real repo's file
+contents *and* its git history through the map. Two things the build found that
+a review would not have: `litellm` needs its `[proxy]` extra in a clean image
+(the host install had those dependencies already, so `requirements.txt` never
+needed them), and an unset `REVIEW_CONTROL_SECRET` makes `/api/health` return
+503 forever, so the entrypoint generates one the same way it generates the
+signing key.
+
+**Still open:** the review services are not in the bundle yet (M1b), and
+Windows itself is untested — that is the operator's next step, and the only
+variable left is whether Docker Desktop's own path translation agrees with the
+map.
 
 ### M2 — Remote projects, phase one: remote sandbox
 

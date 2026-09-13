@@ -1,0 +1,87 @@
+# The 3D-Agent bundle: one command, any host with Docker.
+#
+#   cp docker/.env.example .env   # set OPENROUTER_API_KEY and PROJECTS_DIR
+#   docker compose up -d
+#   open http://localhost:8100
+#
+# See docs/roadmap-packaging.md for why this exists and what it does not cover
+# yet (remote projects are M2/M3; this bundle runs against projects on the
+# machine it is running on).
+
+name: three-d-agent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent}
+      POSTGRES_DB: three_d_agent
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d three_d_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  router:
+    build:
+      context: .
+      dockerfile: docker/router/Dockerfile
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
+      LITELLM_MASTER_KEY: ${LITELLM_API_KEY:-sk-local-dev}
+    volumes:
+      # The operator's own pins, when they have a config.yaml. Without one the
+      # image's example is used, which is a working default rather than a stub.
+      - ./services/llm-router/config.yaml:/app/config.yaml:ro
+      - routerlogs:/app/logs
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: docker/agent/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LANGGRAPH_PG_DSN: postgresql://agent:${POSTGRES_PASSWORD:-agent}@postgres:5432/three_d_agent
+      LITELLM_BASE_URL: http://router:4000
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-local-dev}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      DEFAULT_BUDGET_USD: ${DEFAULT_BUDGET_USD:-2.00}
+      # Required by agent/config.py, and empty is a valid answer: without SMTP
+      # a password reset is done against the database instead (INSTALL.md 6a).
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # THE line that makes sibling containers work. The agent sees projects at
+      # /projects; the host daemon, which actually resolves every bind mount,
+      # sees them at PROJECTS_DIR. Without this the sandbox would mount empty
+      # directories and every task would read an empty repo -- silently.
+      # See agent/tools/sandbox.py's host_path().
+      AGENT_HOST_PATH_MAP: /projects=${PROJECTS_DIR:?set PROJECTS_DIR in .env}
+    volumes:
+      # Sibling containers, not nested. See docker/agent/Dockerfile.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PROJECTS_DIR:?set PROJECTS_DIR in .env}:/projects
+      - agentdata:/app/data
+      - agentlogs:/app/logs
+      # The sandbox image is built on first run from this context.
+      - ./docker/agent-sandbox:/app/docker/agent-sandbox:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${AGENT_PORT:-8100}:8100"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  agentdata:
+  agentlogs:
+  routerlogs:
