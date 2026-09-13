@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelConfigPanel } from "./ModelConfigPanel";
 import type { ModelPin } from "../types";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /* The model page commits through the same sticky bar as the settings page.
  * What matters: no bar until a pin is actually changed, changing a pin back
@@ -161,5 +163,40 @@ describe("restarting the router", () => {
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Try again/ }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(await screen.findByRole("status")).toHaveTextContent(/restarted and answering/);
+  });
+});
+
+/* The page's own description of what it controls.
+ *
+ * It shipped saying the opposite of the truth: that the adaptive tier system
+ * "belongs to the review service and isn't shown or editable here". Both
+ * halves were wrong. The review service resolves its model through
+ * agent-reviewer, which IS on this page (28 calls in the last fortnight), and
+ * the tier system's consumer is a separate coding agent -- the header of
+ * services/llm-router/config.yaml says so. Flagged by the operator 2026-09-13.
+ *
+ * Asserted on meaning rather than wording: a rewrite is free, saying the
+ * reviewer is excluded is not.
+ */
+describe("what the page says it controls", () => {
+  const src = readFileSync(join(__dirname, "ModelConfigPanel.tsx"), "utf8");
+  // From the subtitle's own tag to the end of that paragraph. Not "up to the
+  // next model-config-error": that class name also appears earlier in the
+  // file, so the slice came out empty and the assertions passed on nothing.
+  const subStart = src.indexOf("model-config-sub");
+  const blurb = src.slice(subStart, src.indexOf("</p>", subStart));
+
+  it("does not claim the tier system belongs to the review service", () => {
+    expect(blurb.replace(/\s+/g, " ")).not.toMatch(/tier system.*belongs to the review service/);
+  });
+
+  it("says the reviewer is included, because it is", () => {
+    expect(blurb).toContain("agent-reviewer");
+    expect(blurb).toMatch(/review service/);
+  });
+
+  it("names the other consumers of the shared router", () => {
+    expect(blurb).toMatch(/mail agent/i);
+    expect(blurb).toMatch(/trading bot/i);
   });
 });

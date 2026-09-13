@@ -458,9 +458,11 @@ function ModelConfigPins() {
     <div className="model-config-view">
       <h1 className="model-config-title">Model Configuration</h1>
       <p className="model-config-sub">
-        This agent's own pinned roles. Everything else on the shared router — the adaptive
-        SIMPLE/MEDIUM/COMPLEX/REASONING tier system, reasoning-tier, smart-router — belongs to
-        the review service and isn't shown or editable here.
+        Every role this agent pins, including <code>agent-reviewer</code> — the independent
+        review service resolves its model through this page like everything else. The router is
+        shared with other things on this box: the mail agent, the trading bot's gate, and an
+        adaptive tier system used by a separate coding agent. Those aliases are not this agent's
+        to set and are not shown here.
       </p>
 
       {error && <div className="model-config-error">{error}</div>}

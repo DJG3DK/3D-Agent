@@ -305,10 +305,17 @@ export interface TraceSummary {
   total_output_tokens: number;
 }
 
-// This agent's own pinned roles only -- see agent/model_config.py's
-// MANAGED_ROLES. Every other llm-router alias (the shared tier system,
-// reasoning-tier, smart-router) belongs to the review service and
-// is never exposed through this API.
+// The roles this agent pins -- see agent/model_config.py's MANAGED_ROLES.
+// That set INCLUDES agent-reviewer: the independent review service resolves
+// its model through this API (services/commit-reviewer/reviewer.js reads the
+// alias, not a model name).
+//
+// The llm-router is shared with the other services on the box, and those
+// aliases are deliberately not exposed here because this agent does not own
+// them: mail-chat/mail-triage (the mail agent), trade-gate (the trading bot),
+// and the adaptive SIMPLE/MEDIUM/COMPLEX/REASONING tier system with
+// smart-router and reasoning-tier, whose consumer is a separate coding agent
+// (see the header of services/llm-router/config.yaml).
 export interface ModelPin {
   label: string;
   model: string;
