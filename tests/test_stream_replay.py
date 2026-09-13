@@ -131,3 +131,73 @@ def test_todos_stay_per_projection(published):
     todos = [{"content": "a", "status": "pending"}]
     asyncio.run(work._consume_values("T1", "work", _Projection({"todos": todos}), writer, {}))
     assert [e["type"] for e in entries] == ["todos"]
+
+
+# ---------------------------------------------------------------------------
+# the pass's closing prose, taken from the stream
+#
+# work.py used to read it back from the inner agent's checkpoint afterwards,
+# where `messages` is not a channel -- so it was "" on every pass, and
+# verify_and_ship read "" as "cut off mid-thought" and looped (see
+# tests/test_no_diff_conclusion_loop.py). The stream is where the text
+# demonstrably is.
+# ---------------------------------------------------------------------------
+
+
+def test_the_coordinators_closing_text_is_captured(published):
+    entries, writer = published
+    final: dict = {}
+    msgs = [AIMessage(content="first thought", id="a1"),
+            AIMessage(content="the full conclusion, several sentences long", id="a2")]
+
+    asyncio.run(work._consume_values("T1", "work", _Projection({"messages": msgs}),
+                                    writer, {}, final_text=final))
+
+    assert final["text"] == "the full conclusion, several sentences long", "the LAST one wins"
+
+
+def test_a_subagents_closing_text_is_not_the_passes_conclusion(published):
+    """An investigator's sign-off is not the coordinator deciding anything, and
+    the no-diff gate reads this value as a decision."""
+    entries, writer = published
+    final: dict = {}
+    msgs = [AIMessage(content="investigation complete, here is what I found", id="s1")]
+
+    asyncio.run(work._consume_values("T1", "work:investigator", _Projection({"messages": msgs}),
+                                    writer, {}, final_text=final))
+
+    assert final == {}
+
+
+def test_an_empty_assistant_turn_does_not_overwrite_real_prose(published):
+    """A tool-call-only turn carries no text; it must not erase the conclusion
+    that came before it."""
+    entries, writer = published
+    final: dict = {}
+    msgs = [AIMessage(content="the real conclusion", id="a1"),
+            AIMessage(content="", id="a2")]
+
+    asyncio.run(work._consume_values("T1", "work", _Projection({"messages": msgs}),
+                                    writer, {}, final_text=final))
+
+    assert final["text"] == "the real conclusion"
+
+
+def test_block_list_content_is_flattened_not_stringified(published):
+    """Kimi-style content arrives as a list of blocks; str() of that is not
+    prose and would sail past the length threshold as a false conclusion."""
+    entries, writer = published
+    final: dict = {}
+    msgs = [AIMessage(content=[{"type": "text", "text": "done: nothing to change"}], id="a1")]
+
+    asyncio.run(work._consume_values("T1", "work", _Projection({"messages": msgs}),
+                                    writer, {}, final_text=final))
+
+    assert final["text"] == "done: nothing to change"
+
+
+def test_capture_is_optional(published):
+    """Callers that don't want it (every existing test) pass nothing."""
+    entries, writer = published
+    asyncio.run(work._consume_values("T1", "work", _Projection({"messages": [AIMessage(content="x", id="a")]}),
+                                     writer, {}))

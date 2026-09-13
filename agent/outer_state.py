@@ -141,6 +141,14 @@ class AgentState(TypedDict):
     # total across a task that legitimately loops several times.
     incomplete_plan_streak: int
 
+    # Consecutive no-diff passes whose final response was too short to read as
+    # a real conclusion, and were nudged for it -- see verify_and_ship.py's
+    # MAX_SHORT_CONCLUSION_NUDGES. Capped because that nudge resets
+    # no_diff_streak: uncapped, a model that habitually ends terse could never
+    # reach the "no changes needed" exit, and the task looped until
+    # max_iterations (live, 2026-09-13).
+    short_conclusion_streak: int
+
     # Whether the operator who created this task has auto-approve enabled
     # (User.auto_approve_commands). Captured onto the task at creation
     # rather than read live, so changing the setting can't retroactively
@@ -204,6 +212,7 @@ def initial_state(
         stale_pending_review_streak=0,
         inner_thread_generation=0,
         incomplete_plan_streak=0,
+        short_conclusion_streak=0,
         auto_approve_commands=auto_approve_commands,
         require_merge_review=require_merge_review,
         pending_merge_approval=None,

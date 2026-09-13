@@ -61,6 +61,11 @@ from agent.outer_state import AgentState
 # Minimum length for a final message to count as a genuine "no changes
 # needed" conclusion rather than a truncated, mid-thought response.
 MIN_CONCLUSION_CHARS = 120
+# How many times in a row a terse final response may be nudged before the gate
+# stops asking and lets the normal no-diff path decide. Without a cap this
+# branch resets no_diff_streak every pass, so "no changes needed" can never be
+# concluded -- a loop bounded only by max_iterations.
+MAX_SHORT_CONCLUSION_NUDGES = 2
 # Consecutive passes to nudge a model that's stopped acting on a rejected
 # commit before escalating.
 STALE_PENDING_REVIEW_LIMIT = 2
@@ -426,9 +431,20 @@ async def _verify_and_ship_inner(state: AgentState, repo: str, repo_root: str) -
         # costs at most one extra pass on a false positive (a real
         # conclusion that happened to be terse), versus silently ending the
         # task on a dropped tool call.
-        last_response = _last_work_response_text(state)
-        looks_incomplete = last_response is not None and len(last_response.strip()) < MIN_CONCLUSION_CHARS
-        if looks_incomplete:
+        # A SHORT final response, not a missing one. The distinction is the
+        # whole fix of 2026-09-13: work.py used to read this back from the
+        # inner agent's checkpoint, where `messages` does not exist, so it was
+        # "" on every pass -- and "" is shorter than any threshold, so this
+        # branch fired every time, reset the streak, and made the
+        # two-consecutive-no-diff exit unreachable. Task 25e2bfb0 looped on it
+        # twice in eight minutes, each time told to follow through on an
+        # intention it had never announced. work.py takes the text from the
+        # stream now; an empty value here means genuinely unknown, and guessing
+        # "cut off mid-thought" from nothing is what caused the loop.
+        last_response = (_last_work_response_text(state) or "").strip()
+        nudges = state.get("short_conclusion_streak", 0)
+        looks_incomplete = bool(last_response) and len(last_response) < MIN_CONCLUSION_CHARS
+        if looks_incomplete and nudges < MAX_SHORT_CONCLUSION_NUDGES:
             feedback = (
                 "Your last response looks like it was cut off mid-thought -- it announced what you "
                 "were about to do (e.g. \"let me look at X\") but ended without a tool call actually "
@@ -437,10 +453,17 @@ async def _verify_and_ship_inner(state: AgentState, repo: str, repo_root: str) -
                 "if you've genuinely finished investigating, write your full conclusion and reasoning "
                 "explicitly -- not a one-line intention."
             )
-            return _loop_back(
-                "no diff -- last response looked cut off mid-thought, not a real conclusion",
-                feedback, state, no_diff_streak=0,
-            )
+            return {
+                **_loop_back(
+                    "no diff -- last response looked cut off mid-thought, not a real conclusion",
+                    feedback, state, no_diff_streak=0,
+                ),
+                "short_conclusion_streak": nudges + 1,
+            }
+        # Asked twice and still terse: take it at face value rather than
+        # spending another whole pass on the same nudge. The streak is NOT
+        # reset here, so the ordinary no-diff path below decides the outcome --
+        # which is the bound this branch was missing.
 
         if state.get("no_diff_streak", 0) >= 1:
             return _done_no_changes(state)

@@ -187,7 +187,7 @@ def _translate_message(task_id: str, node_label: str, msg) -> dict | None:
 
 
 async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dict, tracker=None,
-                          seen_ids: set | None = None) -> None:
+                          seen_ids: set | None = None, final_text: dict | None = None) -> None:
     """Drains one `run.values`-shaped projection (root or a subagent handle),
     translating newly-seen messages/todos into custom events as they land.
     `seen` is a per-projection dict (`{"todos": Any, "cost": float}`) so
@@ -196,6 +196,19 @@ async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dic
     `seen_ids` is the message-id set, and it is shared across ALL consumers of
     one run -- see this module's docstring on the replay it prevents. Defaults
     to a set inside `seen` so a single-projection caller (a test) still works.
+
+    `final_text` collects the COORDINATOR's last assistant text as it streams.
+    The pass's final message used to be read back from the inner agent's
+    checkpoint afterwards, and that channel is not there: measured on
+    2026-09-13, `aget_state` returns todos but no `messages`, so the final
+    summary was the empty string on every pass. That is load-bearing --
+    verify_and_ship's no-diff gate calls a final response shorter than 120
+    chars "cut off mid-thought", loops back, and resets no_diff_streak, so an
+    always-empty value meant a task with no diff could never reach the
+    two-consecutive-passes "no changes needed" exit. Task 25e2bfb0 looped on
+    exactly that, twice in eight minutes, being told to follow through on an
+    intention it had never announced. Taking the text from the stream uses
+    what we demonstrably have.
 
     `tracker` (the shared BudgetTracker) makes live cost visible mid-pass:
     cost_so_far otherwise only crosses to the dashboard on outer node
@@ -225,6 +238,12 @@ async def _consume_values(task_id: str, node_label: str, proj, writer, seen: dic
             translated = _translate_message(task_id, node_label, msg)
             if translated:
                 writer({"type": "log_entry", "entry": translated})
+            # The coordinator's own prose only: a subagent's closing remark is
+            # not this pass's conclusion, and the gate reads it as one.
+            if final_text is not None and node_label == "work" and isinstance(msg, AIMessage):
+                text = content_text(msg.content).strip()
+                if text:
+                    final_text["text"] = text[:2000]
         if tracker is not None:
             cost = tracker.total_cost
             # Any real move emits (operator ask 2026-08-28: "update on every
@@ -354,6 +373,10 @@ async def work_node(state: AgentState, app_config: Config, checkpointer, pg_stor
     escalated = False
     escalation_reason = None
     final_summary = ""
+    # The coordinator's closing prose, collected as it streams. Declared out
+    # here, not inside the stream block, so the enrichment below can always
+    # read it -- same reasoning as subagent_tasks.
+    final_text: dict = {}
     latest_todos: list | None = None
     pending_approval: dict | None = None
 
@@ -388,12 +411,13 @@ async def work_node(state: AgentState, app_config: Config, checkpointer, pg_stor
                     label = f"work:{handle.name or 'subagent'}"
                     subagent_tasks.append(
                         asyncio.ensure_future(_consume_values(
-                            task_id, label, handle.values, writer, {}, tracker, seen_ids=seen_ids))
+                            task_id, label, handle.values, writer, {}, tracker, seen_ids=seen_ids,
+                            final_text=final_text))
                     )
 
             await asyncio.gather(
                 _consume_values(task_id, "work", run.values, writer, root_seen, tracker,
-                                seen_ids=seen_ids),
+                                seen_ids=seen_ids, final_text=final_text),
                 _consume_subagents(),
             )
             if subagent_tasks:
@@ -477,9 +501,18 @@ async def work_node(state: AgentState, app_config: Config, checkpointer, pg_stor
         if not escalated:
             messages = final_state.values.get("messages", [])
             if messages:
-                final_summary = str(messages[-1].content)[:2000]
+                final_summary = content_text(messages[-1].content)[:2000]
     except Exception:  # noqa: BLE001 -- best-effort enrichment, never worth failing the whole node over
         pass
+
+    # The stream is the reliable source; the checkpoint read above is kept as a
+    # fallback for the case where a pass produced no streamed prose at all.
+    # Measured 2026-09-13: `messages` is absent from the inner agent's
+    # reconstructed state, so that read yields "" every time -- and an empty
+    # value here is what verify_and_ship's no-diff gate misreads as "cut off
+    # mid-thought", forever.
+    if not final_summary.strip():
+        final_summary = final_text.get("text", "")
 
     if pending_approval:
         summary = f"awaiting approval: {pending_approval['action_requests'][0]['name']}"
