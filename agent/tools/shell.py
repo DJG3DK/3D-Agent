@@ -12,6 +12,14 @@ tool that ignores both fails loudly instead of hanging silently.
 import asyncio
 import os
 import signal
+import subprocess
+import sys
+
+# POSIX puts a child and everything it forks in one process group, which is
+# what makes a single killpg enough. Windows has no equivalent primitive, so
+# the two halves -- how the child is launched, and how it is killed -- have to
+# differ together. Kept next to each other so they cannot drift apart.
+_WINDOWS = sys.platform == "win32"
 
 
 class ShellTimeout(Exception):
@@ -21,6 +29,15 @@ class ShellTimeout(Exception):
         self.timeout = timeout
 
 
+def _spawn_kwargs() -> dict:
+    """Launch flags that make the child killable as a tree."""
+    if _WINDOWS:
+        # The Windows equivalent of a session leader: the child becomes its own
+        # process-group root, which is what `taskkill /T` walks.
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
 def _kill_process_group(proc: "asyncio.subprocess.Process") -> None:
     # proc.kill() alone only signals the shell itself (`/bin/sh -c cmd`), not
     # whatever cmd went on to fork (pnpm spawning tsc, which spawns workers)
@@ -28,6 +45,17 @@ def _kill_process_group(proc: "asyncio.subprocess.Process") -> None:
     # start_new_session=True below makes this process its own session/group
     # leader, its pid doubles as the process group id, so one killpg reaches
     # the whole tree in a single signal.
+    if _WINDOWS:
+        # No killpg here. `taskkill /T` is the only thing that reaches the
+        # whole tree, and it is a separate process, so this stays best-effort
+        # and synchronous -- the caller is already in a timeout or cancellation
+        # path and must not be able to hang a second time.
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10, check=False)
+        except Exception:  # noqa: BLE001 -- killing is best-effort by nature
+            pass
+        return
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -82,7 +110,7 @@ async def run_shell(
         stdin=asyncio.subprocess.DEVNULL,  # no stdin at all — an interactive prompt gets EOF immediately, never blocks
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
+        **_spawn_kwargs(),
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)

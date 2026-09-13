@@ -32,6 +32,58 @@ from agent.tools.shell import ShellTimeout
 
 logger = logging.getLogger("3d-agent")
 
+# Every `-v` source below is resolved by the DOCKER DAEMON, not by this
+# process -- which is the same thing while the agent runs directly on the
+# host, and stops being the same thing the moment it runs in a container with
+# the host's Docker socket mounted (docs/roadmap-packaging.md, M1). There the
+# sandbox containers are SIBLINGS created by the host daemon: a `-v` naming a
+# path that exists only inside the agent container silently mounts an empty
+# directory, and the task reads an empty repo with no error anywhere.
+#
+# So the mapping is explicit. AGENT_HOST_PATH_MAP is a colon-free,
+# comma-separated list of `container_prefix=host_prefix` pairs; unset (the
+# normal single-host install) means the identity mapping, which is exactly
+# today's behaviour.
+#
+#   AGENT_HOST_PATH_MAP=/projects=C:\dev,/workspaces=D:\work
+_HOST_PATH_MAP_ENV = "AGENT_HOST_PATH_MAP"
+
+
+def _host_path_map() -> list[tuple[str, str]]:
+    """Parsed prefix pairs, longest container prefix first so a nested mapping
+    wins over the parent it sits under."""
+    raw = os.environ.get(_HOST_PATH_MAP_ENV, "").strip()
+    pairs: list[tuple[str, str]] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry or "=" not in entry:
+            continue
+        container, host = entry.split("=", 1)
+        container, host = container.strip().rstrip("/"), host.strip()
+        if container and host:
+            pairs.append((container, host.rstrip("/\\")))
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+    return pairs
+
+
+def host_path(path: str) -> str:
+    """The path the Docker daemon should be given for a bind mount.
+
+    Identity unless AGENT_HOST_PATH_MAP says otherwise. Only whole path
+    SEGMENTS match, so a prefix of "/projects" never rewrites "/projects-old".
+    """
+    if not path:
+        return path
+    for container, host in _host_path_map():
+        if path == container:
+            return host
+        if path.startswith(container + "/"):
+            rest = path[len(container) + 1:]
+            sep = "\\" if ("\\" in host or ":" in host[:2]) else "/"
+            return f"{host}{sep}{rest.replace('/', sep)}"
+    return path
+
+
 SANDBOX_IMAGE = "3d-agent-sandbox:latest"  # built from docker/agent-sandbox/Dockerfile
 SANDBOX_MEMORY_LIMIT = "2g"
 SANDBOX_CPU_LIMIT = "2"
@@ -140,7 +192,7 @@ def _node_modules_mounts(cwd: str) -> list[str]:
                             "workspace and live checkout", target, cwd)
                         continue
                     seen.add(target)
-                    mounts += ["-v", f"{target}:{target}:ro"]
+                    mounts += ["-v", f"{host_path(target)}:{target}:ro"]
             # never walk into a node_modules tree
             dirs.remove("node_modules")
     return mounts
@@ -206,7 +258,7 @@ async def run_shell_sandboxed(
                 # node_modules mounts get.
                 if os.path.isdir(main_git) and _mount_target_allowed(
                         main_git, _mount_allow_roots(cwd)):
-                    git_mount_args = ["-v", f"{main_git}:{main_git}:ro"]
+                    git_mount_args = ["-v", f"{host_path(main_git)}:{main_git}:ro"]
                 elif os.path.isdir(main_git):
                     logger.warning(
                         "refusing to mount git dir %s for %s: outside this "
@@ -219,7 +271,7 @@ async def run_shell_sandboxed(
 
     docker_args = [
         "docker", "run", "--rm", "--name", container_name,
-        "-v", f"{cwd}:/workspace",
+        "-v", f"{host_path(cwd)}:/workspace",
         *git_mount_args,
         *nm_mount_args,
         *net_args,
