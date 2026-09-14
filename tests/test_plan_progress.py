@@ -103,3 +103,88 @@ def test_the_denominator_never_shrinks_across_a_sequence_of_rewrites():
         done, total = counts(state)
         assert total == 12, f"the plan shrank to {total} after batch {batch}"
         assert done == batch + 3, f"progress read {done} after finishing {batch + 3}"
+
+
+# ---------------------------------------------------------------------------
+# Rewording is not a new item
+#
+# Live on 2026-09-14, task aa457790: a plan that started at 11 items reached 46
+# while the work went fine -- 28 files written, mtCore.js at 808 lines. None of
+# the 46 were byte-identical, but sixteen were near-duplicates of another,
+# because each rewrite reworded the completed items slightly and exact matching
+# kept the old one alongside its own replacement:
+#
+#   "Provide src/strategies/modules/mtCore.js — regime classifier, 4 engine..."
+#   "Write src/strategies/multiTrader.js — evalEntry (closed-bar, paper boun..."
+#   "src/strategies/modules/mtCore.js — regime classifier, 4 engine detectors"
+#
+# The counter was honest about every item it held. It just held the same work
+# four times.
+# ---------------------------------------------------------------------------
+
+MTCORE_VARIANTS = [
+    "Provide src/strategies/modules/mtCore.js — regime classifier, 4 engine detectors, priority router",
+    "Provide src/strategies/modules/mtCore.js — regime classifier, 4 engine detectors, priority routing",
+    "src/strategies/modules/mtCore.js — regime classifier, 4 engine detectors, priority router + sizing",
+]
+
+
+def test_a_reworded_completed_item_is_not_kept_twice():
+    previous = [{"content": MTCORE_VARIANTS[0], "status": "completed"}]
+    incoming = [{"content": MTCORE_VARIANTS[1], "status": "completed"}]
+    merged = merge_todos(previous, incoming)
+    assert len(merged) == 1, [t["content"] for t in merged]
+
+
+def test_the_plan_stops_growing_across_repeated_rewordings():
+    """The actual shape of the failure: the same three pieces of work, reworded
+    on each pass, must stay three items."""
+    state = [{"content": MTCORE_VARIANTS[0], "status": "completed"}]
+    for variant in MTCORE_VARIANTS[1:] * 4:
+        state = merge_todos(state, [{"content": variant, "status": "completed"}])
+    _, total = counts(state)
+    assert total == 1, [t["content"] for t in state]
+
+
+def test_the_same_file_named_two_very_different_ways_still_matches():
+    """The path is the strongest signal these are one task."""
+    a = [{"content": "Write src/core/mtBacktester.js plus derivsFeed.fundingRows and verify a real run",
+          "status": "completed"}]
+    b = [{"content": "src/core/mtBacktester.js — job wrapper, funding honesty, per-engine breakdown",
+          "status": "pending"}]
+    assert len(merge_todos(a, b)) == 1
+
+
+def test_numbered_steps_stay_separate():
+    """"item 0" and "item 1" are 83% alike by character ratio. Collapsing a
+    numbered plan into one entry would be a worse bug than the one being
+    fixed."""
+    previous = [{"content": "item 0", "status": "completed"}]
+    incoming = [{"content": "item 1", "status": "pending"}]
+    assert len(merge_todos(previous, incoming)) == 2
+
+
+def test_engine_one_and_engine_two_are_two_pieces_of_work():
+    """Long enough for fuzzy matching, and differing only in a digit."""
+    a = "Implement engine 1 of the regime router with its detector and sizing rules"
+    b = "Implement engine 2 of the regime router with its detector and sizing rules"
+    previous = [{"content": a, "status": "completed"}]
+    assert len(merge_todos(previous, [{"content": b, "status": "pending"}])) == 2
+
+
+def test_genuinely_different_work_is_never_merged():
+    previous = [{"content": "Add MT_* defaults to src/strategies/defaultSettings.js (44 keys)",
+                 "status": "completed"}]
+    incoming = [{"content": "Extend chartOverlays.ts with drawMtLines and wire into TradingChart.tsx",
+                 "status": "pending"}]
+    assert len(merge_todos(previous, incoming)) == 2
+
+
+def test_completed_status_still_survives_a_rewording():
+    """The original point of merge_todos: finishing something and having the
+    rewrite call it pending must not un-finish it."""
+    previous = [{"content": MTCORE_VARIANTS[0], "status": "completed"}]
+    incoming = [{"content": MTCORE_VARIANTS[2], "status": "pending"}]
+    merged = merge_todos(previous, incoming)
+    assert len(merged) == 1
+    assert merged[0]["status"] == "completed"
