@@ -1495,6 +1495,14 @@ def _publish(task_id: str, event: dict) -> None:
         # for the life of the process.
         _live_log_append(_live_task_log, task_id, event["execution_log"],
                          on_evict=_task_event_seq.forget)
+        # ...and the durable copy, batched (see planning_log.Recorder).
+        rec = _task_recorders.get(task_id)
+        if rec is not None:
+            due = False
+            for entry in event["execution_log"]:
+                due = rec.add(entry) or due
+            if due:
+                _flush_task_log_bg(rec)
     if event.get("type") != "ping":
         event["seq"] = _task_event_seq.next(task_id)
     for q, _ws in _subscribers.get(task_id, []):
@@ -1695,6 +1703,8 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
         "metadata": {"task_id": task_id, "repo": repo},
         "tags": [repo],
     }
+    # From here on every streamed entry is also written down durably.
+    _start_task_recorder(task_id, repo)
 
     # cost_so_far here is Store-only display state -- hardcoding 0.0
     # unconditionally meant a resume briefly showed $0.00 in the
@@ -1949,6 +1959,14 @@ async def _stream_graph(task_id: str, repo: str, goal: str, budget_usd: float, g
     finally:
         _publish(task_id, {"type": "closed"})
         _running_tasks.pop(task_id, None)
+        # Land whatever is still buffered. Awaited, not backgrounded: this is
+        # the last moment the tail of the run exists anywhere.
+        rec = _task_recorders.pop(task_id, None)
+        if rec is not None:
+            try:
+                await rec.flush()
+            except Exception:  # noqa: BLE001 -- never fail a task over its transcript
+                logger.debug("task transcript tail not written for %s", task_id)
 
 
 async def _run_task(
@@ -2038,6 +2056,35 @@ def list_repos(user: User = Depends(require_full_auth)):
 _LIVE_LOG_MAX_ENTRIES = 3000   # matches the frontend's MAX_LOG_ENTRIES cap
 _LIVE_LOG_MAX_KEYS = 12        # LRU-ish: enough for every concurrently-viewed run
 _live_task_log: dict[str, list] = {}
+
+# The durable half of that buffer. `_live_task_log` dies with the process, and
+# on 2026-09-14 that is exactly what happened when the operator asked why a
+# task "got lost": the answer needed the transcript, and all that survived was
+# a 123-character stub in execution_log plus a clean worktree. Planning
+# sessions got this on 2026-09-12 (agent/planning_log.py); build tasks are the
+# ones that run for two hours and delegate seven subagents, so they needed it
+# more.
+_task_recorders: dict[str, planning_log.Recorder] = {}
+
+
+def _start_task_recorder(task_id: str, repo: str) -> None:
+    """Created where the repo is actually known -- _publish only has a task id,
+    and a transcript filed under the wrong project is worse than none."""
+    store = getattr(app.state, "store", None)
+    if store is None:
+        return
+    _task_recorders[task_id] = planning_log.Recorder(
+        repo, task_id, store, namespace=planning_log.TASK_NAMESPACE,
+        detail_cap=planning_log.TASK_DETAIL_CAP)
+
+
+def _flush_task_log_bg(rec: "planning_log.Recorder") -> None:
+    """Fire and forget: a transcript must never delay the run it describes."""
+    try:
+        task = asyncio.create_task(rec.flush())
+        task.add_done_callback(lambda t: t.exception())
+    except Exception:  # noqa: BLE001
+        pass
 # Monotonic per-task event ids for the socket-first hydrate (log_stream.py).
 _task_event_seq = log_stream.SeqCounter()
 _live_planning_log: dict[str, list] = {}
@@ -3737,7 +3784,14 @@ async def get_task(task_id: str, repo: str, user: User = Depends(require_full_au
         # Full detailed history across refresh/task-switch -- see the live-log
         # buffer's own comment. The checkpoint's execution_log (per-pass
         # summaries) stays the durable fallback.
-        snapshot["execution_log"] = _fuller_log(_live_task_log.get(task_id), snapshot.get("execution_log"))
+        # Three sources, fullest wins: this process's live buffer, the durable
+        # transcript (survives a restart -- agent/planning_log.py), and the
+        # checkpoint's per-pass summaries as the last resort.
+        durable = await planning_log.load(store, repo, task_id,
+                                          namespace=planning_log.TASK_NAMESPACE)
+        snapshot["execution_log"] = _fuller_log(
+            _live_task_log.get(task_id),
+            _fuller_log(durable, snapshot.get("execution_log")))
     # Where this snapshot sits in the event stream. The browser opens its
     # socket first and buffers; on replay it drops anything at or below this,
     # so an event already folded into the snapshot is not applied twice.
@@ -3763,6 +3817,8 @@ async def delete_task(task_id: str, repo: str, user: User = Depends(require_full
         await store.adelete(("tasks", repo), task_id)
         # Nothing will ever stream for this task again.
         _live_task_log.pop(task_id, None)
+        _task_recorders.pop(task_id, None)
+        await planning_log.forget(store, repo, task_id, namespace=planning_log.TASK_NAMESPACE)
         _task_event_seq.forget(task_id)
         await app.state.checkpointer.adelete_thread(task_id)
         # Also delete the inner deep-agent thread's own checkpoints. Every "work"

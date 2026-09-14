@@ -27,6 +27,7 @@ from agent.config import Config, PROJECTS
 from agent.frontend_route import CODER_ROLE
 from agent.tools.github_tools import make_github_inbox_tool, make_github_tools, token_source
 from agent.memory_freshness import memory_with_freshness
+from agent import new_files
 
 # langchain-openai cannot attach response headers on the structured-output
 # stream path (with_structured_output sets response_format) and warns on every
@@ -1219,6 +1220,7 @@ async def build_deep_agent(
     auto_approve_commands: bool = False,
     route: str = "general",
     task_id: str | None = None,
+    goal: str = "",
 ):
     """NOTE: async, unlike a typical factory -- it needs to `await` reading
     both memory files before constructing the agent. This is a deliberate
@@ -1237,6 +1239,12 @@ async def build_deep_agent(
     prompt) via a confirmed-working path instead of a confirmed-broken one.
     """
     repo_root = PROJECTS[repo]["sandbox"]
+    # Which of the paths this task names are not on disk. Appended to the
+    # coordinator's prompt AND to every subagent's, because the subagents are
+    # what go looking: on task 3ee0d030 seven delegations each searched for a
+    # file the task existed in order to create, and the coordinator read the
+    # resulting "it does not exist" as a blocker. See agent/new_files.py.
+    absent_files = new_files.guidance(repo_root, goal)
     # One gate, shared by the coordinator and every subagent -- investigator
     # carries the full bash tool too, so a laxer gate there would be a hole.
     # repo_root so auto mode can tell repo content from the agent's own
@@ -1327,7 +1335,7 @@ async def build_deep_agent(
             "multiple files, finding every call site of something, or answering a question that "
             "needs digging before any change can be made. Cannot write or edit files."
         ),
-        "system_prompt": INVESTIGATOR_SYSTEM_PROMPT,
+        "system_prompt": INVESTIGATOR_SYSTEM_PROMPT + absent_files,
         "tools": read_only_tools,
         "model": investigator_model,
         "middleware": [
@@ -1366,7 +1374,7 @@ async def build_deep_agent(
             "mutates external state, or touches a third-party API. Must produce real behavioral "
             "coverage, never source-inspection-only tests."
         ),
-        "system_prompt": TEST_WRITER_SYSTEM_PROMPT,
+        "system_prompt": TEST_WRITER_SYSTEM_PROMPT + absent_files,
         "tools": [*project_tools, run_checks_tool],
         "model": test_writer_model,
         "middleware": [
@@ -1406,7 +1414,7 @@ async def build_deep_agent(
     # this keeps the capability and closes the enforcement hole.
     general_purpose = {
         **GENERAL_PURPOSE_SUBAGENT,  # canonical name/description/system_prompt from the lib
-        "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"] + "\n\n" + _FILESYSTEM_GUIDANCE,
+        "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"] + "\n\n" + _FILESYSTEM_GUIDANCE + absent_files,
         "tools": [*project_tools, run_checks_tool],
         "model": coordinator_model,
         "middleware": [
@@ -1444,7 +1452,7 @@ async def build_deep_agent(
             project_memory_content=project_memory_content,
             org_memory_content=org_memory_content,
             skills_summary=skills_summary,
-        ),
+        ) + absent_files,
         middleware=[
             SanitizeToolCallsMiddleware(),  # a malformed tool call in history never reaches a provider (2026-09-09)
             HiddenToolsMiddleware("glob", "grep", "execute", "delete"),

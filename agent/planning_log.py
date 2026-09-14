@@ -34,6 +34,9 @@ import time
 logger = logging.getLogger("3d-agent")
 
 NAMESPACE = "planning_log"
+TASK_NAMESPACE = "task_log"
+# Build-task entries are trimmed harder than planning ones -- see Recorder.
+TASK_DETAIL_CAP = 600
 
 # Keep the newest N entries per session. A long HARD turn produces a few
 # hundred; this is several turns' worth, and each entry is capped at ~2KB of
@@ -55,10 +58,22 @@ class Recorder:
     cannot be written must not break the turn it is describing.
     """
 
-    def __init__(self, repo: str, session_id: str, store):
+    def __init__(self, repo: str, session_id: str, store, namespace: str = NAMESPACE,
+                 detail_cap: int | None = None):
         self.repo = repo
         self.session_id = session_id
         self._store = store
+        # Build tasks keep their transcript under their own namespace. Same
+        # machinery, different drawer -- a task and a planning session can
+        # share an id space without colliding, and either can be dropped
+        # without touching the other.
+        self.namespace = namespace
+        # Build tasks are an order of magnitude chattier than planning turns
+        # (754 tool calls on task 3ee0d030), so the durable copy trims each
+        # entry's detail. The live view keeps the full text while the process
+        # holds it; what survives a restart is the shape of the run, which is
+        # what "what was it doing?" actually needs.
+        self.detail_cap = detail_cap
         self._pending: list[dict] = []
         self._last_flush = time.monotonic()
 
@@ -66,6 +81,10 @@ class Recorder:
         """Buffer one entry. Returns whether a flush is now due."""
         if not isinstance(entry, dict):
             return False
+        if self.detail_cap is not None and isinstance(entry.get("detail"), str):
+            detail = entry["detail"]
+            if len(detail) > self.detail_cap:
+                entry = {**entry, "detail": detail[:self.detail_cap] + " …[trimmed]"}
         self._pending.append(entry)
         return (len(self._pending) >= FLUSH_EVERY
                 or time.monotonic() - self._last_flush >= FLUSH_AFTER_S)
@@ -77,7 +96,7 @@ class Recorder:
         batch, self._pending = self._pending, []
         self._last_flush = time.monotonic()
         try:
-            existing = await _read(self._store, self.repo, self.session_id)
+            existing = await _read(self._store, self.repo, self.session_id, self.namespace)
             if existing is None:
                 # The read failed, which is NOT the same as "there is nothing
                 # there". Writing the batch alone would replace the whole
@@ -87,7 +106,7 @@ class Recorder:
                 self._pending = batch + self._pending
                 return 0
             entries = (existing + batch)[-MAX_ENTRIES:]
-            await self._store.aput((NAMESPACE, self.repo), self.session_id,
+            await self._store.aput((self.namespace, self.repo), self.session_id,
                                    {"session_id": self.session_id, "entries": entries,
                                     "updated_at": time.time()})
             return len(batch)
@@ -96,13 +115,13 @@ class Recorder:
             return 0
 
 
-async def _read(store, repo: str, session_id: str) -> list[dict] | None:
+async def _read(store, repo: str, session_id: str, namespace: str = NAMESPACE) -> list[dict] | None:
     """The stored entries, or None when they could not be read -- a
     distinction the writer depends on."""
     if store is None:
         return []
     try:
-        item = await store.aget((NAMESPACE, repo), session_id)
+        item = await store.aget((namespace, repo), session_id)
     except Exception as e:  # noqa: BLE001
         logger.warning("planning transcript unreadable for %s: %s", session_id, e)
         return None
@@ -110,18 +129,18 @@ async def _read(store, repo: str, session_id: str) -> list[dict] | None:
     return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
 
 
-async def load(store, repo: str, session_id: str) -> list[dict]:
+async def load(store, repo: str, session_id: str, namespace: str = NAMESPACE) -> list[dict]:
     """The durable transcript, oldest first. Empty when there is none, and
     empty when it could not be read -- a reader wants a list either way."""
-    return await _read(store, repo, session_id) or []
+    return await _read(store, repo, session_id, namespace) or []
 
 
-async def forget(store, repo: str, session_id: str) -> None:
+async def forget(store, repo: str, session_id: str, namespace: str = NAMESPACE) -> None:
     """Drop a session's transcript -- for an archived or deleted session, so
     the store does not keep what the operator asked to be rid of."""
     if store is None:
         return
     try:
-        await store.adelete((NAMESPACE, repo), session_id)
+        await store.adelete((namespace, repo), session_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("planning transcript not deleted for %s: %s", session_id, e)
