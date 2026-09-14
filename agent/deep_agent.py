@@ -109,6 +109,31 @@ SKILLS_MANIFEST_PATH = "/skills/_manifest.json"
 # coordinator's own context never dropped below ~50k. Progress continued, at
 # roughly twice the cost and latency per step. A message-count clause can only
 # be safe against a message-count keep; with a token keep it must not exist.
+# Operator-tunable since 2026-09-14 (runtime_settings' "Context" group). The
+# fixed 80_000 below was 7.6% of the 1,048,576-token window the coder model
+# actually has, and a real task rode it for an hour -- climb to 80k, compact to
+# ~55k, climb again, 15 summarizer calls and zero lines written, because each
+# compaction discarded the files it had just read. These two remain the
+# FLOOR-level defaults the knobs start from; everything below about why the
+# units must match and why keep must stay well under trigger still applies.
+def summarization_trigger() -> list[tuple[str, int]]:
+    return [("tokens", _rs.as_int("summarization_trigger_tokens"))]
+
+
+def summarization_keep() -> tuple[str, int]:
+    """Clamped to 60% of the trigger.
+
+    If the kept window ever approaches the trigger, summarization fires before
+    EVERY model call and can never get back under it -- the task keeps paying
+    for a summarizer each turn while making no progress. That is a degenerate
+    state a pair of independently-set knobs can reach by accident, so it is
+    forbidden here rather than documented.
+    """
+    trigger = _rs.as_int("summarization_trigger_tokens")
+    keep = _rs.as_int("summarization_keep_tokens")
+    return ("tokens", min(keep, int(trigger * 0.6)))
+
+
 SUMMARIZATION_TRIGGER = [("tokens", 80_000)]
 # Retention is expressed in TOKENS, deliberately matching the unit the trigger
 # above uses. It was ("messages", 20), and a message-count keep against a
@@ -1466,8 +1491,8 @@ async def build_deep_agent(
                 # middleware wraps -- see BudgetMeterCallback.
                 model=llm_for_role(config, "agent-summarizer", callbacks=[BudgetMeterCallback(tracker)],
                                    task_id=task_id),
-                trigger=SUMMARIZATION_TRIGGER,
-                keep=SUMMARIZATION_KEEP,
+                trigger=summarization_trigger(),
+                keep=summarization_keep(),
                 trim_tokens_to_summarize=SUMMARIZATION_TRIM_TOKENS,
             ),
             # Not included by default for a custom model like ours --

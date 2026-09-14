@@ -217,6 +217,39 @@ KNOBS: dict[str, dict] = {
         "env": None,
         "group": "Model & sandbox timeouts",
     },
+    "summarization_trigger_tokens": {
+        "label": "Summarize build context at",
+        "help": (
+            "How large a build task's conversation may grow before it is compacted. The old "
+            "fixed 80k was 7.6% of the 1,048,576-token window the coder model actually has, and "
+            "on 2026-09-14 a task rode it for an hour: context climbed to 80k, compacted to "
+            "~55k, climbed again -- 15 summarizer calls, 192 tool calls, zero lines written, "
+            "because each compaction threw away the files it had just read and it read them "
+            "again. Raise it if tasks re-read their own work; lower it if long tasks cost more "
+            "than they should, since average context is what you pay for on every call."
+        ),
+        "unit": "tokens",
+        "default": 250_000.0,
+        "min": 20_000.0,
+        "max": 800_000.0,
+        "env": None,
+        "group": "Context",
+    },
+    "summarization_keep_tokens": {
+        "label": "Keep after summarizing",
+        "help": (
+            "How much of the recent conversation survives a compaction. Must stay well below "
+            "the trigger: if the kept window ever approaches it, summarization fires before "
+            "every model call and can never get back under, so the task pays for a summarizer "
+            "each turn while making no progress. Clamped to 60% of the trigger for that reason."
+        ),
+        "unit": "tokens",
+        "default": 90_000.0,
+        "min": 8_000.0,
+        "max": 400_000.0,
+        "env": None,
+        "group": "Context",
+    },
     "review_wait_timeout_s": {
         "label": "Review wait timeout",
         "help": (
