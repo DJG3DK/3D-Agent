@@ -63,9 +63,32 @@ def test_every_subagent_that_has_bash_gets_the_guidance():
         assert "two separate filesystems" in prompt
 
 
-def test_the_investigator_is_no_longer_told_to_cat():
-    """Its own prompt blessed `cat` for exploration three lines before the
-    appended guidance told it not to."""
+def test_the_investigator_leads_with_read_not_bash():
+    """Its prompt used to open with "You DO have `bash` (needed for real
+    find/grep-style exploration)" and hang the read advice off the end as a
+    subordinate clause. For a subagent whose whole job is exploration, the
+    first half was the load-bearing sentence -- and measured on task 3ee0d030
+    its read use fell from 46 calls to 14 across one run while bash went 91 to
+    132. `read` is named first now, and bash is scoped to what only bash can
+    do rather than blessed for exploration generally."""
     prompt = deep_agent.INVESTIGATOR_SYSTEM_PROMPT
     assert "find, grep, ls, cat, git log" not in prompt
-    assert "`read` rather than `cat`" in prompt
+    assert "You DO have `bash` (needed for real find/grep-style exploration" not in prompt
+    read_at, bash_at = prompt.index("`read`"), prompt.index("`bash`")
+    assert read_at < bash_at, "read has to be introduced before bash"
+
+
+def test_both_prompts_say_several_reads_can_go_in_one_turn():
+    """The fact the model had no way to know. It emits parallel tool calls
+    already; nothing told it that N reads in one turn beat one `cat a b c`."""
+    for prompt in (deep_agent.INVESTIGATOR_SYSTEM_PROMPT, deep_agent._FILESYSTEM_GUIDANCE):
+        assert "SAME TURN" in prompt
+        assert "offset/limit" in prompt
+
+
+def test_the_prompts_say_bash_is_the_only_way_to_search():
+    """Scoping bash must not read as "avoid bash". glob/grep are hidden
+    because they cannot see the repo, so bash searching is correct and the
+    prompt has to say so, or the nudge starts costing real work."""
+    for prompt in (deep_agent.INVESTIGATOR_SYSTEM_PROMPT, deep_agent._FILESYSTEM_GUIDANCE):
+        assert "only way to search" in prompt or "only bash can do" in prompt

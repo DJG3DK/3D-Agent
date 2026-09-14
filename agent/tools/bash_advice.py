@@ -60,12 +60,113 @@ _WRITE_PATTERNS = (
     re.compile(r"\.write_text\s*\("),
 )
 
-# Reading a file through the shell, when nothing else is happening to it.
-_READ_ONLY = re.compile(
-    r"^\s*(?:cd\s+(\S+)\s*&&\s*)?"
-    r"(?:cat|head|tail|sed\s+-n\s+['\"]?[\d,p$]+['\"]?)\s+"
-    r"[\"']?([\w./-]+\.[\w]+)[\"']?\s*$"
+# Reading files through the shell.
+#
+# The first version of this matched only a command that did NOTHING but read
+# ONE file. Measured on task 3ee0d030 (2026-09-14): an investigator made 219
+# bash calls and 17 of them were flagged -- 8%. Every compound spelling walked
+# straight past: `cat a b c`, `sed -n '1,80p' a && sed -n '1,80p' b`,
+# `cat x | head -60`, `awk 'NR>=40 && NR<=90' x`. Its `read` use fell from 46
+# calls in the first half of the run to 14 in the second while bash rose from
+# 91 to 132, and the honest reading is not defiance: a harness that objects to
+# one spelling and says nothing about twelve others is telling the model that
+# the twelve are fine.
+#
+# So a command counts as a read when EVERY stage of it is a read. The stages
+# below are the ones that only move bytes out of a file; anything that filters,
+# searches, counts or transforms (grep, rg, sort, wc, jq, an awk PATTERN rather
+# than a line range) makes the command a search, and a search is what bash is
+# genuinely for -- the built-in glob/grep tools are hidden because they cannot
+# see the repo at all (deep_agent.py's HiddenToolsMiddleware), so bash is the
+# ONLY way to search it. Flagging that would be wrong, and would teach the
+# model to ignore this the way the narrow version did.
+
+# `sed -n '10,40p'` / `sed -n 40p` -- a line range, not a pattern.
+_SED_RANGE = r"sed\s+-n\s+['\"]?[\d,$]+p?['\"]?"
+# `awk 'NR>=40 && NR<=90'` -- a line range too. An awk with a /pattern/ is a
+# search and deliberately does not match.
+_AWK_RANGE = r"awk\s+['\"][^'\"]*NR[^'\"]*['\"]"
+# Openers that take file arguments.
+_OPENERS = rf"(?:cat|head|tail|{_SED_RANGE}|{_AWK_RANGE})"
+# Limiters that take no file and just cut the stream shorter.
+_LIMITERS = re.compile(r"^\s*(?:head|tail|cat)(?:\s+-\w+)*(?:\s+\d+)?\s*$")
+
+_READ_STAGE = re.compile(
+    rf"^\s*{_OPENERS}(?:\s+-\w+)*\s+(?P<files>[^|<>]+?)\s*$"
 )
+# A path that looks like a file rather than a flag or a glob into the unknown.
+_FILEISH = re.compile(r"^[\w./~-]+$")
+
+
+def _is_read_pipeline(segment: str) -> list[str] | None:
+    """The files a segment reads, or None if it is doing anything else."""
+    stages = [st.strip() for st in _split_top_level(segment, ("|",))]
+    if not stages or not stages[0]:
+        return None
+    first = _READ_STAGE.match(stages[0])
+    if not first:
+        return None
+    files = [f for f in first.group("files").split() if not f.startswith("-")]
+    if not files or not all(_FILEISH.match(f) for f in files):
+        return None
+    # Everything downstream must only be trimming the stream. One `grep` here
+    # and this is a search.
+    for st in stages[1:]:
+        if not _LIMITERS.match(st):
+            return None
+    return files
+
+
+def _split_top_level(text: str, seps: tuple[str, ...]) -> list[str]:
+    """Split on separators that are not inside quotes.
+
+    A plain re.split cut `awk 'NR>=40 && NR<=90' file` in half, because the
+    `&&` is part of the awk program. Quotes have to be respected or the
+    matcher's answer depends on what a command happens to contain.
+    """
+    out, buf, quote = [], [], None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        hit = next((sep for sep in seps if text.startswith(sep, i)), None)
+        if hit:
+            out.append("".join(buf))
+            buf = []
+            i += len(hit)
+            continue
+        buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return out
+
+
+def _read_targets(text: str) -> list[str] | None:
+    """Every file the command reads, when reading is ALL it does."""
+    segments = _split_top_level(text, ("&&", "||", ";"))
+    out: list[str] = []
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        seg = re.sub(r"^cd\s+\S+\s*$", "", seg).strip()
+        if not seg:      # a bare `cd`, which is setup rather than work
+            continue
+        files = _is_read_pipeline(seg)
+        if files is None:
+            return None
+        out.extend(files)
+    return out or None
 
 # A command that plainly works somewhere other than the repo checkout.
 _LEADING_CD = re.compile(r"^\s*cd\s+[\"']?(/[\w./-]+)")
@@ -90,8 +191,13 @@ MEMORY_WRITE_NOTE = (
     "`edit`: that one is path-guarded to the repo and will reject the path.)"
 )
 READ_NOTE = (
-    "[harness] That read a file through the shell. Use the `read` tool instead -- same content, "
-    "no container, and it pages large files. Keep bash for RUNNING things."
+    "[harness] That read files through the shell. Use the `read` tool instead -- same content, "
+    "measured at 0.1ms against 389ms for a bash call, because `read` runs in-process and every "
+    "bash call starts a container. Reading SEVERAL files is still `read`: issue one `read` call "
+    "per file IN THE SAME TURN and they all run together (five of them measured at 0.3ms total, "
+    "against 389ms for one `cat a b c`). For part of a file use `read` with offset/limit rather "
+    "than sed/head/awk. Keep bash for what only bash can do here: rg/grep searches, find, git, "
+    "and running things."
 )
 
 
@@ -158,10 +264,11 @@ def advice_for(command: str) -> str | None:
     if _writes(text):
         return EDIT_NOTE
 
-    # Only for a command that does nothing BUT read one file. `cat x | grep y`
-    # is a search, which is exactly what bash is for.
-    match = _READ_ONLY.match(text)
-    if match and _in_repo(match.group(2)):
+    # Reading is ALL it does -- one file or six, one stage or a pipeline that
+    # only trims. `cat x | grep y` is a search and is left alone, because bash
+    # is the only tool that can search the repo at all.
+    targets = _read_targets(text)
+    if targets and all(_in_repo(f) for f in targets):
         return READ_NOTE
     return None
 

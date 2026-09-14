@@ -13,6 +13,8 @@ A note on the result, never a refusal -- writing a scratch script to RUN is a
 fair use of a shell, and no pattern can tell every case apart.
 """
 
+import pytest
+
 from agent.tools import bash_advice
 from agent.tools.bash_advice import EDIT_NOTE, READ_NOTE, advice_for, kind
 
@@ -85,10 +87,21 @@ def test_empty_and_nonsense_commands_do_not_raise():
 
 def test_the_notes_say_why_not_just_what():
     """A rule with no reason gets argued with. Both notes name the container
-    cost, which is the thing the model cannot see from inside."""
+    cost, which is the thing the model cannot see from inside, and both say
+    what bash is still FOR -- an instruction that only takes things away reads
+    as "avoid bash", which is wrong: bash is the only tool that can search this
+    repo at all."""
     for note in (EDIT_NOTE, READ_NOTE):
         assert "container" in note
-        assert "RUNNING things" in note
+        assert "running things" in note.lower()
+
+
+def test_the_read_note_says_how_to_read_several_files():
+    """The gap that made the old note easy to dismiss: it answered "not like
+    that" without answering "then how do I read six files". Parallel `read`
+    calls in one turn already work; nothing told the model so."""
+    assert "SAME TURN" in READ_NOTE
+    assert "offset/limit" in READ_NOTE, "and how to read PART of a file"
 
 
 # ---------------------------------------------------------------------------
@@ -216,3 +229,71 @@ def test_a_memory_write_is_flagged_even_though_it_is_not_in_the_repo():
     from agent.tools.bash_advice import MEMORY_WRITE_NOTE
     assert advice_for("tee /skills/x.md") is MEMORY_WRITE_NOTE
     assert advice_for("cat > /memories/AGENTS.md") is MEMORY_WRITE_NOTE
+
+
+# ---------------------------------------------------------------------------
+# Compound reads
+#
+# Measured on task 3ee0d030 (2026-09-14): an investigator made 219 bash calls
+# and the harness flagged 17 of them -- 8%. Its `read` use fell from 46 calls
+# in the first half of the run to 14 in the second while bash rose from 91 to
+# 132. Every compound spelling walked past the old single-file pattern, so the
+# model was being told that one spelling was wrong and twelve were fine.
+#
+# The line these tests hold: reading is ALL the command does -> nudge. One
+# stage that filters, searches or counts -> leave it alone, because the
+# built-in glob/grep cannot see the repo (HiddenToolsMiddleware) and bash is
+# then the ONLY way to search it. A nudge on a search is worse than no nudge:
+# it is the false positive that teaches the model to ignore the true ones.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", [
+    "cat src/a.js src/b.js",
+    "sed -n '1,80p' src/bot.js && sed -n '1,80p' src/gate.js",
+    "head -50 src/a.js; head -50 src/b.js",
+    "cat src/bot.js | head -60",
+    "awk 'NR>=40 && NR<=90' src/bot.js",
+    "cd /workspace && cat src/a.js && cat src/b.js",
+    "tail -n 40 src/a.js",
+])
+def test_a_command_that_only_reads_is_flagged_however_it_is_spelled(command):
+    assert advice_for(command) is READ_NOTE, command
+
+
+@pytest.mark.parametrize("command", [
+    "rg -n 'srDivergence' src",
+    "grep -rn 'strategy' src | head -30",
+    "cat src/bot.js | grep divergence",
+    "find . -name '*.test.js' | head",
+    "git log --oneline -20 -- src/bot.js",
+    "wc -l src/a.js",
+    "awk '/divergence/' src/bot.js",
+    "cat src/a.js | wc -l",
+    "sort src/list.txt | uniq",
+    "npm test",
+])
+def test_searching_counting_and_running_are_never_flagged(command):
+    """bash is the only tool that can search this repo. Flagging that would be
+    both wrong and self-defeating."""
+    assert advice_for(command) is None, command
+
+
+def test_separators_inside_quotes_do_not_split_the_command():
+    """`awk 'NR>=40 && NR<=90' f` contains && INSIDE the program. Splitting
+    naively cut it in half and the read went unflagged."""
+    assert advice_for("awk 'NR>=40 && NR<=90' src/bot.js") is READ_NOTE
+    assert advice_for("grep 'a && b' src/x.js") is None
+
+
+def test_a_read_of_scratch_space_is_still_left_alone():
+    """The compound forms must not undo the /tmp exemption: `read` is
+    path-guarded to the repo and cannot open those at all."""
+    assert advice_for("cd /tmp && cat a.log && cat b.log") is None
+    assert advice_for("cat /etc/hosts /etc/hostname") is None
+
+
+def test_a_mixed_command_that_reads_and_searches_is_a_search():
+    """One search stage anywhere means bash was the right call."""
+    assert advice_for("cat src/a.js && rg -n x src") is None
+    assert advice_for("rg -n x src && cat src/a.js") is None
