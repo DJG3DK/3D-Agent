@@ -776,6 +776,26 @@ def llm_for_role(config: Config, model_name: str, reasoning_effort: str | None =
         api_key=config.litellm_api_key,
         temperature=0,
         timeout=timeout if timeout is not None else _rs.as_int("model_call_timeout_s"),
+        # ONE retry, not the openai SDK's silent default of two.
+        #
+        # The default was inherited rather than chosen, and it turns a slow
+        # call into a very long one without saying so: a tool-calling call
+        # (non-streaming, see disable_streaming below) that hits the timeout
+        # is retried twice before this code ever sees an error, so one logical
+        # model call can occupy 3x the timeout -- fifteen minutes at the
+        # current 300s -- while the agent log stays silent, because the SDK
+        # swallows the first two failures.
+        #
+        # Measured 2026-09-14: a coder call logged 1802s upstream at the
+        # router for 280 output tokens, err=False, with no corresponding error
+        # on this side. The router keeps an abandoned upstream running after
+        # the client has given up, so each retry adds a concurrent upstream
+        # rather than replacing one.
+        #
+        # One retry still covers the case retries exist for -- a transient
+        # blip -- at half the worst case. Zero would make every hiccup an
+        # escalation.
+        max_retries=1,
         stream_usage=True,
         # Do not stream a response that carries tool-call arguments.
         #
