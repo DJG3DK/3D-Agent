@@ -25,7 +25,7 @@ import httpx
 
 logger = logging.getLogger("3d-agent")
 
-SANDBOX_IMAGE = "3d-agent-sandbox:latest"
+SANDBOX_IMAGE = "tektonix-sandbox:latest"
 _TIMEOUT_S = 5
 
 # Sandbox-image lookup shells out to docker, so it is cached: a monitoring box

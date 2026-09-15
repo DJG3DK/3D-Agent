@@ -2,7 +2,7 @@
 module.exports = {
   apps: [
     {
-      name: '3d-agent',
+      name: 'tektonix',
       cwd: __dirname,
       script: '.venv/bin/uvicorn',
       args: 'agent.server:app --host 127.0.0.1 --port 8100',

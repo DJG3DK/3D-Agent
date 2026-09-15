@@ -53,7 +53,7 @@ IMAGES = {
     # rather than with a formatting verdict. Adding the components to the
     # image, instead of before each check, keeps the checks themselves
     # running with --network none.
-    "rust": "3d-agent-verify-rust:latest",
+    "rust": "tektonix-verify-rust:latest",
     "ruby": "ruby:3.3-alpine",
 }
 RUST_DOCKERFILE = "FROM rust:1\nRUN rustup component add rustfmt clippy\n"

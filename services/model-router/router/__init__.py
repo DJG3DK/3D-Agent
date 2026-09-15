@@ -1,4 +1,4 @@
-"""3D-Agent's own model router.
+"""Tektonix's own model router.
 
 Replaces the LiteLLM proxy. The case for doing that is short: every one of the
 21 deployments is `openrouter/...`, so LiteLLM was a proxy in front of a proxy,

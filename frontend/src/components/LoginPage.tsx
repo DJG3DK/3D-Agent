@@ -114,7 +114,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">3D-Agent</div>
+          <div className="login-badge">Tektonix</div>
           <h1>Two-factor code</h1>
           <p className="login-sub">Enter the 6-digit code from your authenticator app.</p>
           <label className="form-field">
@@ -147,7 +147,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">3D-Agent</div>
+          <div className="login-badge">Tektonix</div>
           <h1>Reset your password</h1>
           <p className="login-sub">Enter your email and we'll send a reset code.</p>
           <label className="form-field">
@@ -177,7 +177,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">3D-Agent</div>
+          <div className="login-badge">Tektonix</div>
           <h1>Check your email</h1>
           <p className="login-sub">
             If {email} has an account, a 6-digit reset code is on its way -- it expires in 30 minutes.
@@ -231,7 +231,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">3D-Agent</div>
+          <div className="login-badge">Tektonix</div>
           <h1>Password reset</h1>
           <p className="login-sub">Your password has been changed. Sign in with it below.</p>
           <button className="btn btn-primary btn-block" onClick={backToSignIn}>
@@ -246,7 +246,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
   return (
     <div className="login-page">
       <div className="login-card">
-        <div className="login-badge">3D-Agent</div>
+        <div className="login-badge">Tektonix</div>
         <h1>Sign in</h1>
         <label className="form-field">
           <span>Email</span>

@@ -83,7 +83,7 @@ def read_env(path: Path) -> dict[str, str]:
 def fingerprint(value: str) -> str:
     """Eight hex characters of a salted digest: enough to say "these two are
     the same" or "these two differ", useless for recovering the value."""
-    return hashlib.blake2b(("3d-agent-doctor:" + value).encode(), digest_size=4).hexdigest()
+    return hashlib.blake2b(("tektonix-doctor:" + value).encode(), digest_size=4).hexdigest()
 
 
 def mode_of(path: Path) -> int:
@@ -270,7 +270,7 @@ def check_dashboard(report: Report) -> None:
 def check_sandbox_image(report: Report) -> None:
     """Every bash call the coder makes runs in this image."""
     try:
-        r = subprocess.run(["docker", "image", "inspect", "3d-agent-sandbox:latest"],
+        r = subprocess.run(["docker", "image", "inspect", "tektonix-sandbox:latest"],
                            capture_output=True, timeout=20)
     except Exception:  # noqa: BLE001
         report.fail("docker not available", "the coder cannot run a single shell command without it")
@@ -278,8 +278,8 @@ def check_sandbox_image(report: Report) -> None:
     if r.returncode == 0:
         report.ok("sandbox image present")
     else:
-        report.fail("sandbox image 3d-agent-sandbox:latest missing",
-                    "docker build -t 3d-agent-sandbox:latest docker/agent-sandbox/")
+        report.fail("sandbox image tektonix-sandbox:latest missing",
+                    "docker build -t tektonix-sandbox:latest docker/agent-sandbox/")
 
 
 CHECKS = (

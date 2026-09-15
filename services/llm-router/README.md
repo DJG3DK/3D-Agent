@@ -8,7 +8,7 @@ code change in any of the services that call it.
 
 ## Why the indirection is worth it
 
-- **Swappable from a dashboard.** 3D-Agent's Models tab rewrites the `model:` line of these
+- **Swappable from a dashboard.** Tektonix's Models tab rewrites the `model:` line of these
   `agent-*` entries directly. Nothing else in the file is touched.
 - **Costs in one place.** Each pin carries `model_info` rates, so spend is attributable per role
   rather than per raw model id.

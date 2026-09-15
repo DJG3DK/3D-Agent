@@ -1,11 +1,11 @@
-# Installing 3D-Agent
+# Installing Tektonix
 
-3D-Agent is self-hosted: it runs on a machine you control, works on repos on
+Tektonix is self-hosted: it runs on a machine you control, works on repos on
 that machine, and talks to exactly one paid service (OpenRouter). This guide
 takes about 15 minutes, most of it waiting for dependencies.
 
 > **Clone it, don't fork it.** Forking is for sending changes back upstream. To
-> *run* 3D-Agent, clone it — every file that is specific to your deployment
+> *run* Tektonix, clone it — every file that is specific to your deployment
 > (`.env`, `projects.json`, `skills/local/`, the service overrides) is
 > gitignored, so `git pull` brings you updates without ever touching your
 > configuration.
@@ -42,8 +42,8 @@ distro's layout.
 ## 2. Install
 
 ```bash
-git clone https://github.com/DJG3DK/3D-Agent.git
-cd 3D-Agent
+git clone https://github.com/DJG3DK/tektonix.git
+cd Tektonix
 ./install.sh
 ```
 
@@ -507,7 +507,7 @@ Each returns 503 and names the failing dependency. For a specific symptom, see
 
 
 **The first tool call of the first task fails.** The sandbox image isn't
-built: `docker build -t 3d-agent-sandbox:latest docker/agent-sandbox/`
+built: `docker build -t tektonix-sandbox:latest docker/agent-sandbox/`
 
 **Every model call 401s.** `LITELLM_API_KEY` in `.env` doesn't match
 `LITELLM_MASTER_KEY` in `services/llm-router/.env`.
@@ -592,13 +592,13 @@ release tarball ships it already built:
 
 ```bash
 scripts/package_release.sh v0.5.0        # on a machine with Node
-# -> dist/3d-agent-v0.5.0.tar.gz  +  .sha256
+# -> dist/tektonix-v0.5.0.tar.gz  +  .sha256
 ```
 
 On the server:
 
 ```bash
-tar -xzf 3d-agent-v0.5.0.tar.gz && cd 3d-agent-v0.5.0
+tar -xzf tektonix-v0.5.0.tar.gz && cd tektonix-v0.5.0
 ./install.sh          # finds frontend/dist and skips the Node build entirely
 ```
 

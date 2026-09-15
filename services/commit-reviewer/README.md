@@ -1,6 +1,6 @@
 # commit-reviewer
 
-An independent post-commit review gate for [3D-Agent](https://github.com/DJG3DK/3D-Agent).
+An independent post-commit review gate for [Tektonix](https://github.com/DJG3DK/tektonix).
 
 The agent's own claim of "done" carries no authority. When a task commits, this service checks out
 that commit, runs the project's **real** checks, and hands the diff to a model for review. Only a

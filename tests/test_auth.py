@@ -92,7 +92,7 @@ def test_provisioning_uri_names_the_issuer_and_account():
     secret = new_totp_secret()
     uri = totp_provisioning_uri(secret, "admin@example.com")
     assert uri.startswith("otpauth://totp/")
-    assert "3D-Agent" in uri
+    assert "Tektonix" in uri
     assert "admin%40example.com" in uri or "admin@example.com" in uri
 
 

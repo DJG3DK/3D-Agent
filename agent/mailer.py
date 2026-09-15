@@ -22,11 +22,11 @@ RESET_CODE_TTL_MINUTES = 30
 
 async def send_password_reset_email(config: Config, to_email: str, code: str) -> None:
     msg = EmailMessage()
-    msg["Subject"] = "Your 3D-Agent password reset code"
+    msg["Subject"] = "Your Tektonix password reset code"
     msg["From"] = config.smtp_from
     msg["To"] = to_email
     msg.set_content(
-        f"Use this code to reset your 3D-Agent password: {code}\n\n"
+        f"Use this code to reset your Tektonix password: {code}\n\n"
         f"It expires in {RESET_CODE_TTL_MINUTES} minutes. If you didn't request this, ignore this email."
     )
     await aiosmtplib.send(

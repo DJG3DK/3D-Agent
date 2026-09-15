@@ -84,7 +84,7 @@ def host_path(path: str) -> str:
     return path
 
 
-SANDBOX_IMAGE = "3d-agent-sandbox:latest"  # built from docker/agent-sandbox/Dockerfile
+SANDBOX_IMAGE = "tektonix-sandbox:latest"  # built from docker/agent-sandbox/Dockerfile
 SANDBOX_MEMORY_LIMIT = "2g"
 SANDBOX_CPU_LIMIT = "2"
 # audit M-10: cap process count to blunt a fork bomb, drop all Linux

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 3D-Agent installer.
+# Tektonix installer.
 #
 # Asks for what it cannot derive, derives everything else, and shows you each
 # step before it runs. Safe to re-run: every step checks whether it already
@@ -34,7 +34,7 @@ note() { printf '    %s%s%s\n' "$DIM" "$*" "$N"; }
 
 usage() {
     cat <<'EOF'
-3D-Agent installer
+Tektonix installer
 
   ./install.sh [--dry-run] [--yes] [--help]
 
@@ -391,15 +391,15 @@ step "Sandbox container image"
 if [ "${SKIP_DOCKER:-0}" = "1" ]; then
     warn "skipped (SKIP_DOCKER=1) — the first tool call of the first task will fail without it"
 elif [ "$DRY_RUN" = "1" ]; then
-    note "would build 3d-agent-sandbox:latest from docker/agent-sandbox/"
-elif docker image inspect 3d-agent-sandbox:latest >/dev/null 2>&1; then
-    ok "3d-agent-sandbox:latest already built"
+    note "would build tektonix-sandbox:latest from docker/agent-sandbox/"
+elif docker image inspect tektonix-sandbox:latest >/dev/null 2>&1; then
+    ok "tektonix-sandbox:latest already built"
 else
-    say "  building 3d-agent-sandbox:latest (a few minutes; it includes headless Chromium so the agent can see the UIs it builds)…"
-    if docker build -q -t 3d-agent-sandbox:latest docker/agent-sandbox/ >/dev/null; then
+    say "  building tektonix-sandbox:latest (a few minutes; it includes headless Chromium so the agent can see the UIs it builds)…"
+    if docker build -q -t tektonix-sandbox:latest docker/agent-sandbox/ >/dev/null; then
         ok "sandbox image built"
     else
-        warn "sandbox build failed — run it yourself: docker build -t 3d-agent-sandbox:latest docker/agent-sandbox/"
+        warn "sandbox build failed — run it yourself: docker build -t tektonix-sandbox:latest docker/agent-sandbox/"
     fi
 fi
 
@@ -518,7 +518,7 @@ if [ -n "$DOMAIN" ] && [ "$DRY_RUN" != "1" ]; then
     if [ "$NGINX_LAYOUT" = "debian" ]; then
         VHOST=/etc/nginx/sites-available/3d-agent
     else
-        VHOST=/etc/nginx/conf.d/3d-agent.conf
+        VHOST=/etc/nginx/conf.d/tektonix.conf
         sudo mkdir -p /etc/nginx/conf.d
     fi
     if [ -f "$VHOST" ]; then

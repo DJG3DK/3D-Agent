@@ -82,7 +82,7 @@ agent is using will fight it.
 
 ```bash
 # 1. stop everything that writes
-pm2 stop 3d-agent commit-reviewer agent-review
+pm2 stop tektonix commit-reviewer agent-review
 
 # 2. restore into a fresh database, then point .env at it
 sudo -u postgres psql -c 'CREATE DATABASE langgraph_agent_restored OWNER langgraph_agent'
@@ -93,7 +93,7 @@ pg_restore --dbname="postgresql://langgraph_agent:...@localhost:5432/langgraph_a
 #    and make sure AUTH_SECRET_KEY is the one that went with this dump
 
 # 4. start the agent and check it can actually see the data
-pm2 start 3d-agent
+pm2 start tektonix
 curl -s 127.0.0.1:8100/api/health | python3 -m json.tool
 pm2 start agent-review commit-reviewer
 ```

@@ -585,7 +585,7 @@ def new_totp_secret() -> str:
 
 
 def totp_provisioning_uri(secret: str, email: str) -> str:
-    return pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="3D-Agent")
+    return pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="Tektonix")
 
 
 async def start_totp_setup(pool: AsyncConnectionPool, config: Config, user_id: int) -> tuple[str, str]:

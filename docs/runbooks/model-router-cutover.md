@@ -52,7 +52,7 @@ Footprint next to the thing it replaces: **57 MB against 815 MB**.
    LITELLM_BASE_URL=http://127.0.0.1:4001/v1
    ```
 
-   Then `pm2 restart 3d-agent`. Do this while **no task is running** — the
+   Then `pm2 restart tektonix`. Do this while **no task is running** — the
    restart kills the current work pass, which is a property of the agent, not
    of either router.
 

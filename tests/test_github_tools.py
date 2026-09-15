@@ -12,10 +12,10 @@ from agent.tools.github_tools import (
 
 def test_slug_from_ssh_and_https_remotes():
     assert repo_slug_from_remote("git@github.com:DJG3DK/3d-bot.git") == "DJG3DK/3d-bot"
-    assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent") == "DJG3DK/3D-Agent"
-    assert repo_slug_from_remote("https://github.com/DJG3DK/3D-Agent.git\n") == "DJG3DK/3D-Agent"
+    assert repo_slug_from_remote("https://github.com/DJG3DK/tektonix") == "DJG3DK/tektonix"
+    assert repo_slug_from_remote("https://github.com/DJG3DK/tektonix.git\n") == "DJG3DK/tektonix"
     # HTTPS with userinfo (a PAT in the URL, or an insteadOf rewrite):
-    assert repo_slug_from_remote("https://x-access-token:secret@github.com/DJG3DK/3D-Agent.git") == "DJG3DK/3D-Agent"
+    assert repo_slug_from_remote("https://x-access-token:secret@github.com/DJG3DK/tektonix.git") == "DJG3DK/tektonix"
     # A deploy key per project means an SSH host alias per project (2026-09-10:
     # two of three live projects resolved to no slug at all until this).
     assert repo_slug_from_remote("git@github-3dsteals:DJG3DK/3DSteals.com.git") == "DJG3DK/3DSteals.com"

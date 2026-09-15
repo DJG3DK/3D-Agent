@@ -1,4 +1,4 @@
-# The 3D-Agent bundle: one command, any host with Docker.
+# The Tektonix bundle: one command, any host with Docker.
 #
 #   cp docker/.env.example .env   # set OPENROUTER_API_KEY and PROJECTS_DIR
 #   docker compose up -d

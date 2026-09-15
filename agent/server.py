@@ -926,7 +926,7 @@ async def _github_notify(text: str, repo: str) -> None:
     if settings["notify"].get("email"):
         to = settings["notify"].get("email_to") or config.admin_email
         try:
-            await send_plain_email(config, to, f"[3D-Agent] GitHub inbox: {repo}", text)
+            await send_plain_email(config, to, f"[Tektonix] GitHub inbox: {repo}", text)
         except Exception:  # noqa: BLE001 -- best-effort, like every alert
             logger.exception("github inbox: email to %s failed", to)
 
@@ -986,7 +986,7 @@ async def github_poll_now(user: User = Depends(require_full_auth)):
 
 
 _APPROVE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>3D-Agent · GitHub inbox</title>
+<title>Tektonix · GitHub inbox</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;background:#0f1220;color:#e6e8f0;margin:0;padding:24px}
 .card{max-width:560px;margin:8vh auto;background:#181c30;border:1px solid #2a3050;border-radius:12px;padding:24px}
 h1{font-size:18px;margin:0 0 12px}p{margin:8px 0}.muted{color:#9aa3c0}.err{color:#ff8a8a}
@@ -2902,11 +2902,11 @@ async def list_tasks(repo: str | None = None, user: User = Depends(require_full_
 # per-model spend). The frontend used to call that service directly, but a
 # deployment may put it behind a separate reverse-proxy auth that this app's
 # own users have no session for (this one did). That silently 401'd the
-# balance fetch for anyone who had only logged into 3D-Agent's own auth,
+# balance fetch for anyone who had only logged into Tektonix's own auth,
 # and BalanceStrip.tsx swallows any fetch failure (renders nothing rather
 # than an error), so the balance just vanished from the sidebar with no
 # visible cause. This passthrough re-uses this app's own auth instead, so
-# the balance only ever depends on being logged into 3D-Agent itself.
+# the balance only ever depends on being logged into Tektonix itself.
 _REVIEW_SERVICE_BASE_URL = "http://127.0.0.1:4100"
 
 

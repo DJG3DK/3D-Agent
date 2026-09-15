@@ -1,4 +1,4 @@
-# 3D-Agent
+# Tektonix
 
 An autonomous coding agent built on [LangGraph](https://langchain-ai.github.io/langgraph/) and
 [deepagents](https://github.com/langchain-ai/deepagents). It plans, executes, and verifies real
@@ -605,8 +605,8 @@ lifecycle.
 ## Running it
 
 ```bash
-git clone https://github.com/DJG3DK/3D-Agent.git
-cd 3D-Agent
+git clone https://github.com/DJG3DK/tektonix.git
+cd Tektonix
 ./install.sh
 ```
 
@@ -630,7 +630,7 @@ createdb three_d_agent          # then put the DSN in .env
 
 # 1. The sandbox image — the agent's bash/edit tools run inside this container.
 #    Without it, the FIRST tool call of the first task fails.
-docker build -t 3d-agent-sandbox:latest docker/agent-sandbox/
+docker build -t tektonix-sandbox:latest docker/agent-sandbox/
 
 # 2. The model router — everything resolves model aliases through it
 cd services/llm-router

@@ -69,14 +69,14 @@ fi
 # 4. The sandbox image. Built here rather than in compose because it is the
 #    agent's own dependency, and a bundle that starts without it fails on the
 #    first tool call of the first task instead of at boot.
-if ! docker image inspect 3d-agent-sandbox:latest >/dev/null 2>&1; then
+if ! docker image inspect tektonix-sandbox:latest >/dev/null 2>&1; then
     if [ -d /app/docker/agent-sandbox ]; then
         echo "[entrypoint] building the sandbox image (first run only)..."
-        docker build -q -t 3d-agent-sandbox:latest /app/docker/agent-sandbox >/dev/null \
+        docker build -q -t tektonix-sandbox:latest /app/docker/agent-sandbox >/dev/null \
             && echo "[entrypoint] sandbox image ready" \
             || echo "[entrypoint] sandbox build failed -- tasks will fail on their first command" >&2
     else
-        echo "[entrypoint] no sandbox context mounted; expecting 3d-agent-sandbox:latest on the host" >&2
+        echo "[entrypoint] no sandbox context mounted; expecting tektonix-sandbox:latest on the host" >&2
     fi
 fi
 

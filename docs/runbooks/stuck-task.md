@@ -84,7 +84,7 @@ PY
 Cross-check against the agent's own log for the auto-resume line:
 
 ```bash
-grep 'auto-resume' /root/.pm2/logs/3d-agent-error.log | tail -3
+grep 'auto-resume' /root/.pm2/logs/tektonix-error.log | tail -3
 ```
 
 **Action — resume it.** From the dashboard, open the task and press Resume.
@@ -161,7 +161,7 @@ costs the pass in flight -- but a pass that is going to be killed anyway is not
 worth protecting:
 
 ```bash
-pm2 restart 3d-agent --update-env    # after editing ecosystem.config.js
+pm2 restart tektonix --update-env    # after editing ecosystem.config.js
 ```
 
 Check what the box actually has (`free -g`) before choosing a number. The cap
@@ -175,7 +175,7 @@ One task per project is enforced with a Postgres advisory lock. A second
 process holding it makes a task wait silently at the very start.
 
 ```bash
-grep 'locked by another process' /root/.pm2/logs/3d-agent-error.log | tail -3
+grep 'locked by another process' /root/.pm2/logs/tektonix-error.log | tail -3
 ```
 
 ```bash

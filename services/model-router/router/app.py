@@ -58,14 +58,14 @@ async def lifespan(app: FastAPI):
     # difference between a 200ms call and a 700ms one at this volume.
     app.state.http = httpx.AsyncClient(
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=40),
-        headers={"HTTP-Referer": "https://agent.3dcryptobots.com", "X-Title": "3D-Agent"},
+        headers={"HTTP-Referer": "https://agent.3dcryptobots.com", "X-Title": "Tektonix"},
     )
     logger.info("model-router up: %d deployments", len(registry.table.deployments))
     yield
     await app.state.http.aclose()
 
 
-app = FastAPI(title="3D-Agent model router", lifespan=lifespan)
+app = FastAPI(title="Tektonix model router", lifespan=lifespan)
 
 
 def _authorise(authorization: str | None) -> None:

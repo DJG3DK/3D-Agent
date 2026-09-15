@@ -334,13 +334,13 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-logo">
-          {/* The 3D Agent lockup -- hexagonal "3D" mark plus the wordmark,
+          {/* The Tektonix lockup -- hexagonal "3D" mark plus the wordmark,
               replacing the placeholder diamond glyph. */}
           {/* Imported through vite (not public/): the backend only mounts
               /assets/*, so a root-level file fell through to the SPA
               catch-all and served HTML as the image (seen live). Bundling
               gives it a hashed /assets URL the existing mount serves. */}
-          <img className="sidebar-logo-img" src={logoUrl} alt="3D Agent" />
+          <img className="sidebar-logo-img" src={logoUrl} alt="Tektonix" />
         </div>
         {/* Plan-first (operator decision 2026-08-28): "we do not go directly
             to tasks... Planning chat should always happen first." The primary

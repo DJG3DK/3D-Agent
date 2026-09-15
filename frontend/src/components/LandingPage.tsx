@@ -11,7 +11,7 @@ import shotUsage from "../assets/shots/analytics3.webp";
 import shotTools from "../assets/shots/analytics4.webp";
 import "./LandingPage.css";
 
-const REPO = "https://github.com/DJG3DK/3D-Agent";
+const REPO = "https://github.com/DJG3DK/tektonix";
 
 interface Props {
   onSignIn: () => void;
@@ -163,8 +163,8 @@ export function LandingPage({ onSignIn }: Props) {
       <header className="lp-nav">
         <div className="lp-nav-inner">
           {/* The lockup already reads "3D agent", so no wordmark beside it. */}
-          <a className="lp-brand" href="#top" aria-label="3D-Agent, back to top">
-            <img src={logoUrl} alt="3D-Agent" />
+          <a className="lp-brand" href="#top" aria-label="Tektonix, back to top">
+            <img src={logoUrl} alt="Tektonix" />
           </a>
           <nav className="lp-nav-links">
             <a href="#how">How it works</a>
@@ -220,7 +220,7 @@ export function LandingPage({ onSignIn }: Props) {
             <div className="lp-chrome" aria-hidden="true">
               <span /> <span /> <span />
             </div>
-            <img src={shotModelRoles} alt="The model configuration screen of the 3D-Agent dashboard" />
+            <img src={shotModelRoles} alt="The model configuration screen of the Tektonix dashboard" />
           </figure>
         </section>
 
@@ -360,7 +360,7 @@ export function LandingPage({ onSignIn }: Props) {
 
       <footer className="lp-foot">
         <div className="lp-foot-brand">
-          <img src={logoUrl} alt="3D-Agent" />
+          <img src={logoUrl} alt="Tektonix" />
         </div>
         <p>
           Source available under PolyForm Noncommercial 1.0.0 &mdash; free for any noncommercial
@@ -368,7 +368,7 @@ export function LandingPage({ onSignIn }: Props) {
         </p>
         <a href={REPO} target="_blank" rel="noopener noreferrer">
           <GitHubMark />
-          github.com/DJG3DK/3D-Agent
+          github.com/DJG3DK/tektonix
         </a>
       </footer>
     </div>

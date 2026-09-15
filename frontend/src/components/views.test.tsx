@@ -99,7 +99,7 @@ describe("LandingPage", () => {
     const links = screen.getAllByRole("link").filter((a) => a.getAttribute("href")?.startsWith("http"));
     expect(links.length).toBeGreaterThan(0);
     links.forEach((a) =>
-      expect(a.getAttribute("href")).toBe("https://github.com/DJG3DK/3D-Agent"),
+      expect(a.getAttribute("href")).toBe("https://github.com/DJG3DK/tektonix"),
     );
   });
 
