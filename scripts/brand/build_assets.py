@@ -57,7 +57,7 @@ def _save(img, w, h, path, rgb=False):
     if rgb:
         out = out.convert("RGB")
     out.save(path)
-    print("  %-26s %dx%d" % (path.name, w, h))
+    print(f"  {path.name:<26} {w}x{h}")
 
 
 # ── 1. the lockup, for the sidebar and the landing page ─────────────────────
@@ -109,7 +109,7 @@ def ico(path, sizes=(16, 32, 48)):
         frames.append(img.resize((px, px), Image.LANCZOS))
     frames[0].save(path, format="ICO", sizes=[(f.width, f.height) for f in frames],
                    append_images=frames[1:])
-    print("  %-26s %s" % (path.name, list(sizes)))
+    print(f"  {path.name:<26} {list(sizes)}")
 
 
 def apple_touch(path, px=180):
