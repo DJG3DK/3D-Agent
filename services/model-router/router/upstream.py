@@ -65,6 +65,23 @@ class Usage:
                 setattr(self, f, v)
 
 
+# Status codes worth trying again on the SAME deployment. A 429 is the
+# provider asking us to wait, not a reason to abandon the model the operator
+# pinned -- config.yaml records two 429s a minute apart taking a whole demo
+# down. 5xx is the provider failing transiently. Everything else (400 a
+# malformed request, 401 a bad key, 404 an unknown model) will fail identically
+# on a second attempt, so retrying it only adds latency to a certain failure.
+TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def is_transient(status: int | None, error: str | None) -> bool:
+    if status is not None:
+        return status in TRANSIENT_STATUS
+    # No status means the request never completed: a timeout, a dropped
+    # connection, a DNS blip. All worth one more try.
+    return bool(error)
+
+
 @dataclass
 class Attempt:
     """One try against one deployment."""

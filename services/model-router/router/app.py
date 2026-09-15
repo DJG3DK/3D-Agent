@@ -21,8 +21,10 @@ something that breaks a specific caller if it changes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import random
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -32,6 +34,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from router import ledger, upstream
+from router import stats as stats_mod
 from router.config import Registry
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -41,6 +44,10 @@ MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY") or os.environ.get("MODEL_ROUTE
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 # Kept as the literal litellm spelling: budget_guard matches on it.
 CALL_ID_HEADER = "x-litellm-call-id"
+# Extra tries on the SAME deployment before falling back, for transient
+# failures only (see upstream.is_transient).
+RETRIES_PER_DEPLOYMENT = int(os.environ.get("MODEL_ROUTER_RETRIES", "2"))
+BACKOFF_S = float(os.environ.get("MODEL_ROUTER_BACKOFF_S", "0.6"))
 
 registry = Registry()
 
@@ -102,6 +109,19 @@ async def model_info(authorization: str | None = Header(default=None)):
         for d in t.deployments.values()]}
 
 
+@app.get("/v1/stats")
+async def stats(window_minutes: int = 60, authorization: str | None = Header(default=None)):
+    """What the router has been doing, read back out of its own ledger.
+
+    Per alias: call count, error rate, p50/p95/max latency, spend, cache hit
+    rate, retry count, and which providers actually served it -- none of which
+    was visible before without parsing the file by hand.
+    """
+    _authorise(authorization)
+    window = max(1, min(int(window_minutes), 24 * 60)) * 60
+    return stats_mod.summarise(ledger.LOG_PATH, window)
+
+
 @app.get("/v1/models")
 async def models(authorization: str | None = Header(default=None)):
     _authorise(authorization)
@@ -131,28 +151,44 @@ async def chat_completions(request: Request, authorization: str | None = Header(
     if body.get("stream"):
         return await _streamed(client, table, alias, body, call_id, task_id, session_id)
 
-    # Buffered: walk the fallback chain, first success wins.
+    # Buffered: walk the fallback chain, retrying TRANSIENT failures on each
+    # deployment before moving on. Moving to a fallback on the first 429 throws
+    # away the model the operator pinned because a provider asked us to wait a
+    # moment -- and the fallback is, by definition, not their first choice.
     chain = table.chain(alias)
     last: upstream.Attempt | None = None
-    for attempt_no, name in enumerate(chain, start=1):
+    attempt_no = 0
+    for name in chain:
         dep = table.deployments[name]
-        att = await upstream.call_once(client, OPENROUTER_KEY, body, dep.model,
-                                       dep.extra_body, dep.timeout_s)
-        att.alias = name
-        last = att
-        ledger.record(
-            call_id=call_id, alias=alias, model=att.usage.model or dep.model,
-            prompt_tokens=att.usage.prompt_tokens, completion_tokens=att.usage.completion_tokens,
-            cached_tokens=att.usage.cached_tokens, cost=att.usage.cost,
-            duration_s=att.duration_s, task_id=task_id, session_id=session_id,
-            provider=att.usage.provider, attempt=attempt_no,
-            error=not att.ok, error_detail=att.error,
-        )
-        if att.ok:
-            headers = {CALL_ID_HEADER: call_id, "x-router-deployment": name,
-                       "x-router-attempt": str(attempt_no)}
-            return JSONResponse(att.payload, headers=headers)
-        logger.warning("attempt %d/%d on %s failed: %s", attempt_no, len(chain), name, att.error)
+        for retry in range(RETRIES_PER_DEPLOYMENT + 1):
+            attempt_no += 1
+            att = await upstream.call_once(client, OPENROUTER_KEY, body, dep.model,
+                                           dep.extra_body, dep.timeout_s)
+            att.alias = name
+            last = att
+            ledger.record(
+                call_id=call_id, alias=alias, model=att.usage.model or dep.model,
+                prompt_tokens=att.usage.prompt_tokens, completion_tokens=att.usage.completion_tokens,
+                cached_tokens=att.usage.cached_tokens, cost=att.usage.cost,
+                duration_s=att.duration_s, task_id=task_id, session_id=session_id,
+                provider=att.usage.provider, attempt=attempt_no,
+                error=not att.ok, error_detail=att.error,
+            )
+            if att.ok:
+                headers = {CALL_ID_HEADER: call_id, "x-router-deployment": name,
+                           "x-router-attempt": str(attempt_no)}
+                return JSONResponse(att.payload, headers=headers)
+
+            transient = upstream.is_transient(att.status, att.error)
+            logger.warning("attempt %d on %s failed (%s, %s): %s", attempt_no, name,
+                           att.status, "transient" if transient else "permanent", att.error)
+            if not transient:
+                break          # a 400 will fail the same way twice
+            if retry < RETRIES_PER_DEPLOYMENT:
+                # Short backoff with jitter. Long enough to clear a rate-limit
+                # burst, short enough that a real outage still reaches the
+                # fallback while the caller is waiting.
+                await asyncio.sleep(BACKOFF_S * (2 ** retry) * (0.5 + random.random()))
 
     detail = last.error if last else "no deployment answered"
     return JSONResponse({"error": {"message": detail, "type": "upstream_error",

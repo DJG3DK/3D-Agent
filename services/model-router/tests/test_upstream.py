@@ -88,3 +88,36 @@ def test_the_final_chunk_wins_on_usage():
     u = Usage(prompt_tokens=1, completion_tokens=1)
     u.merge(Usage.from_payload({"usage": {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.02}}))
     assert (u.prompt_tokens, u.completion_tokens, u.cost) == (100, 50, 0.02)
+
+
+# ---------------------------------------------------------------------------
+# which failures are worth trying again
+# ---------------------------------------------------------------------------
+
+import pytest
+
+from router.upstream import is_transient
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 408])
+def test_provider_trouble_is_retried(status):
+    """A 429 is the provider asking us to wait. config.yaml records two of them
+    a minute apart taking a whole demo down, because the only answer available
+    was to give up on the pinned model."""
+    assert is_transient(status, None) is True
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+def test_our_own_mistakes_are_not_retried(status):
+    """A malformed request, a bad key or an unknown model fails identically on
+    the second attempt -- retrying only adds latency to a certain failure."""
+    assert is_transient(status, None) is False
+
+
+def test_a_request_that_never_completed_is_retried():
+    """No status means a timeout, a dropped connection or a DNS blip."""
+    assert is_transient(None, "ReadTimeout: ...") is True
+
+
+def test_no_status_and_no_error_is_not_retried():
+    assert is_transient(None, None) is False
