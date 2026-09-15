@@ -1,7 +1,9 @@
-# Roadmap: packaging, Windows, and projects that are not local
+# Roadmap: packaging, Windows, GitHub projects, and the CLI
 
-Written 2026-09-13. Every claim about the current code below was checked
-against the tree, not remembered.
+Written 2026-09-13; remote projects replaced by GitHub-based projects and
+the CLI added 2026-09-15. Every claim about the current code below was checked
+against the tree, not remembered — including, this time, a "done" in M0 that
+was not.
 
 This is a plan, so unlike `docs/architecture.md` it *is* allowed to talk about
 things that do not exist yet. Anything describing the present tense has a file
@@ -62,21 +64,42 @@ Four. That is the whole list.
 
 ## Answering the question that prompted this
 
-> If my projects are not local, does the backend have to be installed on the
-> VPS?
+> If my projects live in GitHub rather than on the agent's box, does the
+> backend have to be installed wherever they run?
 
-**No.** `run_shell_sandboxed` builds a complete `docker run …` command line.
-Point `DOCKER_HOST` at `ssh://user@host` and that same command executes on the
-remote box, against remote paths, with the container's mounts resolving
-remotely — no change to how the command is built. That single environment
-variable moves *every model command and every check* to the remote machine.
+**No — and it never needed to be.** The agent does not work against a running
+deployment; it works against a git repository. So the answer is to *clone*,
+not to reach across the network at execution time. The clone is local, every
+command and check runs locally, and the only remote thing is `origin`.
 
-What the remote box needs is **sshd, Docker and git**. Not our backend, not
-Postgres, not Python. Tasks, memory, checkpoints, the audit log and the
-dashboard all stay on the machine running the control plane.
+This is a much smaller job than remote execution, and most of it already
+exists:
 
-What does *not* ride along on that trick, and is therefore the real work of
-M3: `files.py` (direct local filesystem I/O) and the Node reviewer.
+* **The push is already there.** After `git merge --ff-only`,
+  `services/agent-review/server.js:304` runs `git push origin <branch>`
+  whenever an `origin` remote exists — best-effort, reported in the response
+  rather than assumed. Added 2026-08-23, after two commits deployed live while
+  GitHub sat two commits stale.
+* **Deploying is already optional.** `deploy`, `pm2Apps` and `build` are all
+  absent from two of the three projects in `projects.example.json`. A project
+  with none of them skips the restart stage; nothing breaks.
+* **Push credentials already exist per project.** `agent/deploy_keys.py`
+  generates, installs and verifies an ed25519 deploy key against the real
+  remote, with an SSH host alias per project.
+
+Two things are genuinely missing, and one of them is a trap:
+
+1. **Nothing clones.** `provisioning.detect_project` blocks on a path that is
+   not already a git repository, so onboarding starts from a directory you
+   already have.
+2. **Nothing ever fetches.** `sync_workspace_to_base` moves the workspace to
+   *local* `main`, and `agent/tools/git.py:135` says outright that there is
+   "no remote to fetch through". That is correct while the live repo on this
+   box IS the source of truth. It becomes wrong the moment GitHub is: a
+   teammate pushes, the agent edits stale code, and the `--ff-only` merge
+   fails with diverging branches. This exact failure already happened once
+   locally (2026-08-26) and is the reason `sync_workspace_to_base` exists at
+   all — the GitHub case just reintroduces it through a different door.
 
 ---
 
@@ -87,8 +110,10 @@ dependency, not by appetite.
 
 ### M0 — Portability groundwork *(no user-visible change)* — **done, d2c2747**
 
-* An executor interface with exactly one implementation: today's local
-  behaviour. Nothing changes; the seam simply exists.
+* ~~An executor interface with exactly one implementation.~~ **Did not
+  ship.** `d2c2747` touched three files and delivered the two items below;
+  the host-vs-sandbox executor is real work and now lives in M3. Corrected
+  2026-09-15, having been listed as done for two days.
 * Fix the process-group kill in `shell.py` so it degrades correctly off Linux.
 * Make the sandbox's mount paths come from one place, so "host path equals
   container path" becomes a property we can satisfy deliberately rather than
@@ -133,33 +158,66 @@ Windows itself is untested — that is the operator's next step, and the only
 variable left is whether Docker Desktop's own path translation agrees with the
 map.
 
-### M2 — Remote projects, phase one: remote sandbox
+### M2 — GitHub-based projects *(replaces the old remote-projects milestone)*
 
-* A project gains an optional `host:` (an SSH target).
-* For such a project, `run_shell_sandboxed` executes against
-  `DOCKER_HOST=ssh://…`. Model commands and checks now run on the remote box.
-* Host-side git (`shell.py` → `git.py`) runs over SSH for those projects.
+The agent stops requiring that you already have the repo checked out, and
+starts treating the local checkout as a **cache of GitHub** rather than as a
+deployment it owns.
 
-**Done when:** a task on a remote project can read the repo, run its checks and
-report results, with nothing installed on the remote box but sshd, Docker and
-git.
+* **Clone on add.** The onboarding wizard accepts a GitHub URL (or
+  `owner/repo`) as well as a path. It clones into `AGENT_PROJECT_ROOTS`, then
+  hands off to the existing `detect_project` flow completely unchanged — the
+  wizard's detection, the worktree, `projects.json` and every downstream
+  consumer stay exactly as they are.
+* **Fetch before each task.** `sync_workspace_to_base` gains a fetch against
+  `origin` for projects marked as GitHub-backed, so a task always branches
+  from the real tip. This is the trap named above; it is the part that must
+  not be skipped.
+* **Ship as a pull request, not a push to main.** A per-project
+  `ship: "push" | "pr"`. `push` is today's behaviour and stays the default for
+  an existing project. `pr` opens a PR from the task branch and reports the
+  URL instead of fast-forwarding the base branch. `require_merge_review`
+  (outer_state.py) is unaffected and still gates everything either way.
+* **Credentials.** Read+write now, where `Config.github_token` is documented
+  as read-only. The deploy-key path in `agent/deploy_keys.py` already covers
+  push; the PR route needs a token with `pull_requests: write`.
 
-**Known gap at this point:** `read`/`write`/`edit` still address a local
-filesystem, so this phase alone cannot *modify* a remote project. That is M3.
+**Done when:** a project that exists nowhere but GitHub can be added from the
+dashboard by URL, complete a task, and land it as a pull request — with no
+`deploy` block, no pm2, and nothing pre-checked-out.
 
-### M3 — Remote projects, phase two: remote files and review
+**Known gap at this point:** the clone is still on the machine running the
+agent. That is the point, not a limitation.
 
-* `files.py` behind the executor: sftp for a remote project, direct I/O for a
-  local one.
-* The commit-reviewer either runs remotely or drives git remotely.
-* Worktree creation and the merge path follow.
+### M3 — The CLI *(the agent lives in the repo)*
 
-**Done when:** a remote project completes the full loop — plan, edit, check,
-commit, review, merge — from a control plane on another machine.
+`3d-agent` run from inside a checkout, the way `claude` and `cursor` are. No
+dashboard, no nginx, no Postgres, no accounts. Same graph, same tools, same
+plan/verify loop.
 
-**Cost to be honest about:** every `read`/`edit` becomes a network round trip.
-Cheaper than a container spawn, but no longer free, and the tools-first nudge
-work from 2026-09-12 assumed free.
+The seams for this already exist, which is why it is M3 and not a rewrite:
+
+| What the CLI needs | Seam today | Work |
+|---|---|---|
+| Local persistence | `graph.open_checkpointer` / `open_store` are the only two constructors | Swap Postgres for SQLite under `.3d-agent/`. The store is opened with **no `index=`**, so there is no vector search to port — it is plain key-value plus filtered `asearch` |
+| A workspace | `provisioning.create_worktree` | A worktree under `.3d-agent/work`, so `live` and `sandbox` still differ and the whole task/branch/review model is untouched |
+| Somewhere to render | `_stream_graph` needs only `store`, `graph` and a `_publish` sink | Pass a terminal renderer instead of the SSE bus |
+| Config | `load_config()` hard-requires `SMTP_*` and `AUTH_SECRET_KEY` via `os.environ[...]` | Make the server-only fields optional; a CLI has no email and no sessions |
+| Running commands | `sandbox.run_shell_sandboxed` (Docker per call) | Keep Docker where it exists. Add a host executor gated by the HumanInTheLoop middleware that `auto_approve_commands` already drives — that is precisely the CLI permission prompt, and it is already built |
+| Checks and review | `agent/tools/checks.py` runs the suite directly; the reviewer is two Node services over HTTP | Run checks in-process. The reviewer becomes optional: `--review` for those who want it, off by default |
+
+**Note on M0.** Its bullet list claims an executor interface shipped. It did
+not — `d2c2747` delivered `AGENT_HOST_PATH_MAP` and the process-group fix, and
+touched three files. The host-vs-sandbox executor is real work and it lives
+here, in the row above.
+
+**Done when:** `pip install` (or a single binary), `cd` into any git repo,
+`3d-agent "fix the failing test"`, and watch it plan, edit, check and commit
+on a task branch — with nothing running but the CLI itself.
+
+**Cost to be honest about:** this is the milestone with the most genuinely new
+code. Everything above it reuses the existing loop; this one gives it a second
+front end and a second persistence backend, and both need their own tests.
 
 ### M4 — Desktop shell *(optional, last)*
 
@@ -171,14 +229,19 @@ installer around a stack that still needs manual setup.
 
 ## Non-goals
 
+* **Remote execution (the old M2/M3).** Dropped 2026-09-15. Pointing
+  `DOCKER_HOST` at `ssh://…` would relocate every model command and check for
+  free, but `agent/tools/files.py` (direct local I/O behind `read`/`write`/
+  `edit`) and the Node reviewer would not ride along, and every edit would
+  become a network round trip. Cloning from GitHub gets the same outcome —
+  work on a repo that lives elsewhere — for a fraction of the work, because
+  the code ends up local and only `origin` is remote.
+* **Mounting a remote filesystem** (sshfs and friends). Superseded by the
+  same reasoning, and worse: the sandbox and the checks would execute locally
+  against a network filesystem.
 * **Native Windows without containers.** WSL2 runs the current code today with
   zero changes, and everything a native port would need is superseded by M1.
-* **Mounting a remote filesystem** (sshfs and friends). Git worktrees, the
-  sandbox and the checks would still execute on the laptop against a network
-  filesystem — slow, and the wrong toolchain. We want remote *execution*, not
-  remote files.
-* **A hosted multi-tenant edition.** M2/M3 make it possible later; it is not
-  what these milestones are for.
+* **A hosted multi-tenant edition.** Not what these milestones are for.
 
 ---
 
@@ -189,9 +252,13 @@ installer around a stack that still needs manual setup.
   a translation? M1 answers this.
 * Postgres in the bundle, or SQLite for a single-user local edition? Postgres
   is one more container but zero code change; SQLite is a smaller install and
-  a real port of the checkpointer. Defaulting to Postgres-in-compose until
-  someone complains.
-* How does a remote project's `.git` pointer file resolve when the worktree
-  and the live repo are both remote but the agent is not? Probably fine, since
-  both paths are remote and the container is remote too — but it is exactly
-  the kind of thing that is fine until it isn't.
+  a real port of the checkpointer. **M3 forces this question anyway** — the
+  CLI needs the SQLite backend regardless, so the bundle can adopt it once it
+  exists rather than deciding now.
+* For a GitHub-backed project, what owns the base branch when a human and the
+  agent both push? Fetch-before-task makes the agent lose races safely
+  (it rebranches from the new tip); it does not make a half-finished task
+  survive one.
+* Does the CLI share `projects.json` semantics at all, or is a repo it is
+  invoked inside simply an implicit project of one? The second is simpler and
+  probably right.
