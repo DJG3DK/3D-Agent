@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { forgotPassword, login, resetPassword, verify2FA } from "../api";
 import type { CurrentUser } from "../types";
+import logoUrl from "../assets/tektonix-logo.png";
 import "./LoginPage.css";
 
 interface Props {
@@ -9,6 +10,15 @@ interface Props {
 }
 
 type Mode = "login" | "2fa" | "forgot" | "reset" | "reset-done";
+
+/* The card's mark. Defined once because it appears in all five states, and a
+   wordmark that drifts between them is the kind of thing nobody notices until
+   it is in a screenshot. Decorative: the <h1> under it already names the
+   screen, so the alt is empty rather than repeating "Tektonix" to a screen
+   reader on every single view. */
+function LoginMark() {
+  return <img className="login-mark" src={logoUrl} alt="" />;
+}
 
 /* Shown under the card on every login view. This used to be a link to the
    source on GitHub, which was the useful thing to offer when the login screen
@@ -114,7 +124,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">Tektonix</div>
+          <LoginMark />
           <h1>Two-factor code</h1>
           <p className="login-sub">Enter the 6-digit code from your authenticator app.</p>
           <label className="form-field">
@@ -147,7 +157,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">Tektonix</div>
+          <LoginMark />
           <h1>Reset your password</h1>
           <p className="login-sub">Enter your email and we'll send a reset code.</p>
           <label className="form-field">
@@ -177,7 +187,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">Tektonix</div>
+          <LoginMark />
           <h1>Check your email</h1>
           <p className="login-sub">
             If {email} has an account, a 6-digit reset code is on its way -- it expires in 30 minutes.
@@ -231,7 +241,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
     return (
       <div className="login-page">
         <div className="login-card">
-          <div className="login-badge">Tektonix</div>
+          <LoginMark />
           <h1>Password reset</h1>
           <p className="login-sub">Your password has been changed. Sign in with it below.</p>
           <button className="btn btn-primary btn-block" onClick={backToSignIn}>
@@ -246,7 +256,7 @@ export function LoginPage({ onLoggedIn, onBack }: Props) {
   return (
     <div className="login-page">
       <div className="login-card">
-        <div className="login-badge">Tektonix</div>
+        <LoginMark />
         <h1>Sign in</h1>
         <label className="form-field">
           <span>Email</span>

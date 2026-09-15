@@ -42,6 +42,10 @@
   box-shadow: var(--shadow-pop);
 }
 
+/* Status pill. NOT branding: SetupTotpPage and ChangePasswordPage use this
+   for "Required", "2FA setup" and "2FA enabled". It stays exactly as it was
+   -- only LoginPage's five copies, which all read "Tektonix" and were
+   standing in for the mark, became .login-mark below. */
 .login-badge {
   display: inline-block;
   font-size: 11px;
@@ -53,6 +57,17 @@
   border-radius: 999px;
   padding: 4px 12px;
   margin-bottom: 18px;
+}
+
+/* The lockup, replacing the uppercase text badge that stood in for it.
+   height/width:auto, never a fixed box -- the lockup is ~3.8:1 and a square
+   or fixed-width container squashes it into a smear (the same mistake the
+   landing page's .lp-brand img comment records). */
+.login-mark {
+  display: block;
+  height: 26px;
+  width: auto;
+  margin-bottom: 20px;
 }
 
 .login-card h1 {
