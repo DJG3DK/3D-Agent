@@ -140,3 +140,55 @@ def test_entries_without_a_model_are_skipped(cfg, tmp_path):
     ]}))
     t = load(p)
     assert list(t.deployments) == ["fine"]
+
+
+# ---------------------------------------------------------------------------
+# starting without a config
+#
+# config.yaml is the operator's file and is gitignored, so it does not exist in
+# a fresh checkout, in CI, or in a container before first run. app.py builds
+# the Registry at import time, so a load that raised made the module
+# unimportable in all three -- CI caught it on 2026-09-15 with a
+# FileNotFoundError during collection, and the Docker bundle would have hit it
+# next.
+#
+# The honest behaviour is to come up with nothing to route and say so through
+# readiness, not to refuse to exist.
+# ---------------------------------------------------------------------------
+
+def test_a_missing_config_yields_an_empty_table(tmp_path):
+    t = load(tmp_path / "nope.yaml")
+    assert t.deployments == {} and t.fallbacks == {}
+
+
+def test_a_registry_can_be_built_without_a_config(tmp_path):
+    reg = Registry(tmp_path / "nope.yaml")
+    assert reg.table.deployments == {}
+
+
+def test_the_module_imports_with_no_config(monkeypatch, tmp_path):
+    """The actual CI failure: `from router import app` executed
+    `Registry()` against a path that does not exist."""
+    monkeypatch.setenv("MODEL_ROUTER_CONFIG", str(tmp_path / "nope.yaml"))
+    import importlib
+
+    from router import config as config_mod
+    importlib.reload(config_mod)
+    assert config_mod.Registry().table.deployments == {}
+
+
+def test_a_config_that_appears_later_is_picked_up(tmp_path):
+    """A container's first boot: the service starts, the config is written,
+    and it must start routing without a restart."""
+    p = tmp_path / "late.yaml"
+    reg = Registry(p)
+    assert reg.table.deployments == {}
+
+    p.write_text(yaml.safe_dump(BASE))
+    assert "agent-coder" in reg.table.deployments
+
+
+def test_an_empty_file_is_an_empty_table_not_a_crash(tmp_path):
+    p = tmp_path / "empty.yaml"
+    p.write_text("")
+    assert load(p).deployments == {}

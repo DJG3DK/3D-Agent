@@ -86,9 +86,29 @@ def _strip_provider_prefix(model: str) -> str:
     return model.split("/", 1)[1] if model.startswith("openrouter/") else model
 
 
+def empty(path: Path, reason: str) -> Table:
+    """A table with nothing in it, rather than an exception.
+
+    A missing config is a real state, not a programming error: config.yaml is
+    the operator's file and is gitignored, so it does not exist in a fresh
+    checkout, in CI, or in a container before first run. Refusing to import
+    without it made the module unloadable in all three -- caught by CI on
+    2026-09-15, and it would have hit the Docker bundle next.
+
+    Readiness reports `deployments: 0` and 503s, which is the honest answer:
+    the service is up and cannot route anything yet.
+    """
+    logger.warning("no usable config at %s (%s); serving an empty table", path, reason)
+    return Table(deployments={}, fallbacks={}, loaded_at=time.time(), mtime=0.0, source=str(path))
+
+
 def load(path: Path | None = None) -> Table:
     p = Path(path or DEFAULT_CONFIG_PATH)
-    raw = yaml.safe_load(p.read_text()) or {}
+    try:
+        text = p.read_text()
+    except OSError as e:
+        return empty(p, str(e))
+    raw = yaml.safe_load(text) or {}
     deployments: dict[str, Deployment] = {}
 
     for entry in raw.get("model_list") or []:
@@ -129,7 +149,12 @@ def load(path: Path | None = None) -> Table:
 
 
 class Registry:
-    """Holds the current table and swaps it when the file changes."""
+    """Holds the current table and swaps it when the file changes.
+
+    Constructing one never raises. The router must be able to start before its
+    config exists -- a container's first boot, a fresh clone, CI -- and say so
+    through /health/readiness rather than by failing to import.
+    """
 
     def __init__(self, path: Path | None = None):
         self._path = Path(path or DEFAULT_CONFIG_PATH)
@@ -148,7 +173,7 @@ class Registry:
         try:
             mtime = self._path.stat().st_mtime
         except OSError:
-            return self._table
+            return self._table          # still missing; keep serving empty
         if mtime == self._table.mtime:
             return self._table
         with self._lock:
