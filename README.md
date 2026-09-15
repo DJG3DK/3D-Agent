@@ -606,7 +606,7 @@ lifecycle.
 
 ```bash
 git clone https://github.com/DJG3DK/tektonix.git
-cd Tektonix
+cd tektonix
 ./install.sh
 ```
 

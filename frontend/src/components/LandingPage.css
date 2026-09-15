@@ -507,6 +507,81 @@
   font-size: var(--fs-sm);
 }
 
+/* ── The two install paths ─────────────────────────────────────────────────
+   Two cards, deliberately equal in weight: neither route is the fallback.
+   The section is centred (.lp-close), so the cards re-align to the left —
+   a command you are meant to copy reads badly centred. */
+.lp-installs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--s4);
+  margin-top: var(--s7);
+  text-align: left;
+}
+
+.lp-install {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s5);
+  border: 1px solid var(--border-soft);
+  border-top: 2px solid var(--accent-dim);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.lp-install h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  color: var(--text);
+}
+
+.lp-install > p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+}
+
+/* Inline flags inside the prose — distinct from the block below. */
+.lp-install p code {
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: .9em;
+  /* A flag must never break across lines: `--dry-run` wrapped after the first
+     hyphen and rendered as "- -dry-run", which is a different, invalid flag. */
+  white-space: nowrap;
+}
+
+.lp-install pre {
+  margin: 0;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  /* A long clone URL must scroll in its own box, never widen the page. */
+  overflow-x: auto;
+}
+
+.lp-install pre code {
+  padding: 0;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  white-space: pre;
+}
+
+/* Pushed to the bottom so both cards' requirement lines sit on one baseline
+   however much prose sits above them. */
+.lp-install .lp-reqs { margin-top: auto; }
+
+.lp-install-note { margin-top: var(--s6); }
+
 /* ── Footer ───────────────────────────────────────────────────────────── */
 
 .lp-foot {

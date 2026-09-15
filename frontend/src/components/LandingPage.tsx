@@ -70,7 +70,9 @@ const FEATURES = [
     body: `Planner, coder (and a separate frontend coder), investigator and test-writer drive
       the build; summarizer, vision, cartographer and consolidator support it. Each carries
       live pricing, the capability badges its job requires, and an optional pinned provider
-      — so swapping a model is one dropdown rather than a config edit and a restart.`,
+      — so swapping a model is one dropdown rather than a config edit and a restart. The
+      router behind those aliases is ours: a small FastAPI service with typed fallback
+      chains, retries only on genuinely transient upstream failures, and hot config reload.`,
   },
   {
     img: shotBehaviour,
@@ -85,8 +87,10 @@ const FEATURES = [
     alt: "Analytics — spend, outcomes and trace data",
     title: "What it cost, and what came of it",
     body: `Spend against your API balance, average fix cycles per task, and outcomes split into
-      done, stopped and escalated. The review gate's own spend is tracked separately — the
-      agent's budget and the gate's are different things.`,
+      done, stopped and escalated. Every figure is the provider's own billed cost for that
+      call, read back from the router's ledger — not a rate-table estimate, which drifts the
+      moment a provider changes its pricing. The review gate's spend is tracked separately:
+      the agent's budget and the gate's are different things.`,
   },
   {
     img: shotProbes,
@@ -185,7 +189,7 @@ export function LandingPage({ onSignIn }: Props) {
 
       <main id="top">
         <section className="lp-hero">
-          <p className="lp-eyebrow">LangGraph &middot; deepagents &middot; FastAPI + React</p>
+          <p className="lp-eyebrow">LangGraph &middot; deepagents &middot; FastAPI + React &middot; its own model router</p>
           <h1>
             An autonomous coding agent
             <br />
@@ -339,13 +343,43 @@ export function LandingPage({ onSignIn }: Props) {
         <section className="lp-section lp-close">
           <h2 className="lp-h2">Run it yourself</h2>
           <p className="lp-sub">
-            <code>./install.sh</code> takes a fresh clone to a running agent &mdash; prerequisites,
-            secrets, database, sandbox image and dashboard. It is safe to re-run, which is also the
-            upgrade path.
+            Two ways in. Both end at the same console, and both are safe to re-run &mdash; which
+            is also the upgrade path.
           </p>
-          <p className="lp-reqs">
-            Linux &middot; Python 3.12+ &middot; Node 24+ &middot; Docker &middot; PostgreSQL 14+
-            &middot; an OpenRouter API key
+          <div className="lp-installs">
+            <article className="lp-install">
+              <code className="lp-kicker">docker compose</code>
+              <h3>The bundle</h3>
+              <p>
+                Agent, database, router and the review services as one stack. Nothing to install
+                but Docker itself, and it runs the same on Windows and macOS as it does on Linux.
+              </p>
+              <pre><code>{`cp docker/.env.example .env
+docker compose up -d`}</code></pre>
+              <p className="lp-reqs">Docker &middot; an OpenRouter API key</p>
+            </article>
+            <article className="lp-install">
+              <code className="lp-kicker">./install.sh</code>
+              <h3>On the host</h3>
+              <p>
+                Takes a fresh clone to a running agent &mdash; prerequisites, secrets, database,
+                sandbox image and dashboard. Ask it three questions and it derives the rest.
+                <code>--dry-run</code> prints every action without performing one;
+                <code>--yes</code> reads its answers from the environment for an unattended
+                build.
+              </p>
+              <pre><code>{`git clone ${REPO}.git
+cd tektonix && ./install.sh`}</code></pre>
+              <p className="lp-reqs">
+                Linux &middot; Python 3.12+ &middot; Node 24+ &middot; Docker &middot;
+                PostgreSQL 14+ &middot; an OpenRouter API key
+              </p>
+            </article>
+          </div>
+          <p className="lp-sub lp-install-note">
+            A domain is optional either way &mdash; the agent binds to localhost, and an SSH
+            tunnel reaches it without nginx or a certificate. Give the installer a domain and it
+            will set up both.
           </p>
           {/* One action here, and it is the repo. Sign-in lives in the nav,
               which is sticky and therefore always within reach anyway. */}

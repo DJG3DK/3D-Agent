@@ -32,7 +32,7 @@ elsewhere.
 
 Verified on clean containers of **Debian 13** (Python 3.13, Node 24) and
 **Arch** (Python 3.14, Node 26): `install.sh` completes and the full test
-suite passes on both — 909 Python tests and 184 frontend tests, against a
+suite passes on both — 1,408 Python tests and 240 frontend tests, against a
 real Postgres. `install.sh` detects `apt`, `pacman` or `dnf`, and
 writes its nginx config to `sites-available` or `conf.d` depending on the
 distro's layout.
@@ -43,7 +43,7 @@ distro's layout.
 
 ```bash
 git clone https://github.com/DJG3DK/tektonix.git
-cd Tektonix
+cd tektonix
 ./install.sh
 ```
 
