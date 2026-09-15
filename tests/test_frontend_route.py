@@ -4,7 +4,15 @@ beats everything; every decision carries a reason."""
 
 import pytest
 
-from agent.frontend_route import CODER_ROLE, classify_frontend, keyword_hits, named_paths, normalize_override
+from agent.frontend_route import (
+    CODER_ROLE,
+    FRONTEND_KEYWORDS,
+    backend_signals,
+    classify_frontend,
+    keyword_hits,
+    named_paths,
+    normalize_override,
+)
 
 
 def test_operator_override_beats_everything():
@@ -84,3 +92,99 @@ def test_normalize_override(value, expected):
 
 def test_roles_are_the_router_aliases():
     assert CODER_ROLE == {"frontend": "agent-coder-frontend", "general": "agent-coder"}
+
+
+# ---------------------------------------------------------------------------
+# plurals, and the lighting vocabulary -- 3DSteals, 2026-09-15
+# ---------------------------------------------------------------------------
+
+HDR_REQUEST = ("on the storefront, I want the buttons to add products to the cart "
+               "to have an HDR lighting effect when you hover over them")
+
+
+def test_the_hdr_lighting_request_routes_frontend():
+    """The request that exposed both defects. It planned on the general seat
+    with reason "no frontend signal": "buttons" could not match the keyword
+    "button" (a plural "s" is [a-z], so the whole-word guard rejected it), and
+    nothing in the list described light, so "HDR"/"lighting" scored zero. One
+    hit, and it takes two."""
+    d = classify_frontend(HDR_REQUEST)
+    assert d.is_frontend, d.reason
+    hits = keyword_hits(HDR_REQUEST)
+    assert "button" in hits, "the plural has to match the singular keyword"
+    assert "hdr" in hits and "lighting" in hits
+
+
+@pytest.mark.parametrize("plural,singular", [
+    ("make the buttons glow", "button"),
+    ("tidy the pages", "page"),
+    ("restyle the components", "component"),
+    ("the colors are off", "color"),
+    ("fix the modals and tooltips", "modal"),
+])
+def test_a_plural_matches_its_keyword(plural, singular):
+    assert singular in keyword_hits(plural)
+
+
+@pytest.mark.parametrize("text,kw", [
+    ("add two migrations for the new column", "migration"),
+    ("wire up the new endpoints", "endpoint"),
+    ("the schemas disagree", "schema"),
+])
+def test_backend_keywords_match_in_the_plural_too(text, kw):
+    """The same bug, and the more expensive direction to get wrong: a missed
+    backend signal sends database work to the Kimi seat."""
+    assert kw in backend_signals(text)
+
+
+@pytest.mark.parametrize("text,kw", [
+    ("rebuild the guidance module", "ui"),
+    ("pagination in the API", "page"),
+    ("the pager widget is slow", "page"),
+    ("designer handoff notes", "design"),
+])
+def test_only_a_suffix_is_tolerated_never_a_prefix(text, kw):
+    """Tolerating a plural must not turn the whole-word match into substring
+    matching -- "pager" is still not "page"."""
+    assert kw not in keyword_hits(text)
+
+
+@pytest.mark.parametrize("text,kw", [
+    ("fix format.ts and the forms", "orm"),
+    ("mysql and sqlite tuning", "sql"),
+])
+def test_backend_keywords_keep_their_prefix_guard(text, kw):
+    assert kw not in backend_signals(text)
+
+
+def test_lighting_words_alone_are_not_enough_without_a_second_hit():
+    """The new vocabulary widens the list; it must not lower the bar. One hit
+    is still one hit."""
+    d = classify_frontend("the gradient descent step is diverging")
+    assert d.route == "general" and d.reason == "no frontend signal"
+
+
+def test_the_ambiguous_words_stayed_out():
+    """Each of these reads as frontend in a storefront and as something else
+    one repo over -- margin trading in 3d-bot, HTTP headers, payment cards."""
+    for kw in ("header", "card", "margin", "cart"):
+        assert kw not in FRONTEND_KEYWORDS
+
+
+def test_backend_still_beats_the_wider_keyword_list():
+    d = classify_frontend("Add a migration so the ShopPage.tsx buttons can read the new column", category="feature")
+    assert d.route == "general" and "migration" in d.reason
+
+
+def test_a_settled_planning_category_reaches_the_route_decision():
+    """agent/server.py's planning turn used to pass None as the category, so a
+    session that had already settled into `ui-styling` went on planning with
+    the general seat every later turn. Pin the call shape: the session's own
+    category has to be what is handed over."""
+    import inspect
+
+    import agent.server as srv
+
+    source = inspect.getsource(srv._run_planning_turn_bg)
+    assert 'classify_frontend(text, _meta_val.get("category")' in source
+    assert "classify_frontend(text, None" not in source

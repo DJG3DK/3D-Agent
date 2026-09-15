@@ -21,8 +21,11 @@ Three signals, strongest first, plus a switch the operator flips:
                 (two thirds) is frontend work whatever the category says: a
                 `feature` that lives in frontend/ routes to Kimi. Anything
                 short of that with both kinds named stays general.
-4. keywords  -- a short list, and it takes two distinct hits: "fix the chart's
-                numbers" mentions a chart but is a data bug.
+4. keywords  -- a short list covering both where a thing lives (page, modal,
+                sidebar) and what it should look like (glow, gradient, hdr),
+                matched whole-word but plural-tolerant, and it takes two
+                distinct hits: "fix the chart's numbers" mentions a chart but
+                is a data bug.
 0. override  -- "frontend" or "general" from the Build Now popup, the New Task
                 form, or a new planning session. Beats everything.
 
@@ -63,6 +66,19 @@ FRONTEND_KEYWORDS = (
     "ui", "ux", "layout", "styling", "style", "css", "design", "responsive", "theme",
     "animation", "polish", "dashboard", "page", "component", "button", "modal",
     "sidebar", "font", "color", "colour", "spacing", "mobile", "dark mode", "hover", "tooltip",
+    # Lighting and material vocabulary. The list above described WHERE a thing
+    # lives and had almost nothing for what it should LOOK like, so "an HDR
+    # lighting effect on the add-to-cart buttons" (3DSteals, 2026-09-15) scored
+    # one hit and planned on the general seat -- the purest frontend request
+    # the operator has ever typed.
+    "hdr", "lighting", "glow", "sheen", "shine", "gloss", "bloom", "gradient",
+    "shadow", "opacity", "blur", "transition", "visual",
+    # Presentational nouns. Deliberately NOT here: "header" (HTTP headers),
+    # "card" (payment cards), "margin" (margin trading, in 3d-bot), "cart"
+    # (cart logic is backend) -- each reads as frontend in a storefront and as
+    # something else entirely one repo over.
+    "icon", "banner", "hero", "navbar", "footer", "carousel", "dropdown",
+    "badge", "scroll", "alignment", "storefront",
 )
 
 # Segment-then-separator, not separator-then-segment: "(?:seg/)+seg" let the
@@ -73,6 +89,23 @@ FRONTEND_KEYWORDS = (
 # given back, so a long run of "-" that ends without "/" or an extension
 # fails in one step instead of being re-split at every length.
 _PATH_TOKEN = re.compile(r"(?<![\w/])([\w.@-]++(?:/[\w.@-]++)++|[\w@-]++\.(?:tsx|jsx|css|scss|less|html|vue|svelte))(?![\w/])")
+
+
+def _word(kw: str) -> str:
+    """Whole-word match for a keyword, tolerating a plural.
+
+    The guard used to be a bare `(?![a-z])`, which is correct about "ui" in
+    "guidance" and wrong about every plural: a trailing "s" IS [a-z], so
+    "buttons" did not match "button", "pages" did not match "page", and
+    "migrations" did not match "migration". Both lists were affected -- 23 of
+    the 25 frontend keywords and 10 of the 11 backend ones could only be hit
+    in the singular, which is not how anyone writes a request ("make the
+    buttons glow", not "make the button glow").
+
+    Only a suffix is allowed, never a prefix: "pager" and "formats" must still
+    not hit "page" and "orm".
+    """
+    return r"(?<![a-z])" + re.escape(kw) + r"(?:es|s)?(?![a-z])"
 
 
 @dataclass(frozen=True)
@@ -114,7 +147,7 @@ def backend_signals(text: str) -> list[str]:
     hits = [p for p in other if _is_backend_path(p)]
     lowered = (text or "").lower()
     # Whole words only: "orm" must not fire on "format.ts", "sql" not on "mysql".
-    hits += [kw.strip() for kw in BACKEND_KEYWORDS if re.search(r"(?<![a-z])" + re.escape(kw.strip()) + r"(?![a-z])", lowered)]
+    hits += [kw.strip() for kw in BACKEND_KEYWORDS if re.search(_word(kw.strip()), lowered)]
     return hits
 
 
@@ -139,7 +172,7 @@ def keyword_hits(text: str) -> list[str]:
     lowered = (text or "").lower()
     hits = []
     for kw in FRONTEND_KEYWORDS:
-        if re.search(r"(?<![a-z])" + re.escape(kw) + r"(?![a-z])", lowered):
+        if re.search(_word(kw), lowered):
             hits.append(kw)
     return hits
 

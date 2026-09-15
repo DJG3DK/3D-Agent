@@ -2460,8 +2460,19 @@ async def _run_planning_turn_bg(session_id: str, repo: str, text: str, attachmen
         # the session wins; otherwise decided from this message and, like
         # difficulty, sticky once a session has gone frontend -- the whole
         # context is frontend work from then on.
+        #
+        # The session's own category is passed in once it has one. It is the
+        # strongest signal the router has (a model read the whole request),
+        # and it did not reach this call at all: the route was decided on the
+        # first message's keywords and then never revisited, so the 3DSteals
+        # HDR-lighting session on 2026-09-15 settled into `ui-styling` and
+        # kept planning on the general seat for every turn after. A session
+        # has no category until it first saves a plan (see the categorising
+        # block below and its comment on why that is deliberate), so this is
+        # None on turn one and real from then on -- the keywords still have to
+        # carry the first turn.
         _meta_val = meta_item.value if meta_item else {}
-        _route_decision = classify_frontend(text, None, _meta_val.get("route_override"))
+        _route_decision = classify_frontend(text, _meta_val.get("category"), _meta_val.get("route_override"))
         if _meta_val.get("route") == "frontend" and not _meta_val.get("route_override"):
             _route_decision = RouteDecision("frontend", _meta_val.get("route_reason") or "earlier turn")
         route = _route_decision.route
