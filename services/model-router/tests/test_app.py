@@ -192,7 +192,7 @@ def test_both_attempts_are_recorded(client, monkeypatch, tmp_path):
     rate is only honest if it is written down."""
     _stub(monkeypatch, [(False, "boom"), (True, _ok("anthropic/haiku"))], status=400)
     _post(client)
-    rows = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    rows = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines()]
     assert len(rows) == 2
     assert rows[0]["error"] is True and rows[0]["attempt"] == 1
     assert rows[1].get("error") is None and rows[1]["attempt"] == 2
@@ -210,7 +210,7 @@ def test_one_ledger_line_per_attempt_shares_the_call_id(client, monkeypatch, tmp
     """One logical call, one id -- so a fallback cannot be double-charged."""
     _stub(monkeypatch, [(False, "a"), (True, _ok())], status=400)
     r = _post(client)
-    rows = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    rows = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines()]
     assert {row["call_id"] for row in rows} == {r.headers["x-litellm-call-id"]}
 
 

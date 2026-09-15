@@ -7,8 +7,6 @@ it on the way past rather than on the response object.
 
 from __future__ import annotations
 
-import json
-
 from router.upstream import Usage, build_body
 
 

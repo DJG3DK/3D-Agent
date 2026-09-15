@@ -119,7 +119,7 @@ def test_a_broken_config_is_not_reparsed_every_request(cfg):
     reg = Registry(cfg)
     time.sleep(0.01)
     cfg.write_text("{{{")
-    reg.table
+    _ = reg.table          # the reload attempt is the point
     assert reg._table.mtime == cfg.stat().st_mtime
 
 

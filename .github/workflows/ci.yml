@@ -65,6 +65,12 @@ jobs:
       - name: pytest (model router)
         run: python -m pytest -q services/model-router/tests
 
+      # services/ is excluded from the repo-wide ruff run because it is mostly
+      # Node. The model router is Python we own, so it gets linted explicitly
+      # rather than by widening the global scope.
+      - name: ruff (model router)
+        run: ruff check services/model-router
+
       # The detection rules in agent/provisioning.py propose commands that
       # OTHER machines execute, so the script that runs them for real is
       # worth keeping alive even where its toolchains are absent. --no-docker

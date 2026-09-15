@@ -21,7 +21,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -42,7 +42,7 @@ class Usage:
     model: str | None = None
 
     @classmethod
-    def from_payload(cls, payload: dict) -> "Usage":
+    def from_payload(cls, payload: dict) -> Usage:
         usage = payload.get("usage") or {}
         details = usage.get("prompt_tokens_details") or {}
         return cls(
@@ -57,7 +57,7 @@ class Usage:
             model=payload.get("model"),
         )
 
-    def merge(self, other: "Usage") -> None:
+    def merge(self, other: Usage) -> None:
         """Later chunks win, but only where they actually say something."""
         for f in ("prompt_tokens", "completion_tokens", "cached_tokens", "cost", "provider", "model"):
             v = getattr(other, f)

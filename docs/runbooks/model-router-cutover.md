@@ -29,16 +29,24 @@ of it was under two cents.
 | Our own overhead | **1.6 ms** median; client-side latency indistinguishable from LiteLLM |
 | Unit tests | 48 passing, no network |
 
+## Already done
+
+The service is **running under pm2 on port 4001** and saved to the pm2 process
+list, reading the same `config.yaml`. Nothing points at it, so this is not a
+cutover -- it is a warm service with a real call already through it
+(`task_id: pm2-smoke` in the ledger, readable by `metrics._role_and_model`).
+
+```
+pm2 list                       # model-router, online
+curl -s localhost:4001/health/readiness
+curl -s localhost:4001/v1/stats?window_minutes=60 -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+```
+
+Footprint next to the thing it replaces: **57 MB against 815 MB**.
+
 ## Cutover
 
-1. **Start it under pm2** (port 4001, beside LiteLLM on 4000):
-
-   ```
-   cd /home/3d-agent/services/model-router && pm2 start ecosystem.config.js && pm2 save
-   curl -s localhost:4001/health/readiness
-   ```
-
-2. **Point the agent at it.** In `/home/3d-agent/.env`:
+1. **Point the agent at it.** In `/home/3d-agent/.env`:
 
    ```
    LITELLM_BASE_URL=http://127.0.0.1:4001/v1
@@ -48,11 +56,11 @@ of it was under two cents.
    restart kills the current work pass, which is a property of the agent, not
    of either router.
 
-3. **Watch one real task end to end.** The things to see: a task's cost moving
+2. **Watch one real task end to end.** The things to see: a task's cost moving
    on the dashboard (proves the ledger round trip), and a tool-calling step
    completing (proves the buffered path).
 
-4. **Then the other consumers**, one at a time, same variable:
+3. **Then the other consumers**, one at a time, same variable:
    `services/commit-reviewer`, the mail agent, the trading bot's gate.
 
 ## Rollback
