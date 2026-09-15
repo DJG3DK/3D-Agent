@@ -30,7 +30,7 @@ import uuid
 
 from agent.tools.shell import ShellTimeout
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # Every `-v` source below is resolved by the DOCKER DAEMON, not by this
 # process -- which is the same thing while the agent runs directly on the

@@ -94,7 +94,7 @@ from agent.tools.github_tools import make_github_inbox_tool, make_github_tools, 
 from agent.tools.planning_tools import make_planning_tools
 from deepagents.backends import StoreBackend
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # Deterministic floor, checked before the classifier call below -- mirrors
 # llm-router/config.yaml's own smart-router keyword_tier_rules philosophy

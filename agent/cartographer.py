@@ -48,7 +48,7 @@ from agent.deep_agent import (
 )
 from deepagents.backends.store import StoreBackend
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # The project memory both agents load, at the key the project namespace stores it under.
 _MEMORY_FILE = route_local_path("/memories/", MEMORY_PATH)

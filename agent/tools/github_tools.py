@@ -27,7 +27,7 @@ from langchain_core.tools import tool
 from agent.config import PROJECTS
 from agent.tools.tool_errors import tool_errors_to_text
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 API = "https://api.github.com"
 _TIMEOUT = 20

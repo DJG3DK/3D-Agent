@@ -17,7 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from agent.config import Config
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # A pool, not a single long-lived connection: a bare connection held open for
 # this process's entire lifetime (it runs for days) goes stale silently

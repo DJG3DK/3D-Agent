@@ -36,7 +36,7 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 LEDGER_PATH = "/.memory-freshness.json"
 STALE_PATH = "/.memory-stale.md"

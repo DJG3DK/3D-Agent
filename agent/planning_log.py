@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import time
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 NAMESPACE = "planning_log"
 TASK_NAMESPACE = "task_log"

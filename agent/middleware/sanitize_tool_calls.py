@@ -35,7 +35,7 @@ import logging
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 
 def _json_ok(value) -> bool:

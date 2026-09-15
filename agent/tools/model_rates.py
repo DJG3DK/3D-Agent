@@ -39,7 +39,7 @@ import os
 import httpx
 import yaml
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # Repo-relative, not an absolute /home path (audit C-1): the hard-coded path
 # meant the entire budget ceiling silently did not exist on any box where the

@@ -67,7 +67,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from agent.tools.model_rates import UnpricedModelError, estimate_cost_strict
 from agent.tools.router_ledger import RouterLedger
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # How long the guard will wait for the router to bill the call that just
 # finished before it ends a turn on that call's ESTIMATE. The router logs a

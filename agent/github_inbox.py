@@ -49,7 +49,7 @@ from agent import audit
 from agent.config import Config
 from agent.tools.github_tools import fetch_pull_request, format_pull_request, resolve_slug
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 API = "https://api.github.com"
 _TIMEOUT = 20

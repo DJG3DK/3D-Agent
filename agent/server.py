@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket
@@ -1177,7 +1177,7 @@ async def test_telegram_endpoint(user: User = Depends(require_full_auth)):
         raise HTTPException(400, "telegram is not configured -- save a bot token and chat id first")
     token, chat_id = row
     ok = await send_telegram(token, chat_id, task_alert(
-        "done", "3d-agent", "Test alert from the dashboard settings page",
+        "done", "tektonix", "Test alert from the dashboard settings page",
         0.00, "If you can read this, task alerts will reach you here."))
     if not ok:
         raise HTTPException(502, "telegram rejected the send -- check the bot token and chat id (and that you have messaged the bot once)")
@@ -4252,7 +4252,7 @@ async def restart_services(req: SaveEnvKeysRequest, user: User = Depends(require
     """Restart the named services so a key change takes effect."""
     auth.require_admin(user)
     import asyncio as _a
-    allowed = {"llm-router", "3d-agent", "commit-reviewer", "agent-review"}
+    allowed = {"llm-router", "tektonix", "commit-reviewer", "agent-review"}
     names = [n for n in (req.updates.get("services", "") or "").split(",") if n.strip() in allowed]
     if not names:
         raise HTTPException(status_code=400, detail="no known services named")

@@ -232,7 +232,7 @@ def test_checks_run_concurrently_rather_than_one_after_another(all_good, monkeyp
 
 def test_the_payload_shape_is_stable_for_a_monitoring_box(all_good):
     payload = _collect()
-    assert payload["service"] == "3d-agent"
+    assert payload["service"] == "tektonix"
     assert isinstance(payload["ok"], bool)
     for name, check in payload["checks"].items():
         assert isinstance(check["ok"], bool), name

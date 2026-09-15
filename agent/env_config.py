@@ -57,33 +57,33 @@ MANAGED_KEYS: tuple[ManagedKey, ...] = (
         "LITELLM_MASTER_KEY", ROUTER_ENV, "Router master key",
         "The router's own auth. Every service that calls it presents this. Changing it requires updating "
         "LITELLM_API_KEY below to match, or the agent and reviewer lose access.",
-        "Models", ("llm-router", "3d-agent", "commit-reviewer", "agent-review"),
+        "Models", ("llm-router", "tektonix", "commit-reviewer", "agent-review"),
     ),
     ManagedKey(
         "LITELLM_API_KEY", AGENT_ENV, "Router key (agent side)",
         "What the agent presents to the router. Must equal the master key above.",
-        "Models", ("3d-agent",),
+        "Models", ("tektonix",),
     ),
     ManagedKey(
         "LANGSMITH_API_KEY", AGENT_ENV, "LangSmith API key",
         "Tracing. Optional — leave empty to disable. Traces are redacted before they leave the box.",
-        "Tracing", ("3d-agent",),
+        "Tracing", ("tektonix",),
     ),
     ManagedKey(
         "LANGSMITH_PROJECT", AGENT_ENV, "LangSmith project",
         "Which LangSmith project traces are filed under.",
-        "Tracing", ("3d-agent",), secret=False,
+        "Tracing", ("tektonix",), secret=False,
     ),
     ManagedKey(
         "LANGSMITH_TRACING", AGENT_ENV, "Tracing enabled",
         "true or false. Off means no trace data leaves this machine at all.",
-        "Tracing", ("3d-agent",), secret=False,
+        "Tracing", ("tektonix",), secret=False,
     ),
-    ManagedKey("SMTP_HOST", AGENT_ENV, "SMTP host", "Outbound mail for password resets.", "Email", ("3d-agent",), secret=False),
-    ManagedKey("SMTP_PORT", AGENT_ENV, "SMTP port", "Usually 587 for STARTTLS.", "Email", ("3d-agent",), secret=False),
-    ManagedKey("SMTP_USER", AGENT_ENV, "SMTP user", "Usually the sending address.", "Email", ("3d-agent",), secret=False),
-    ManagedKey("SMTP_PASS", AGENT_ENV, "SMTP password", "App password, not the account password.", "Email", ("3d-agent",)),
-    ManagedKey("SMTP_FROM", AGENT_ENV, "From address", "What recipients see.", "Email", ("3d-agent",), secret=False),
+    ManagedKey("SMTP_HOST", AGENT_ENV, "SMTP host", "Outbound mail for password resets.", "Email", ("tektonix",), secret=False),
+    ManagedKey("SMTP_PORT", AGENT_ENV, "SMTP port", "Usually 587 for STARTTLS.", "Email", ("tektonix",), secret=False),
+    ManagedKey("SMTP_USER", AGENT_ENV, "SMTP user", "Usually the sending address.", "Email", ("tektonix",), secret=False),
+    ManagedKey("SMTP_PASS", AGENT_ENV, "SMTP password", "App password, not the account password.", "Email", ("tektonix",)),
+    ManagedKey("SMTP_FROM", AGENT_ENV, "From address", "What recipients see.", "Email", ("tektonix",), secret=False),
 )
 
 _BY_KEY = {k.key: k for k in MANAGED_KEYS}

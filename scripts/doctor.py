@@ -45,7 +45,7 @@ PROJECTS_JSON = ROOT / "projects.json"
 KEYS_DIR = Path(os.environ.get("AGENT_KEYS_DIR") or (ROOT / "keys"))
 REVIEW_SECRETS = ROOT / "services/commit-reviewer/review-secrets"
 
-EXPECTED_PM2_APPS = ("3d-agent", "llm-router", "agent-review", "commit-reviewer")
+EXPECTED_PM2_APPS = ("tektonix", "llm-router", "agent-review", "commit-reviewer")
 
 
 @dataclass

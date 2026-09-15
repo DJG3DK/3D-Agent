@@ -27,7 +27,7 @@ import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # Repo-relative, with an env override, like LLM_ROUTER_CONFIG_PATH in
 # model_rates.py. This file is agent/tools/router_ledger.py, so the router

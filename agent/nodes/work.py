@@ -86,7 +86,7 @@ from agent.model_config import resolve_alias
 from agent.outer_state import AgentState
 from agent.tools.router_ledger import RouterLedger
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 
 def inner_thread_config(task_id: str, repo: str, generation: int = 0) -> dict:

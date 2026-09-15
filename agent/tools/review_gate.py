@@ -15,7 +15,7 @@ import httpx
 
 from agent import paths
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 # audit M-5: these are fixed localhost ports, not derived from config. The
 # former REVIEW_GATE_BASE_URL env var was mandatory at startup yet read
@@ -36,7 +36,7 @@ import os as _os
 # documented in .env.example now; this warns loudly if a hand-rolled install
 # still lacks it.
 if not _os.environ.get("REVIEW_CONTROL_SECRET"):
-    logging.getLogger("3d-agent").warning(
+    logging.getLogger("tektonix").warning(
         "REVIEW_CONTROL_SECRET is not set: merge and deploy calls to the review "
         "service will be rejected. Generate one and put the SAME value in this "
         "app's .env and in services/llm-router/.env (see .env.example).")

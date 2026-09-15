@@ -15,7 +15,7 @@ from email.message import EmailMessage
 
 from agent.config import Config
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 RESET_CODE_TTL_MINUTES = 30
 

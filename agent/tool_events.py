@@ -23,7 +23,7 @@ import os
 import time
 from pathlib import Path
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 LOG_PATH = Path(
     os.environ.get("AGENT_TOOL_EVENTS_LOG")

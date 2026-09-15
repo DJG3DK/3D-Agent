@@ -34,7 +34,7 @@ import logging
 import os
 import re
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 _REDACTED = "[REDACTED]"
 

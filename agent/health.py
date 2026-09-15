@@ -23,7 +23,7 @@ import time
 
 import httpx
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 SANDBOX_IMAGE = "tektonix-sandbox:latest"
 _TIMEOUT_S = 5
@@ -118,7 +118,7 @@ async def collect(pool, litellm_base_url: str, projects: dict) -> dict:
     }
     return {
         "ok": all(c["ok"] for c in checks.values()),
-        "service": "3d-agent",
+        "service": "tektonix",
         "checks": checks,
         # A COUNT, not the names. This route is unauthenticated so a
         # monitoring box can reach it, and "the names are already on every

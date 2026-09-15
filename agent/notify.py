@@ -26,7 +26,7 @@ import logging
 
 import httpx
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 _API = "https://api.telegram.org/bot{token}/sendMessage"
 # Telegram hard limit is 4096 chars/message; leave margin for the ellipsis.
@@ -172,7 +172,7 @@ def diff_services(prev: dict, cur: dict) -> list[str]:
     return alerts
 
 
-async def watch_services(auth_pool, interval: float = 60.0, exclude: tuple = ("3d-agent",)) -> None:
+async def watch_services(auth_pool, interval: float = 60.0, exclude: tuple = ("tektonix",)) -> None:
     """Poll `pm2 jlist` and alert on restarts/deaths of the OTHER services --
     llm-router, the trading bots, the reviewers. The agent backend itself is
     excluded: its own restart resets this watcher's baseline (it runs inside

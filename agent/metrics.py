@@ -32,7 +32,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 ROUTING_LOG = Path(
     os.environ.get("LLM_ROUTER_ROUTING_LOG")

@@ -46,7 +46,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from agent.config import Config
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 SESSION_COOKIE_NAME = "agent_session"
 SESSION_TTL_SECONDS = 7 * 24 * 3600

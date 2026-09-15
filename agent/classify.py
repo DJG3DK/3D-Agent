@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from agent.config import Config
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 TASK_CATEGORIES = [
     "bug-fix",

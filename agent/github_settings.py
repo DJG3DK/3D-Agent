@@ -34,7 +34,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from agent.config import Config
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 NAMESPACE = ("settings",)
 KEY = "github"

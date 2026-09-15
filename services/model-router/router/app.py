@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     # difference between a 200ms call and a 700ms one at this volume.
     app.state.http = httpx.AsyncClient(
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=40),
-        headers={"HTTP-Referer": "https://agent.3dcryptobots.com", "X-Title": "Tektonix"},
+        headers={"HTTP-Referer": "https://tektonix.io", "X-Title": "Tektonix"},
     )
     logger.info("model-router up: %d deployments", len(registry.table.deployments))
     yield
@@ -127,7 +127,7 @@ async def models(authorization: str | None = Header(default=None)):
     _authorise(authorization)
     t = registry.table
     return {"object": "list",
-            "data": [{"id": a, "object": "model", "owned_by": "3d-agent"} for a in t.deployments]}
+            "data": [{"id": a, "object": "model", "owned_by": "tektonix"} for a in t.deployments]}
 
 
 @app.post("/v1/chat/completions")

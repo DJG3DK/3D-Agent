@@ -21,7 +21,7 @@ import logging
 import statistics
 import time
 
-logger = logging.getLogger("3d-agent")
+logger = logging.getLogger("tektonix")
 
 NAMESPACE = ("check_timing",)
 # Enough to smooth a bad run, few enough that the number follows a suite that
