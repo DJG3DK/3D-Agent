@@ -197,36 +197,65 @@ async def chat_completions(request: Request, authorization: str | None = Header(
 
 
 async def _streamed(client, table, alias, body, call_id, task_id, session_id):
-    """Streaming has no fallback, deliberately.
+    """Streaming, with the fallback chain available up to the first byte.
 
-    Once a byte has reached the client the response is committed; retrying on
-    another deployment would splice two different completions together. The
-    first deployment either works or the stream ends with an error the caller
-    can see. Buffered calls -- which is everything tool-calling, and so nearly
-    everything the agent does -- keep the full chain.
+    The rule is not "streams cannot fall back" -- it is that a response becomes
+    committed the moment a byte reaches the client. An upstream that refuses
+    with a 429 does so BEFORE any of its body exists, and falling back there is
+    as safe as it is for a buffered call. Only a failure part-way through a
+    stream is unrecoverable, because retrying would splice two different
+    completions into one response.
+
+    So: walk the chain while nothing has been emitted, and the instant the
+    first chunk goes out, commit to that deployment. The roles that stream here
+    -- summarizer, cartographer, consolidator -- all have fallbacks configured
+    precisely because their providers have thrown 429s before.
     """
-    dep = table.deployments[alias]
-    usage = upstream.Usage()
+    chain = table.chain(alias)
     started = time.monotonic()
 
     async def body_iter():
-        try:
-            async for chunk in upstream.stream_once(client, OPENROUTER_KEY, body, dep.model,
-                                                    dep.extra_body, dep.timeout_s, usage):
-                yield chunk
-        except Exception as e:  # noqa: BLE001
-            logger.warning("stream failed on %s: %s", alias, e)
-            ledger.record(call_id=call_id, alias=alias, model=dep.model, duration_s=time.monotonic() - started,
-                          task_id=task_id, session_id=session_id, error=True,
-                          error_detail=f"{type(e).__name__}: {str(e)[:300]}")
-            return
-        ledger.record(
-            call_id=call_id, alias=alias, model=usage.model or dep.model,
-            prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens,
-            cached_tokens=usage.cached_tokens, cost=usage.cost,
-            duration_s=time.monotonic() - started, task_id=task_id, session_id=session_id,
-            provider=usage.provider,
-        )
+        attempt_no = 0
+        for name in chain:
+            dep = table.deployments[name]
+            for retry in range(RETRIES_PER_DEPLOYMENT + 1):
+                attempt_no += 1
+                usage = upstream.Usage()
+                emitted = False
+                t0 = time.monotonic()
+                try:
+                    async for chunk in upstream.stream_once(client, OPENROUTER_KEY, body, dep.model,
+                                                            dep.extra_body, dep.timeout_s, usage):
+                        emitted = True
+                        yield chunk
+                except Exception as e:  # noqa: BLE001
+                    status = getattr(getattr(e, "response", None), "status_code", None)
+                    ledger.record(call_id=call_id, alias=alias, model=dep.model,
+                                  duration_s=time.monotonic() - t0, task_id=task_id,
+                                  session_id=session_id, attempt=attempt_no, error=True,
+                                  error_detail=f"{type(e).__name__}: {str(e)[:300]}")
+                    if emitted:
+                        # Committed. Splicing a second completion onto a partial
+                        # one would be worse than the truncation.
+                        logger.error("stream failed mid-body on %s, cannot retry: %s", name, e)
+                        return
+                    transient = upstream.is_transient(status, str(e))
+                    logger.warning("stream attempt %d on %s failed before first byte (%s): %s",
+                                   attempt_no, name, "transient" if transient else "permanent", e)
+                    if not transient:
+                        break               # move to the next deployment
+                    if retry < RETRIES_PER_DEPLOYMENT:
+                        await asyncio.sleep(BACKOFF_S * (2 ** retry) * (0.5 + random.random()))
+                    continue
+                ledger.record(
+                    call_id=call_id, alias=alias, model=usage.model or dep.model,
+                    prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens,
+                    cached_tokens=usage.cached_tokens, cost=usage.cost,
+                    duration_s=time.monotonic() - started, task_id=task_id,
+                    session_id=session_id, provider=usage.provider, attempt=attempt_no,
+                )
+                return
+        logger.error("every deployment in %s failed before streaming", chain)
 
     return StreamingResponse(body_iter(), media_type="text/event-stream",
                              headers={CALL_ID_HEADER: call_id, "x-router-deployment": alias,

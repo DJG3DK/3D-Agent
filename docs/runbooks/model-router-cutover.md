@@ -78,8 +78,10 @@ traffic.
   call, that is worth knowing and was previously invisible.
 * **`attempt: 2` rows** mean a fallback fired. Under LiteLLM these were only
   visible as a gap.
-* **Streaming has no fallback** (see the README). If a streamed call fails, it
-  fails — it does not silently become a different model's answer.
+* **Streaming falls back only before the first byte.** A refusal (429, 5xx)
+  retries and falls back like any other call. A failure part-way through a
+  stream ends the response rather than splicing a second completion onto a
+  partial one — the client sees truncation, which is the honest outcome.
 
 ## Known differences from LiteLLM
 

@@ -226,3 +226,91 @@ def test_model_info_reports_the_openrouter_form(client):
 
 def test_model_info_needs_a_key(client):
     assert client.get("/v1/model/info").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# streaming
+#
+# The rule is not "streams cannot fall back". A response is committed the
+# moment a byte reaches the client; an upstream refusing with a 429 does so
+# before any body exists, and falling back there is as safe as it is for a
+# buffered call. Only a mid-stream failure is unrecoverable, because retrying
+# would splice two completions into one response.
+#
+# This matters because the roles that stream here -- summarizer, cartographer,
+# consolidator -- are exactly the ones with fallbacks configured, after real
+# 429s took their providers out.
+# ---------------------------------------------------------------------------
+
+def _stream_stub(monkeypatch, plans):
+    """plans: per attempt, either a list of chunks or an Exception to raise.
+
+    An Exception raised before any chunk models a refusal; one raised after a
+    chunk models a mid-stream failure.
+    """
+    seen = []
+
+    async def fake(client, api_key, body, model, extra_body, timeout_s, usage_out):
+        plan = plans[min(len(seen), len(plans) - 1)]
+        seen.append(model)
+        if isinstance(plan, Exception):
+            raise plan
+        for c in plan:
+            if isinstance(c, Exception):
+                raise c
+            yield c.encode()
+
+    monkeypatch.setattr(app_module.upstream, "stream_once", fake)
+    monkeypatch.setattr(app_module, "BACKOFF_S", 0.0)
+    return seen
+
+
+def _stream(client, **over):
+    body = {"model": "agent-coder", "stream": True,
+            "messages": [{"role": "user", "content": "hi"}]}
+    body.update(over)
+    return client.post("/v1/chat/completions", json=body,
+                       headers={"Authorization": "Bearer sk-test"})
+
+
+def test_a_stream_that_works_is_passed_through(client, monkeypatch):
+    _stream_stub(monkeypatch, [["data: a\n", "data: b\n"]])
+    r = _stream(client)
+    assert r.status_code == 200
+    assert "data: a" in r.text and "data: b" in r.text
+
+
+def test_a_refusal_before_the_first_byte_falls_back(monkeypatch, client):
+    """Nothing has reached the client, so another deployment is safe."""
+    class Boom(Exception):
+        pass
+    seen = _stream_stub(monkeypatch, [Boom("429 rate limited"), ["data: ok\n"]])
+    r = _stream(client)
+    assert r.status_code == 200
+    assert "data: ok" in r.text
+    assert len(seen) > 1, "it tried more than one attempt"
+
+
+def test_a_failure_midstream_is_not_retried(monkeypatch, client):
+    """Committed. Splicing a second completion onto a partial one would be
+    worse than the truncation the client already sees."""
+    class Boom(Exception):
+        pass
+    seen = _stream_stub(monkeypatch, [["data: partial\n", Boom("died")], ["data: second\n"]])
+    r = _stream(client)
+    assert "data: partial" in r.text
+    assert "data: second" not in r.text, "must not splice two completions"
+    assert len(seen) == 1
+
+
+def test_the_call_id_header_is_present_on_a_stream(client, monkeypatch):
+    _stream_stub(monkeypatch, [["data: a\n"]])
+    r = _stream(client)
+    assert r.headers.get("x-litellm-call-id")
+
+
+def test_a_streamed_call_is_ledgered_once(client, monkeypatch, tmp_path):
+    _stream_stub(monkeypatch, [["data: a\n"]])
+    _stream(client, metadata={"agent_task_id": "T9"})
+    rows = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]["task_id"] == "T9"

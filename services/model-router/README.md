@@ -57,10 +57,12 @@ Four things are contracts, not choices, each with a caller that breaks:
 
 ## Behaviour worth knowing
 
-**Fallbacks apply to buffered calls only.** Once a byte of a stream has reached
-the client the response is committed; retrying onto another deployment would
-splice two completions together. Everything tool-calling — which is nearly
-everything the agent does — is buffered and keeps the full chain.
+**Fallbacks apply up to the first byte**, on both paths. A response is
+committed the moment a byte reaches the client, and an upstream refusing with a
+429 does so before any body exists — so falling back there is as safe for a
+stream as for a buffered call. Only a failure *part-way through* a stream is
+unrecoverable, because retrying would splice two completions into one
+response.
 
 **Every attempt is a ledger line**, sharing one `call_id`. A fallback therefore
 cannot double-charge a task, and the Analytics error rate sees the failure that
