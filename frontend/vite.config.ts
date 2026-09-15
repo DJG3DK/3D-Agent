@@ -2,15 +2,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
-export default defineConfig(({ command }) => ({
+export default defineConfig(() => ({
   plugins: [react()],
-  // Served under a subpath on a shared domain (alongside another service at
-  // /) rather than a new subdomain — avoids provisioning fresh DNS/SSL for a
-  // pilot. Dev server stays at root so `npm run dev` still just works
-  // without also running nginx locally. api.ts/useTaskStream.ts build
-  // request paths off import.meta.env.BASE_URL, which Vite sets from this,
-  // so both cases resolve correctly without separate code paths.
-  base: command === 'build' ? '/v2/' : '/',
+  // Root, on Tektonix's own domain. This was '/v2/' for the build while the
+  // dashboard shared agent.3dcryptobots.com with another service at '/' --
+  // that subpath existed only to avoid provisioning DNS and a cert for a
+  // pilot, and tektonix.io removed the reason for it (2026-09-15).
+  // api.ts/useTaskStream.ts build request paths off import.meta.env.BASE_URL,
+  // which Vite sets from this, so nothing else had to change.
+  base: '/',
   server: {
     proxy: {
       '/api': {

@@ -73,25 +73,12 @@ sed -i "s|https://agent.3dcryptobots.com/v2/|https://$DOMAIN/|g" index.html
 npm run build
 
 say "6. redirecting the old domain"
-if ! grep -q "tektonix.io\$request_uri" "$OLD_VHOST"; then
-    python3 - "$OLD_VHOST" <<'PY'
-import re, sys
-p = sys.argv[1]
-s = open(p).read()
-# /v2/ -> the new root. Replace the whole proxy block's body with a redirect,
-# keeping /_login, /_review and /_auth_verify exactly as they are.
-s = s.replace("    location / {\n        return 302 /v2/;\n    }",
-              "    location / {\n        return 301 https://tektonix.io$request_uri;\n    }")
-open(p, "w").write(s)
-PY
-    # The /v2/ location itself: redirect rather than proxy.
-    echo "  old vhost root now 301s to tektonix.io (/_login and /_review untouched)"
-else
-    echo "  already redirecting"
-fi
+# Surgical, not blanket -- see scripts/_cutover_rewrite_vhost.py for why.
+python3 "$REPO/scripts/_cutover_rewrite_vhost.py" "$OLD_VHOST"
 nginx -t && systemctl reload nginx
 
 say "done"
-echo "  https://$DOMAIN should now serve the dashboard."
-echo "  NOTE: the session cookie is scoped per-origin, so you will be logged"
-echo "        out and 2FA re-enrolls against the new domain."
+echo "  https://$DOMAIN now serves the dashboard."
+echo "  /_login and /_review on the old domain are untouched."
+echo "  NOTE: the session cookie is per-origin, so you will be logged out"
+echo "        and 2FA re-enrolls against the new domain."
