@@ -21,39 +21,41 @@
   /* ── Ground & elevation ────────────────────────────────────────────────
      Four steps, each a real step. The old palette had surface and
      surface-raised only ~6% apart, so cards on cards vanished.            */
-  /* Luminous navy scheme (2026-08-28, operator ask: "brighten the
-     dashboard… I love the demo agent scheme"). Ported from the demo bot:
-     deep navy-indigo ground instead of flat charcoal, surfaces a real step
-     brighter and blue-tinted, and AMBIENT LIGHT painted at the body level
-     (see App.css) — three soft radial glows, which is what actually makes
-     the demo feel lit rather than dark. Every foreground below re-measured
-     against the NEW --surface; all clear 4.5:1 (script in commit 7bff949's
-     successor).                                                            */
-  --bg:             #0d1124;
-  --surface:        #1a2140;
-  --surface-raised: #232b52;
-  --surface-hover:  #2b3462;
-  --surface-sunken: #121732;
+  /* DRAFTING scheme (2026-09-15). The lavender-on-navy palette went with
+     the old name; this one goes with the plumb line. Blue-graphite ground —
+     cooler and less saturated than the navy, so brass reads as the only warm
+     thing on screen — with AMBIENT LIGHT still painted at the body level
+     (see App.css), because that is what makes it feel lit rather than dark.
+     Every foreground below is re-measured against the NEW --surface and
+     clears 4.5:1; the ratios in the comments are computed, not estimated.  */
+  --bg:             #11151a;
+  --surface:        #1b2028;
+  --surface-raised: #242a34;
+  --surface-hover:  #2d3440;
+  --surface-sunken: #0d1116;
 
-  --border:       #333d6b;
-  --border-soft:  #272f58;
-  --border-strong:#465391;
+  --border:       #343c48;
+  --border-soft:  #29303a;
+  --border-strong:#4a5563;
 
   /* ── Foreground (all ≥ 4.5:1 on --surface) ──────────────────────────── */
-  --text:       #eef2f8;   /* 14.00:1 */
-  --text-dim:   #aeb8d6;   /*  7.96:1 */
-  --text-faint: #8791b4;   /*  5.05:1 */
+  --text:       #edf0f4;   /* 14.31:1 */
+  --text-dim:   #a3adbb;   /*  7.21:1 */
+  --text-faint: #8a94a3;   /*  5.33:1 */
 
   /* ── Accent ──────────────────────────────────────────────────────────── */
-  --accent:       #9a8fff;   /* 5.80:1 */
-  --accent-hover: #b0a7ff;
-  --accent-dim:   #6a5cd6;
-  --accent-glow:  rgba(143, 131, 255, 0.16);
-  --accent-ring:  rgba(143, 131, 255, 0.45);
+  /* Brass. The one warm colour in the product, and the same brass as the
+     plumb bob in the mark. NOT a state colour: --amber below was moved to a
+     pure yellow so "waiting" can never be confused with an accent. */
+  --accent:       #c9a227;   /* 6.76:1 */
+  --accent-hover: #e0b63a;   /* 8.51:1 */
+  --accent-dim:   #8f7219;
+  --accent-glow:  rgba(201, 162, 39, 0.16);
+  --accent-ring:  rgba(201, 162, 39, 0.45);
 
   /* ── State. Text-safe values; -bg variants for fills. ────────────────── */
   --blue:   #5ab0ff;  --blue-bg:  rgba(90, 176, 255, 0.13);
-  --amber:  #f0b429;  --amber-bg: rgba(240, 180, 41, 0.13);
+  --amber:  #ffe14d;  --amber-bg: rgba(255, 225, 77, 0.13);  /* 12.56:1 — moved off brass */
   --green:  #3ecf7e;  --green-bg: rgba(62, 207, 126, 0.13);
   --red:    #ff6b63;  --red-bg:   rgba(255, 107, 99, 0.13);
   --cyan:   #3ddbd9;  --cyan-bg:  rgba(61, 219, 217, 0.13);
@@ -77,10 +79,10 @@
   --fs-base: 14px; --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 26px;
 
   /* ── Elevation ───────────────────────────────────────────────────────── */
-  /* Shadows carry a hint of the ambient violet instead of pure black —
+  /* Shadows carry a hint of the ambient light instead of pure black —
      part of the "lit" feel: elevation reads as light, not absence.        */
-  --shadow-card:  0 1px 2px rgba(4,6,18,.45), 0 6px 20px rgba(80,70,200,.10);
-  --shadow-pop:   0 8px 28px rgba(4,6,18,.55), 0 2px 40px rgba(120,110,255,.08);
+  --shadow-card:  0 1px 2px rgba(4,6,10,.45), 0 6px 20px rgba(160,130,40,.10);
+  --shadow-pop:   0 8px 28px rgba(4,6,10,.55), 0 2px 40px rgba(201,162,39,.08);
   --shadow-inset: inset 0 1px 0 rgba(255,255,255,.05);
 
   /* ── Motion. Short, and honoured only when the user allows it. ───────── */

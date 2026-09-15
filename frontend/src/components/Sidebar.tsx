@@ -6,7 +6,7 @@ import { BalanceStrip } from "./BalanceStrip";
 import { RepoBadge } from "./RepoBadge";
 import { StatusBadge } from "./StatusBadge";
 import "./Sidebar.css";
-import logoUrl from "../assets/3d-agent-logo.png";
+import logoUrl from "../assets/tektonix-logo.png";
 import { Icon } from "./Icon";
 
 function relativeTime(ts: number): string {
@@ -334,7 +334,7 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-logo">
-          {/* The Tektonix lockup -- hexagonal "3D" mark plus the wordmark,
+          {/* The Tektonix lockup -- plumb-line mark plus the wordmark,
               replacing the placeholder diamond glyph. */}
           {/* Imported through vite (not public/): the backend only mounts
               /assets/*, so a root-level file fell through to the SPA

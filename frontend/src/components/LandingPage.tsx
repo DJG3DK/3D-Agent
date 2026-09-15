@@ -1,4 +1,4 @@
-import logoUrl from "../assets/3d-agent-logo.png";
+import logoUrl from "../assets/tektonix-logo.png";
 import shotDashboard from "../assets/shots/dashboard.webp";
 import shotModelRoles from "../assets/shots/modelspage1.webp";
 import shotProbes from "../assets/shots/modelspage2.webp";

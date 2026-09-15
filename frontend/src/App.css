@@ -1,13 +1,13 @@
 /* ── Ambient light (2026-08-28) — the demo scheme's actual trick. Three
-   fixed radial glows under everything: violet upper-left, cyan upper-right,
-   amber low — the app sits in colored light instead of a void. Painted as
+   fixed radial glows under everything: brass upper-left, cyan upper-right,
+   cool blue low — the app sits in colored light instead of a void. Painted as
    body backgrounds (no extra element, no stacking-context risk), fixed so
    scrolling content moves through the light. */
 body {
   background:
-    radial-gradient(38% 45% at 16% 10%, rgba(143, 131, 255, 0.16), transparent 70%),
+    radial-gradient(38% 45% at 16% 10%, rgba(201, 162, 39, 0.14), transparent 70%),
     radial-gradient(34% 40% at 86% 16%, rgba(61, 219, 217, 0.10), transparent 70%),
-    radial-gradient(42% 44% at 68% 94%, rgba(240, 180, 41, 0.07), transparent 72%),
+    radial-gradient(42% 44% at 68% 94%, rgba(90, 176, 255, 0.07), transparent 72%),
     var(--bg);
   background-attachment: fixed;
 }

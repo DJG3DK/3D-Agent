@@ -54,7 +54,7 @@
 .wiz-btn--primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0d1124;
+  color: #11151a;
   font-weight: 600;
 }
 .wiz-btn--primary:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent); }

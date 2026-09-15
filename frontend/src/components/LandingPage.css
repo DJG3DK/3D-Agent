@@ -17,7 +17,7 @@
   /* Ambient light, same three-glow treatment the console uses at body level —
      it is what makes the dark ground read as lit rather than merely dark. */
   background-image:
-    radial-gradient(46% 38% at 12% 4%, rgba(143, 131, 255, 0.18), transparent 70%),
+    radial-gradient(46% 38% at 12% 4%, rgba(201, 162, 39, 0.16), transparent 70%),
     radial-gradient(38% 30% at 88% 10%, rgba(61, 219, 217, 0.10), transparent 70%),
     radial-gradient(50% 32% at 70% 96%, rgba(240, 180, 41, 0.06), transparent 72%);
   background-attachment: fixed;
@@ -51,13 +51,13 @@
   padding-top: var(--safe-t);
   /* The blur is what keeps the sticky bar legible over a scrolling screenshot;
      the fallback background is opaque enough to work without it. */
-  background: rgba(13, 17, 36, 0.82);
+  background: rgba(17, 21, 26, 0.82);
   backdrop-filter: blur(14px) saturate(140%);
   border-bottom: 1px solid var(--border-soft);
 }
 
 @supports not (backdrop-filter: blur(1px)) {
-  .lp-nav { background: rgba(13, 17, 36, 0.97); }
+  .lp-nav { background: rgba(17, 21, 26, 0.97); }
 }
 
 .lp-nav-inner {
