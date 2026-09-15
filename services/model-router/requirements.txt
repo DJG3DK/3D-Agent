@@ -1,0 +1,8 @@
+# Newest everything, deliberately. The service this replaces pinned
+# fastapi==0.140.6 because litellm 1.96.2's proxy imported a private helper
+# (get_flat_dependant) that 0.140.7 removed -- a framework held back by a
+# dependency's use of an internal API. Nothing here touches FastAPI internals.
+fastapi>=0.140.7
+uvicorn[standard]>=0.35
+httpx>=0.28
+pyyaml>=6.0

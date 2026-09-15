@@ -74,3 +74,7 @@ backups/
 
 # release tarballs from scripts/package_release.sh
 /dist/
+
+# The model router's own virtualenv. Its whole point is a dependency set that
+# is NOT the agent's (current FastAPI, no litellm), so it gets its own.
+services/model-router/venv/

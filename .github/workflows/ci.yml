@@ -58,6 +58,13 @@ jobs:
       - name: pytest (no .env — a fresh-clone run)
         run: python -m pytest -q
 
+      # The model router is its own service with its own venv in production,
+      # but its tests import only fastapi/httpx/pyyaml, which this environment
+      # already has. Running them here keeps them from becoming the kind of
+      # suite nobody notices has broken.
+      - name: pytest (model router)
+        run: python -m pytest -q services/model-router/tests
+
       # The detection rules in agent/provisioning.py propose commands that
       # OTHER machines execute, so the script that runs them for real is
       # worth keeping alive even where its toolchains are absent. --no-docker

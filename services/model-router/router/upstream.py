@@ -1,0 +1,164 @@
+"""Talking to OpenRouter.
+
+Two paths, because the agent uses both: a buffered call for anything carrying
+tools (deep_agent sets disable_streaming="tool_calling", after measuring that
+re-merging tool-call chunks cost ~25 CPU-seconds per call), and a streamed one
+for plain text.
+
+Both must end up with the same ledger line, which is the whole difficulty of
+the streaming path: the usage block arrives in the LAST chunk, after the body
+has already been handed to the client. So the stream is passed through
+untouched and the usage is scraped from the chunks on the way past.
+
+`usage: {"include": true}` is added to every request. That is what makes
+OpenRouter report `usage.cost` -- the real billed figure -- rather than us
+multiplying tokens by a rate table that disagrees with the invoice.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import AsyncIterator
+
+import httpx
+
+logger = logging.getLogger("model-router")
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+@dataclass
+class Usage:
+    """What the ledger needs, however the response arrived."""
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_tokens: int | None = None
+    cost: float | None = None
+    provider: str | None = None
+    model: str | None = None
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "Usage":
+        usage = payload.get("usage") or {}
+        details = usage.get("prompt_tokens_details") or {}
+        return cls(
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            # A provider that says nothing about caching is not the same as one
+            # reporting zero, but the ledger's readers treat absent as 0 and
+            # the distinction has never been actionable.
+            cached_tokens=details.get("cached_tokens") if isinstance(details, dict) else None,
+            cost=usage.get("cost"),
+            provider=payload.get("provider"),
+            model=payload.get("model"),
+        )
+
+    def merge(self, other: "Usage") -> None:
+        """Later chunks win, but only where they actually say something."""
+        for f in ("prompt_tokens", "completion_tokens", "cached_tokens", "cost", "provider", "model"):
+            v = getattr(other, f)
+            if v is not None:
+                setattr(self, f, v)
+
+
+@dataclass
+class Attempt:
+    """One try against one deployment."""
+
+    alias: str
+    model: str
+    ok: bool
+    status: int | None = None
+    duration_s: float = 0.0
+    error: str | None = None
+    payload: dict | None = None
+    usage: Usage = field(default_factory=Usage)
+
+
+def build_body(body: dict, model: str, extra_body: dict) -> dict:
+    """The request as OpenRouter will see it.
+
+    Deployment `extra_body` is merged UNDER the caller's body: a per-call
+    argument (a one-off reasoning_effort, say) must win over a default set in
+    config.yaml, or the config silently overrides the code.
+    """
+    out = {**extra_body, **body, "model": model}
+    # Never forward our own routing metadata upstream.
+    out.pop("metadata", None)
+    usage = out.get("usage")
+    out["usage"] = {**usage, "include": True} if isinstance(usage, dict) else {"include": True}
+    if out.get("stream"):
+        opts = out.get("stream_options")
+        out["stream_options"] = {**opts, "include_usage": True} if isinstance(opts, dict) else {"include_usage": True}
+    return out
+
+
+async def call_once(client: httpx.AsyncClient, api_key: str, body: dict,
+                    model: str, extra_body: dict, timeout_s: float) -> Attempt:
+    """Buffered request. Used for tool-calling and any non-streaming call."""
+    started = time.monotonic()
+    payload = build_body(body, model, extra_body)
+    try:
+        r = await client.post(
+            OPENROUTER_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout_s,
+        )
+    except Exception as e:  # noqa: BLE001 -- a transport failure is a failed attempt, not a crash
+        return Attempt(alias="", model=model, ok=False,
+                       duration_s=time.monotonic() - started,
+                       error=f"{type(e).__name__}: {str(e)[:300]}")
+
+    took = time.monotonic() - started
+    try:
+        data = r.json()
+    except ValueError:
+        return Attempt(alias="", model=model, ok=False, status=r.status_code,
+                       duration_s=took, error=f"non-JSON response: {r.text[:200]}")
+
+    if r.status_code >= 400 or "error" in data:
+        detail = data.get("error") if isinstance(data, dict) else None
+        return Attempt(alias="", model=model, ok=False, status=r.status_code, duration_s=took,
+                       error=json.dumps(detail)[:300] if detail else f"HTTP {r.status_code}",
+                       payload=data)
+
+    return Attempt(alias="", model=model, ok=True, status=r.status_code, duration_s=took,
+                   payload=data, usage=Usage.from_payload(data))
+
+
+async def stream_once(client: httpx.AsyncClient, api_key: str, body: dict, model: str,
+                      extra_body: dict, timeout_s: float, usage_out: Usage) -> AsyncIterator[bytes]:
+    """Streamed request, passed through verbatim.
+
+    Chunks are forwarded as received -- no re-encoding, no re-chunking. The
+    only thing done on the way past is reading `usage` out of whichever chunk
+    carries it, into `usage_out`, so the caller can write the ledger line after
+    the response has already been delivered.
+
+    An error mid-stream cannot be retried onto a fallback: bytes have already
+    reached the client, and a second attempt would splice two responses
+    together. It is logged and the stream ends.
+    """
+    payload = build_body({**body, "stream": True}, model, extra_body)
+    async with client.stream(
+        "POST", OPENROUTER_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload, timeout=timeout_s,
+    ) as r:
+        if r.status_code >= 400:
+            detail = (await r.aread())[:400]
+            raise httpx.HTTPStatusError(f"HTTP {r.status_code}: {detail!r}", request=r.request, response=r)
+        async for line in r.aiter_lines():
+            if line.startswith("data: "):
+                blob = line[6:].strip()
+                if blob and blob != "[DONE]":
+                    try:
+                        usage_out.merge(Usage.from_payload(json.loads(blob)))
+                    except ValueError:
+                        pass  # a chunk we cannot parse is still a chunk to forward
+            yield (line + "\n").encode()
